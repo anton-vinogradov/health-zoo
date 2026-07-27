@@ -84,11 +84,13 @@ class Fleet:
                                       self.hosts(), self.cfg.get("ssh_key"), hosts)
             probe.poll_unifi_controller(self.cfg, hosts)
             issues.annotate(hosts, self.cfg)
+            issues.annotate_checks(hosts, self.cfg)
             snap = {
                 "unmanaged": probe.find_unmanaged(hosts, self.hosts()),
                 "generated": int(time.time()),
                 "duration_ms": int((time.time() - started) * 1000),
                 "subnets": self.cfg.get("subnets", []),
+                "check_categories": issues.CHECK_CATEGORIES,
                 "hosts": hosts,
                 "poll_interval": self.cfg.get("poll_interval", 180),
                 "polling": False,
@@ -128,6 +130,7 @@ class Fleet:
             return 0
         fresh = probe.probe_all(wanted, self.cfg.get("ssh_key"))
         issues.annotate(fresh, self.cfg)
+        issues.annotate_checks(fresh, self.cfg)
         by_id = {h["id"]: h for h in fresh}
         with self.lock:
             hosts = list(self.snapshot.get("hosts", []))

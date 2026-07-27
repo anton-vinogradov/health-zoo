@@ -555,10 +555,33 @@ function section(title, node) {
   return node ? h('div', { class: 'section' }, [h('h3', { text: title }), node]) : null;
 }
 
+/* The detail view has two tabs: what the host looks like now, and what is
+   being checked on it at all. The second answers the question a findings-only
+   dashboard leaves open — "is this fine, or simply not watched?" */
 function showHost(host) {
   document.getElementById('modal-title').textContent = host.name + ' · ' + host.addr;
-  var body = document.getElementById('modal-body');
-  body.innerHTML = '';
+  var root = document.getElementById('modal-body');
+  root.innerHTML = '';
+
+  var body = h('div', { class: 'tab-page' }, []);
+  var checksPage = h('div', { class: 'tab-page hidden' }, []);
+  renderChecks(host, checksPage);
+
+  var tabState = h('button', { class: 'tab active', text: 'Состояние' });
+  var checksCount = (host.checks || []).filter(function (c) { return c.status !== 'n/a'; }).length;
+  var tabChecks = h('button', { class: 'tab', text: 'Проверки (' + checksCount + ')' });
+  tabState.addEventListener('click', function () {
+    tabState.classList.add('active'); tabChecks.classList.remove('active');
+    body.classList.remove('hidden'); checksPage.classList.add('hidden');
+  });
+  tabChecks.addEventListener('click', function () {
+    tabChecks.classList.add('active'); tabState.classList.remove('active');
+    checksPage.classList.remove('hidden'); body.classList.add('hidden');
+  });
+
+  root.appendChild(h('div', { class: 'tabs' }, [tabState, tabChecks]));
+  root.appendChild(body);
+  root.appendChild(checksPage);
 
   var facts = [];
   function fact(label, value) {
@@ -628,6 +651,23 @@ function showHost(host) {
     var trends = h('div', { class: 'trends' }, []);
     body.appendChild(section('Динамика за 2 недели', trends));
     loadHistory(host, trends);
+  }
+
+  var allRadios = (host.radios || []).concat(host.radioiws || []);
+  if (allRadios.length) {
+    body.appendChild(section('Радио (' + (host.wifi_clients || 0) + ' клиентов)',
+      table(['радио', 'SSID', 'канал', 'клиентов', 'эфир'],
+        allRadios.map(function (r) {
+          var dead = !r.disabled && (r.channel === 0 || r.freq === 0);
+          return h('tr', null, [
+            h('td', null, [h('span', { class: 'dot ' + (dead ? 'bad' : r.disabled ? '' : 'ok') }),
+                           h('span', { text: r.name || r.dev || '' })]),
+            h('td', { text: r.ssid || '' }),
+            h('td', { class: 'mono right', text: r.channel === null || r.channel === undefined ? '' : String(r.channel) }),
+            h('td', { class: 'mono right', text: r.clients === undefined ? '' : String(r.clients) }),
+            h('td', { class: 'mono right', text: r.utilization === undefined || r.utilization === null ? '' : r.utilization + '%' })
+          ]);
+        }))));
   }
 
   if ((host.smarts || []).length) {
@@ -795,6 +835,9 @@ function showHost(host) {
     body.appendChild(section('Веб-интерфейсы', h('div', { class: 'chips' },
       host.web.map(function (link) {
         var name = link.title ? ' — ' + link.title : (link.label ? ' — ' + link.label : '');
+        var cert = link.cert && link.cert.days_left !== undefined
+          ? ' · сертификат ' + Math.round(link.cert.days_left) + ' сут' : '';
+        name += cert;
         if (link.local) {
           return h('span', {
             class: 'btn btn-sm btn-local',
@@ -805,6 +848,18 @@ function showHost(host) {
           class: 'btn btn-sm btn-link', target: '_blank', rel: 'noopener',
           href: webUrl(host, link), text: '⧉ ' + webUrl(host, link) + name
         });
+      }))));
+  }
+
+  if ((host.external || []).length) {
+    body.appendChild(section('Доступность снаружи', table(['что', 'откуда проверено', 'результат'],
+      host.external.map(function (c) {
+        return h('tr', null, [
+          h('td', { text: c.label || ('порт ' + c.port) }),
+          h('td', { text: c.from }),
+          h('td', null, [h('span', { class: 'dot ' + (c.open ? 'ok' : 'bad') }),
+                         h('span', { text: c.open ? 'открыт' : 'недоступен' })])
+        ]);
       }))));
   }
 
@@ -827,6 +882,42 @@ function showHost(host) {
   }
 
   document.getElementById('modal').classList.remove('hidden');
+}
+
+function renderChecks(host, container) {
+  var checks = host.checks || [];
+  if (!checks.length) {
+    container.appendChild(h('div', { class: 'role-head', text: 'нет данных о проверках' }));
+    return;
+  }
+
+  var titles = {};
+  ((state && state.check_categories) || []).forEach(function (pair) { titles[pair[0]] = pair[1]; });
+
+  var byCategory = {};
+  checks.forEach(function (c) { (byCategory[c.category] = byCategory[c.category] || []).push(c); });
+
+  var active = checks.filter(function (c) { return c.status !== 'n/a'; }).length;
+  container.appendChild(h('p', { class: 'checks-intro', text:
+    'На этом хосте выполняется ' + active + ' из ' + checks.length + ' проверок. ' +
+    'Остальные не применимы — под каждой написано почему.' }));
+
+  Object.keys(byCategory).forEach(function (category) {
+    var rows = byCategory[category].map(function (c) {
+      var mark = { ok: '✓', bad: '✕', warn: '!', info: 'i', 'n/a': '—' }[c.status];
+      return h('tr', { class: c.status === 'n/a' ? 'check-na' : '' }, [
+        h('td', { class: 'check-mark ' + c.status, text: mark }),
+        h('td', null, [
+          h('div', { class: 'check-name', text: c.name }),
+          h('div', { class: 'check-rule', text: c.rule })
+        ]),
+        h('td', { class: 'check-detail' + (c.status === 'bad' ? ' bad' : c.status === 'warn' ? ' warn' : ''),
+                  text: c.detail || (c.status === 'ok' ? 'в норме' : '') })
+      ]);
+    });
+    container.appendChild(section(titles[category] || category,
+      h('table', { class: 'list checks' }, [h('tbody', null, rows)])));
+  });
 }
 
 /* ---------- history sparklines ---------- */

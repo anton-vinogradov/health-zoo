@@ -279,3 +279,165 @@ def annotate(hosts: list[dict], cfg: dict | None = None) -> None:
         else:
             host["level"] = "ok"
         host["thresholds"] = thresholds_for(host, cfg)
+
+
+# --------------------------------------------------------------------------
+# Self-description: what is actually being watched on a given host
+# --------------------------------------------------------------------------
+#
+# A dashboard that shows only findings leaves the operator guessing about
+# everything it does *not* show: is the disk fine, or simply not checked? This
+# turns the rule set into an inventory — every check, whether it applies to
+# this host, and what it currently says.
+
+CHECK_CATEGORIES = [
+    ("availability", "Доступность"),
+    ("resources", "Ресурсы"),
+    ("disks", "Диски"),
+    ("services", "Сервисы"),
+    ("updates", "Обновления"),
+    ("backup", "Бэкапы"),
+    ("cameras", "Камеры"),
+    ("network", "Сеть"),
+]
+
+
+def checks_for(host: dict, cfg: dict | None = None) -> list[dict]:
+    """Every check this host is subject to, with its current verdict."""
+    limits = thresholds_for(host, cfg)
+    found = {issue["key"]: issue for issue in host.get("issues", [])}
+    agent = host.get("agent", "linux")
+    out: list[dict] = []
+
+    def add(category: str, name: str, rule: str, *,
+            applies: bool = True, keys: tuple = (), skipped: str = "") -> None:
+        hits = [found[k] for k in found if any(
+            k == key or k.startswith(key + ":") for key in keys)]
+        if not applies:
+            status, detail = "n/a", skipped
+        elif hits:
+            status = "bad" if any(h["level"] == "bad" for h in hits) else (
+                "info" if all(h["level"] == "info" for h in hits) else "warn")
+            detail = "; ".join(h["text"] for h in hits[:3])
+        else:
+            status, detail = "ok", ""
+        out.append({"category": category, "name": name, "rule": rule,
+                    "status": status, "detail": detail})
+
+    reachable = host.get("reachable")
+
+    # ---------- availability ----------
+    add("availability", "Хост отвечает",
+        "ICMP и, где есть доступ, успешный опрос агентом каждые "
+        f"{(cfg or {}).get('poll_interval', 180) // 60} мин",
+        keys=("down", "offline"))
+    add("availability", "Выключение считается нормой",
+        "Хост помечен may_be_offline: недоступность показывается, но не тревожит",
+        applies=bool(host.get("may_be_offline")),
+        skipped="не помечен — недоступность будет проблемой", keys=("offline",))
+    add("availability", "Полнота опроса",
+        "Агент отработал и вернул данные; иначе видно только сетевой уровень",
+        keys=("noaccess",))
+    add("availability", "Автостарт после сбоя питания",
+        "Значение из конфига (power_recovery): из ОС эта настройка BIOS не читается",
+        applies=host.get("power_recovery") is not None,
+        skipped="не задано в конфиге", keys=("power_recovery",))
+
+    # ---------- resources ----------
+    add("resources", "Заполнение дисков",
+        f"Предупреждение с {limits['disk_warn']}%, проблема с {limits['disk_bad']}% "
+        "по каждому смонтированному разделу",
+        applies=bool(host.get("disks")), skipped="разделы не отдаются", keys=("disk",))
+    add("resources", "Память",
+        f"Предупреждение с {limits['mem_warn']}%, проблема с {limits['mem_bad']}%",
+        applies=host.get("mem_pct") is not None, skipped="нет данных", keys=("mem",))
+    add("resources", "Swap",
+        f"Предупреждение с {limits['swap_warn']}%: активный swap на слабых машинах "
+        "означает нехватку памяти",
+        applies=bool(host.get("swap_total")), skipped="swap не настроен", keys=("swap",))
+    add("resources", "Температура",
+        f"По самому горячему датчику: предупреждение с {limits['temp_warn']}°, "
+        f"проблема с {limits['temp_bad']}°",
+        applies=bool(host.get("temps")), skipped="датчиков нет", keys=("temp",))
+
+    # ---------- disks ----------
+    add("disks", "SMART-здоровье",
+        "Оценка самого накопителя, переназначенные и pending-секторы, износ SSD",
+        applies=bool(host.get("smarts")),
+        skipped=host.get("smart_blocked") or "накопители не опрашиваются",
+        keys=("smart",))
+    add("disks", "RAID-массивы",
+        "Состояние каждого массива: [U_] вместо [UU] — деградация",
+        applies=bool(host.get("raid")), skipped="массивов нет", keys=("raid",))
+
+    # ---------- services ----------
+    add("services", "Упавшие сервисы",
+        "Юнит в состоянии failed — срочная проблема",
+        applies=bool(host.get("services")), skipped="сервисы не перечисляются",
+        keys=("svc",))
+    add("services", "Остановленные, но включённые",
+        "Юнит в автозапуске и не работает: считается поломкой наравне с падением",
+        applies=agent == "linux" and bool(host.get("services")),
+        skipped="только для systemd", keys=("svc",))
+    add("services", "Контейнеры",
+        "Каждый контейнер должен быть running",
+        applies=bool(host.get("containers")), skipped="контейнеров нет",
+        keys=("container",))
+    add("services", "Радио точки доступа",
+        "Каждое включённое радио должно вещать; загрузка эфира "
+        f"выше {limits.get('airtime_bad', 85)}% — предупреждение",
+        applies=bool(host.get("radios") or host.get("radioiws")),
+        skipped="радио нет", keys=("radio", "radioair", "unifi_state"))
+
+    # ---------- updates ----------
+    add("updates", "Обновления пакетов",
+        "Список из кэша пакетного менеджера; security-обновления считаются отдельно",
+        applies=bool(host.get("pkg_manager") or host.get("update_count")),
+        skipped="пакеты не отслеживаются", keys=("security",))
+    add("updates", "Требуется перезагрузка",
+        "reboot-required у Debian, непринятая прошивка RouterBOARD — с причиной",
+        keys=("reboot",))
+    add("updates", "Сертификаты TLS",
+        f"Предупреждение за {limits.get('cert_warn_days', 21)} сут до истечения, "
+        f"проблема за {limits.get('cert_bad_days', 7)}",
+        applies=any(link.get("cert") for link in host.get("web", [])),
+        skipped="https-сервисов не найдено", keys=("cert",))
+
+    # ---------- backup ----------
+    add("backup", "Свежесть бэкапа",
+        f"Репозиторий старше {limits.get('backup_stale_days', 2)} сут — предупреждение, "
+        "втрое дольше — проблема",
+        applies=bool(host.get("backuprepos")), skipped="репозиториев на хосте нет",
+        keys=("backup",))
+    add("backup", "Покрытие бэкапом",
+        "Общие папки, не входящие ни в одну задачу",
+        applies=bool(host.get("backups") or host.get("unbackeds")),
+        skipped="задач резервного копирования нет", keys=("unbacked",))
+    add("backup", "Хост вообще бэкапится",
+        "NAS с данными должен либо отправлять бэкап, либо принимать его",
+        applies=host.get("role") == "nas" and not host.get("backup_exempt"),
+        skipped="не применимо или отключено через backup_exempt", keys=("no_backup",))
+
+    # ---------- cameras ----------
+    add("cameras", "Состояние потока",
+        "Статус монитора у того хоста, который камеру пишет",
+        applies=bool(host.get("cameras")), skipped="камер не записывает",
+        keys=("cam",))
+    add("cameras", "Детекция не молчит",
+        f"Нет событий {limits.get('camera_quiet_warn_hours', 12)} ч — предупреждение, "
+        f"{limits.get('camera_quiet_bad_hours', 24)} ч — проблема",
+        applies=any(c.get("quiet_hours") is not None for c in host.get("cameras", [])),
+        skipped="событийная статистика недоступна", keys=("camquiet",))
+
+    # ---------- network ----------
+    add("network", "Доступность снаружи",
+        "Порт проверяется с другого хоста в интернете — то, что видит клиент",
+        applies=bool(host.get("external")), skipped="внешние проверки не заданы",
+        keys=("external",))
+
+    return out
+
+
+def annotate_checks(hosts: list[dict], cfg: dict | None = None) -> None:
+    for host in hosts:
+        host["checks"] = checks_for(host, cfg)
