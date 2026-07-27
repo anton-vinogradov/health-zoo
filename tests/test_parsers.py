@@ -585,8 +585,10 @@ def test_vhost_names_replace_by_address_links():
 def test_speaker_on_a_channel_the_access_points_are_saturating():
     """The speaker reports nothing wrong — it just sounds bad."""
     speaker = {"id": "sonos", "agent": "sonos", "reachable": True,
+               "subnet": "10.0.0.0/24",
                "link": "wifi", "wifi_band": "2.4", "wifi_channel": 7}
     ap = {"id": "ap", "name": "Прихожая", "reachable": True,
+          "subnet": "10.0.0.0/24",
           "radios": [{"band": "2.4", "channel": 8, "utilization": 52}]}
 
     probe.analyse_wifi([speaker, ap])
@@ -599,9 +601,23 @@ def test_speaker_on_a_channel_the_access_points_are_saturating():
 
 def test_a_wired_speaker_is_not_blamed_for_the_air():
     speaker = {"id": "sonos", "agent": "sonos", "reachable": True,
-               "link": "ethernet"}
+               "subnet": "10.0.0.0/24", "link": "ethernet"}
     ap = {"id": "ap", "name": "Прихожая", "reachable": True,
+          "subnet": "10.0.0.0/24",
           "radios": [{"band": "2.4", "channel": 8, "utilization": 80}]}
 
     probe.analyse_wifi([speaker, ap])
+    assert "wifi_crowded_by" not in speaker
+
+
+def test_interference_is_not_compared_across_sites():
+    """Two rooms in different buildings do not share a channel in any real sense."""
+    speaker = {"id": "sonos", "agent": "sonos", "reachable": True,
+               "subnet": "10.77.77.0/24",
+               "link": "wifi", "wifi_band": "2.4", "wifi_channel": 7}
+    far_ap = {"id": "ap", "name": "Прихожая", "reachable": True,
+              "subnet": "10.88.88.0/24",
+              "radios": [{"band": "2.4", "channel": 8, "utilization": 90}]}
+
+    probe.analyse_wifi([speaker, far_ap])
     assert "wifi_crowded_by" not in speaker

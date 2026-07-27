@@ -524,13 +524,17 @@ ROUTEROS_CMD = (
     '.[:tostr [/ip dhcp-server lease get $l host-name]]."|"'
     '.[:tostr [/ip dhcp-server lease get $l mac-address]]."|"'
     '.[:tostr [/ip dhcp-server lease get $l status]])}} on-error={}; '
+    # monitor gives the frequency actually in use; the configuration often says
+    # "auto" and a card with no channel cannot be compared with anything.
     ':put "@@wifi"; :do {:foreach i in=[/interface wifi find] do={'
+    ':local mon [/interface wifi monitor $i once as-value]; '
     ':put ([:tostr [/interface wifi get $i name]]."|"'
     '.[:tostr [/interface wifi get $i configuration.ssid]]."|"'
     '.[:tostr [/interface wifi get $i disabled]]."|"'
     '.[:tostr [/interface wifi get $i running]]."|"'
     '.[:tostr [:len [/interface wifi registration-table find '
-    'where interface=[/interface wifi get $i name]]]])}} on-error={}'
+    'where interface=[/interface wifi get $i name]]]]."|"'
+    '.[:tostr ($mon->"channel")])}} on-error={}'
 )
 
 
@@ -820,13 +824,26 @@ def probe_routeros(host: dict, key: str | None) -> dict:
         name = cells[0]
         if not name:
             continue
-        radios.append({
+        # "2442/ax/Ce" — frequency, protocol, channel width layout.
+        frequency = 0
+        raw = cells[5] if len(cells) > 5 else ""
+        head = raw.split("/")[0]
+        if head.isdigit():
+            frequency = int(head)
+        radio = {
             "name": name,
             "ssid": cells[1] if len(cells) > 1 else "",
-            "channel": 0 if (len(cells) > 3 and cells[3] != "true") else None,
             "clients": _num(cells[4]) if len(cells) > 4 else 0,
             "disabled": (cells[2] if len(cells) > 2 else "false") == "true",
-        })
+        }
+        if frequency:
+            radio["band"] = "2.4" if frequency < 3000 else "5"
+            radio["channel"] = ((frequency - 2407) // 5 if frequency < 3000
+                                else (frequency - 5000) // 5)
+            radio["freq"] = frequency
+        else:
+            radio["channel"] = 0 if (len(cells) > 3 and cells[3] != "true") else None
+        radios.append(radio)
     if radios:
         data["radios"] = radios
     return data
@@ -1645,6 +1662,12 @@ def analyse_wifi(results: list[dict]) -> None:
             continue
         crowding = []
         for other_host, radio in radios_24:
+            # Radio interference is local. Comparing a speaker on one site with
+            # an access point on another produced a finding about two rooms in
+            # different buildings — technically a channel overlap, physically
+            # nothing at all.
+            if other_host.get("subnet") != host.get("subnet"):
+                continue
             if abs(radio["channel"] - channel) >= 5:
                 continue
             airtime = radio.get("utilization")

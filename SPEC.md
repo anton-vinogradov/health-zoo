@@ -179,6 +179,9 @@ Marked: **✓** done, **▶** in progress, **○** deliberately not done.
 
 ## 6. Still open
 
+- Airtime on MikroTik radios: RouterOS does not report it in `monitor`, so a
+  wireless client on that site has nothing to compare its channel against.
+
 - Firewall rules referring to interfaces and address lists that no longer exist.
 - DHCP reservations for devices long gone from the network.
 - Show what the neighbours are doing to the 2.4 GHz band, not just the percentage.
