@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import threading
 
 # What the UI is allowed to change, with enough description to render a form
@@ -57,10 +58,6 @@ FIELDS = [
      "label": "Тишина детекции: предупреждение", "unit": "ч", "min": 1, "max": 168},
     {"key": "camera_quiet_bad_hours", "group": "Камеры",
      "label": "Тишина детекции: проблема", "unit": "ч", "min": 2, "max": 336},
-    {"key": "firmware_stale_days", "group": "Камеры",
-     "label": "Прошивка считается старой через", "unit": "сут", "min": 180, "max": 3650,
-     "hint": "Сравнивать версию камеры не с чем — производитель не публикует "
-             "список актуальных. Поэтому смотрим возраст сборки."},
     {"key": "cert_warn_days", "group": "Сертификаты", "label": "Истекает через",
      "unit": "сут", "min": 1, "max": 90},
     {"key": "cert_bad_days", "group": "Сертификаты", "label": "Срочно: истекает через",
@@ -189,6 +186,46 @@ class Settings:
                 else:
                     current.pop(key, None)
             self.data["cameras"] = current
+            self._save()
+            return current
+
+    # ---------- known firmware releases ----------
+    #
+    # Cameras have no feed to check: the vendor's site refuses bots (403) and
+    # its file catalogue cannot be matched to a model without guessing — and a
+    # guess here means either a false "update available" or a false "up to
+    # date". So the newest published build is written down by hand, keyed by a
+    # substring of the model, and the dashboard complains only when there is a
+    # concrete newer build to point at.
+
+    def firmware(self) -> dict:
+        return dict(self.data.get("firmware") or {})
+
+    def firmware_for(self, model: str) -> dict:
+        """The newest published build known for this model, if any."""
+        model = (model or "").upper()
+        if not model:
+            return {}
+        for key, entry in self.firmware().items():
+            if key.upper() in model:
+                return dict(entry)
+        return {}
+
+    def set_firmware(self, values: dict) -> dict:
+        with self.lock:
+            current = dict(self.data.get("firmware") or {})
+            for key, entry in (values or {}).items():
+                key = str(key).strip()
+                if not key:
+                    continue
+                version = str((entry or {}).get("version", "")).strip()
+                built = re.sub(r"\D", "", str((entry or {}).get("built", "")))[:6]
+                url = str((entry or {}).get("url", "")).strip()
+                if not version and not built:
+                    current.pop(key, None)
+                    continue
+                current[key] = {"version": version, "built": built, "url": url}
+            self.data["firmware"] = current
             self._save()
             return current
 

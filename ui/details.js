@@ -91,10 +91,24 @@ function showHost(host) {
     fact('в контроллере', host.unifi_state === 2 ? 'управляется' : 'не управляется (' + host.unifi_state + ')');
   }
   fact('зона', host.zone);
-  if (host.firmware_age_days) {
-    fact('прошивка', host.os_name + ' — сборке ' + host.firmware_age_days +
-         ' сут; версию прочитал ' + (host.firmware_source || 'рекордер') +
+  if (host.os_name && host.role === 'camera') {
+    fact('прошивка', host.os_name +
+         (host.firmware_age_days ? ' — сборке ' + host.firmware_age_days + ' сут' : '') +
+         '; версию прочитал ' + (host.firmware_source || 'рекордер') +
          ', у него есть учётные данные камеры');
+    var known = host.firmware_known;
+    if (known && known.version) {
+      fact('доступна версия', known.version +
+           (known.built ? ', сборка ' + known.built : '') +
+           (host.firmware_outdated ? ' — новее установленной' : ' — та же, что стоит'));
+      if (known.url) {
+        fact('где взять', known.url);
+      }
+    } else {
+      fact('новее не известна',
+           'производитель не публикует машиночитаемый список версий; ' +
+           'известную свежую сборку можно вписать в настройках');
+    }
   }
   if (host.link) {
     fact('подключение', host.link === 'ethernet' ? 'кабелем'

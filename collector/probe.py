@@ -12,7 +12,9 @@ from __future__ import annotations
 
 import concurrent.futures
 import html
+import ipaddress
 import json
+import math
 import os
 import re
 import shlex
@@ -66,6 +68,10 @@ LIST_FIELDS = {
     "radioiw": ["dev", "ssid", "freq", "clients"],
     "listen": ["port", "process", "scope"],
     "udp": ["port", "process", "scope"],
+    # Same shape the RouterOS parser builds by hand, so both kinds of router
+    # arrive at the exposure walk identical.
+    "forward": ["chain", "action", "port", "to", "to_port", "disabled",
+                "comment", "bytes", "proto"],
     "raid": ["dev", "level", "state"],
     "backup": ["task", "name", "folders", "dest", "share"],
     "backuprepo": ["name", "last", "size"],
@@ -144,6 +150,14 @@ def _post_process(data: dict) -> dict:
 
     for temp in data.get("temps", []):
         temp["c"] = _num(temp.get("c", 0))
+
+    # An agent reports a forward's fields as text, the RouterOS path builds them
+    # typed. Left as-is, the string "false" is truthy and every rule collected
+    # from a shell agent reads as switched off.
+    for rule in data.get("forwards", []):
+        if isinstance(rule.get("disabled"), str):
+            rule["disabled"] = rule["disabled"].strip().lower() in ("true", "1", "yes")
+        rule["bytes"] = _num(rule.get("bytes", 0)) or 0
 
     # A unit's version comes from the package that owns it.
     versions = {u["unit"]: u for u in data.get("unitpkgs", [])}
@@ -316,6 +330,11 @@ KNOWN_SERVICES = {
     8729: "MikroTik API-SSL", 4403: "Meshtastic API", 6281: "HyperBackup",
     5000: "DSM", 5001: "DSM", 51820: "WireGuard", 1080: "SOCKS5",
     1081: "SOCKS5", 9091: "Transmission", 3261: "iSCSI", 111: "portmap",
+    # Infrastructure ports a card used to render as "68:68/udp" — a number
+    # repeated twice says less than the name of the thing holding it.
+    67: "DHCP", 68: "DHCP-клиент", 500: "IPsec", 4500: "IPsec NAT-T",
+    1701: "L2TP", 5678: "MikroTik discovery", 5353: "mDNS", 1900: "SSDP",
+    51413: "Transmission (пиры)",
     # A camera has no web link to click (its console needs credentials), so the
     # port shows up as a chip — "порт 80:80" said nothing twice.
     80: "HTTP", 443: "HTTPS",
@@ -519,6 +538,16 @@ ROUTEROS_CMD = (
     ':put ([:tostr [/ip ipsec policy get $i src-address]]."|".[:tostr [/ip ipsec policy get $i dst-address]]'
     '."|".[:tostr [/ip ipsec policy get $i ph2-state]]."|".[:tostr [/ip ipsec policy get $i disabled]]'
     '."|".[:tostr [/ip ipsec policy get $i active]])}} on-error={}; '
+    # Which of the router's own addresses faces the uplink. RouterOS has no
+    # field that says "this one is the WAN", so it is derived: the address whose
+    # network contains the default gateway. Everything about who can reach what
+    # from outside hangs on that one address being known.
+    ':put "@@address"; :foreach i in=[/ip address find] do={'
+    ':put ([:tostr [/ip address get $i address]]."|".[:tostr [/ip address get $i interface]]'
+    '."|".[:tostr [/ip address get $i disabled]])}; '
+    ':put "@@route"; :do {:foreach i in=[/ip route find dst-address="0.0.0.0/0"] do={'
+    ':put ([:tostr [/ip route get $i gateway]]."|".[:tostr [/ip route get $i active]])}} '
+    'on-error={}; '
     ':put "@@interface"; :foreach i in=[/interface find] do={'
     ':put ([:tostr [/interface get $i name]]."|".[:tostr [/interface get $i running]]'
     '."|".[:tostr [/interface get $i type]]."|".[:tostr [/interface get $i disabled]])}; '
@@ -760,6 +789,26 @@ def probe_routeros(host: dict, key: str | None) -> dict:
         })
     if forwards:
         data["forwards"] = forwards
+
+    # The uplink-side address: the one whose network holds the default gateway.
+    gateways = [cells[0] for cells in _routeros_rows(sections.get("route", []))
+                if cells and cells[0]]
+    for cells in _routeros_rows(sections.get("address", [])):
+        if len(cells) > 2 and cells[2] == "true":
+            continue
+        try:
+            local = ipaddress.ip_interface(cells[0])
+        except (ValueError, IndexError):
+            continue
+        for gateway in gateways:
+            try:
+                if ipaddress.ip_address(gateway) in local.network:
+                    data["wan_addr"] = str(local.ip)
+                    break
+            except ValueError:
+                continue
+        if data.get("wan_addr"):
+            break
 
     policies = []
     for cells in _routeros_rows(sections.get("ipsec", [])):
@@ -1581,6 +1630,50 @@ MAC_VENDORS = {
 }
 
 
+def _channel_freq(channel: int, band: str) -> int:
+    return 2407 + 5 * channel if band == "2.4" else 5000 + 5 * channel
+
+
+def _measure_neighbours(radios: list[dict], sightings: list[dict]) -> None:
+    """Attach measured interference — who is heard, how loud, how much overlap.
+
+    The question is never "does anyone share our channel number" but "how much
+    energy from other networks lands in our carrier". A network two channels
+    away at -50 dBm hurts; one on our exact channel at -92 dBm does not.
+    """
+    if not sightings:
+        return
+    for radio in radios:
+        band = radio.get("band")
+        channel = radio.get("channel")
+        width = radio.get("width") or 20
+        if not isinstance(channel, int) or not channel:
+            continue
+        near = [s for s in sightings
+                if (s["freq"] < 3000) == (band == "2.4")]
+        if not near:
+            continue
+        level, landed = interference(near, _channel_freq(channel, band), width)
+        if level is None:
+            continue
+        radio["interference"] = level
+        radio["neighbours"] = [{
+            "essid": n["essid"] or "(скрытый)",
+            "channel": n["channel"],
+            "width": n["width"],
+            "signal": n["signal"],
+            "share": n["share"],
+        } for n in landed[:5]]
+        radio["neighbour_count"] = len(landed)
+        if band == "2.4":
+            # The same measurement, asked of the channels we could move to.
+            # This is what makes the finding actionable instead of merely true.
+            radio["channel_options"] = {
+                str(option): interference(near, _channel_freq(option, band), 20)[0]
+                for option in sorted(NON_OVERLAPPING_24)
+            }
+
+
 def poll_unifi_controller(cfg: dict, results: list[dict]) -> None:
     """Enrich access points from the UniFi controller's API.
 
@@ -1619,11 +1712,37 @@ def poll_unifi_controller(cfg: dict, results: list[dict]) -> None:
         opener.open(login, timeout=10).read()
         devices = _json.loads(
             opener.open(f"{base}/api/s/{site}/stat/device", timeout=15).read())
+        # What each access point currently hears. The radios collect this
+        # between beacons on their own, so asking costs nothing and — unlike
+        # a channel scan on the router — never takes a radio off the air.
+        scan = _json.loads(opener.open(urllib.request.Request(
+            f"{base}/api/s/{site}/stat/rogueap",
+            data=_json.dumps({"within": 1}).encode(),
+            headers={"Content-Type": "application/json"}), timeout=20).read())
     except Exception as exc:
         for host in results:
             if host.get("agent") == "unifi" and not host.get("reachable"):
                 host["error"] = f"контроллер UniFi недоступен: {exc}"
         return
+
+    # Sightings belong to the radio that made them, and only recent ones say
+    # anything about the air as it is now.
+    heard: dict = {}
+    for sighting in scan.get("data", []):
+        signal = sighting.get("signal")
+        frequency = sighting.get("center_freq") or sighting.get("freq")
+        if not isinstance(signal, (int, float)) or not frequency:
+            continue
+        if (sighting.get("rssi_age") or 0) > FRESH_SIGHTING_SECONDS:
+            continue
+        heard.setdefault(sighting.get("ap_mac"), []).append({
+            "essid": sighting.get("essid") or "",
+            "bssid": sighting.get("bssid") or "",
+            "channel": sighting.get("channel"),
+            "freq": frequency,
+            "width": sighting.get("bw") or 20,
+            "signal": signal,
+        })
 
     by_addr = {h.get("addr"): h for h in results}
     for device in devices.get("data", []):
@@ -1681,6 +1800,7 @@ def poll_unifi_controller(cfg: dict, results: list[dict]) -> None:
                 "tx_power": radio.get("tx_power"),
                 "disabled": False,
             })
+        _measure_neighbours(radios, heard.get(device.get("mac"), []))
         if radios:
             host["radios"] = radios
 
@@ -1755,6 +1875,52 @@ def unifi_command(cfg: dict, mac: str, command: str) -> tuple[bool, str]:
 # because carrier sense cannot see the neighbour to take turns with it.
 NON_OVERLAPPING_24 = {1, 6, 11}
 
+# A neighbour matters when it is heard, not when its channel number matches.
+# Below roughly -85 dBm a network is a rumour: it neither defers to us nor
+# raises our noise floor enough to cost a frame.
+AUDIBLE_DBM = -85
+# Scan entries persist in the controller for months. Anything older than a few
+# minutes describes an air that no longer exists.
+FRESH_SIGHTING_SECONDS = 900
+# Half a channel of separation is not a decision worth making: 6 dB is four
+# times the power, which is where moving an access point starts to pay off.
+WORTH_MOVING_DB = 6
+
+
+def _span(center: float, width: int) -> tuple[float, float]:
+    half = (width or 20) / 2
+    return center - half, center + half
+
+
+def interference(neighbours: list[dict], center: float, width: int) -> tuple:
+    """Total power the neighbours actually land inside our channel.
+
+    Powers add linearly, so the sum is done in milliwatts and reported back in
+    dBm — the same unit the individual signals arrive in. Each neighbour counts
+    only for the fraction of our channel it actually covers: a 40 MHz network
+    straddling the edge of our 20 MHz carrier costs us half of what it would
+    sitting right on top of us.
+    """
+    low, high = _span(center, width)
+    total_mw = 0.0
+    landed = []
+    for neighbour in neighbours:
+        signal = neighbour.get("signal")
+        if not isinstance(signal, (int, float)) or signal < AUDIBLE_DBM:
+            continue
+        other_low, other_high = _span(neighbour.get("freq") or 0,
+                                      neighbour.get("width") or 20)
+        overlap = min(high, other_high) - max(low, other_low)
+        if overlap <= 0:
+            continue
+        share = min(overlap / (width or 20), 1.0)
+        total_mw += (10 ** (signal / 10)) * share
+        landed.append({**neighbour, "share": round(share, 2)})
+    if not total_mw:
+        return None, []
+    landed.sort(key=lambda n: n["signal"], reverse=True)
+    return round(10 * math.log10(total_mw), 1), landed
+
 
 def analyse_wifi(results: list[dict]) -> None:
     """Look at the radios as a set, not one at a time."""
@@ -1769,21 +1935,12 @@ def analyse_wifi(results: list[dict]) -> None:
             if radio.get("band") == "2.4" and isinstance(channel, int):
                 radios_24.append((host, radio))
 
-    for host, radio in radios_24:
-        channel = radio["channel"]
-        clashes = [
-            other_host.get("name", other_host["id"])
-            for other_host, other in radios_24
-            # Interference is local, so only radios on the same site are
-            # compared: two access points in different buildings share a
-            # channel number and nothing else.
-            if other is not radio
-            and other_host.get("subnet") == host.get("subnet")
-            and abs(other["channel"] - channel) < 5
-        ]
-        if clashes:
-            radio["overlaps_with"] = sorted(set(clashes))
-        if channel not in NON_OVERLAPPING_24:
+    # Whether other access points actually interfere is measured, not deduced
+    # from their settings: `interference` comes from what each radio hears.
+    # What is left here is the one thing a configuration alone can be wrong
+    # about — a channel that overlaps its neighbours by construction.
+    for _host, radio in radios_24:
+        if radio["channel"] not in NON_OVERLAPPING_24:
             radio["off_grid"] = True
 
     # Wireless clients that matter on their own: a speaker sitting on a channel
@@ -1949,6 +2106,88 @@ def check_forwards(results: list[dict]) -> None:
                 rule["verdict"] = "no-listener"
 
 
+def _public(addr: str) -> bool:
+    """Can a stranger dial this address? Provider NAT and CGNAT cannot."""
+    try:
+        ip = ipaddress.ip_address(addr)
+    except ValueError:
+        return False
+    return not (ip.is_private or ip.is_loopback or ip.is_link_local
+                or ip.is_multicast or ip.is_reserved or ip.is_unspecified)
+
+
+def link_exposure(results: list[dict]) -> None:
+    """Mark the listeners the internet can actually reach.
+
+    Being open is not a property of a listener, and not of a forwarding rule
+    either: a rule on the site router publishes nothing while the uplink itself
+    sits behind the provider's NAT. So the walk starts where the answer can only
+    come from — an address the outside world can dial — and follows the forwards
+    inward, hop by hop, until it lands on a port something is listening on.
+    """
+    by_addr: dict[str, dict] = {}
+    for host in results:
+        for addr in (host.get("addr"), host.get("wan_addr")):
+            if addr:
+                by_addr.setdefault(addr, host)
+
+    def arrive(host: dict, port: int, public: str, wan_port: int,
+               path: list, seen: set) -> None:
+        """Traffic reached `host:port`. Note it, then keep following."""
+        for entry in host.get("endpoints") or []:
+            if str(entry.get("port")) == str(port):
+                entry["exposed"] = {"wan_port": wan_port, "addr": public,
+                                    "via": " → ".join(path)}
+        # The hop may itself be a router that forwards this port further in.
+        forward(host, public, path, seen, only_port=port, wan_port=wan_port)
+
+    def forward(host: dict, public: str, path: list, seen: set,
+                only_port: int | None = None, wan_port: int | None = None) -> None:
+        key = (host.get("id"), only_port)
+        if key in seen or len(path) > 4:
+            return
+        seen.add(key)
+        for rule in host.get("forwards") or []:
+            if rule.get("disabled"):
+                continue
+            outside = str(rule.get("port") or "")
+            if not outside.isdigit():
+                continue  # ranges and protocol-only rules say nothing precise
+            if only_port is not None and int(outside) != only_port:
+                continue
+            target = by_addr.get(rule.get("to") or "")
+            inside = str(rule.get("to_port") or outside)
+            if not target or not inside.isdigit():
+                continue
+            arrive(target, int(inside), public,
+                   wan_port if wan_port is not None else int(outside),
+                   path + [host.get("name") or host.get("id") or ""], seen)
+
+    for host in results:
+        # A host on a public address is its own edge: everything it listens on
+        # is offered to the internet, no forwarding involved.
+        own = host.get("addr") or ""
+        if _public(own):
+            for entry in host.get("endpoints") or []:
+                entry.setdefault("exposed", {"wan_port": entry.get("port"),
+                                             "addr": own, "via": ""})
+        edge = host.get("wan_addr") or ""
+        if not _public(edge):
+            continue
+        # An input policy of ACCEPT means the edge answers on its own ports too.
+        if str(host.get("wan_input", "")).upper() == "ACCEPT":
+            for entry in host.get("endpoints") or []:
+                entry.setdefault("exposed", {"wan_port": entry.get("port"),
+                                             "addr": edge, "via": ""})
+        # The path starts empty: each hop adds itself as it forwards, so the
+        # chip reads "hEX → MikroTik" and not the edge's name twice.
+        forward(host, edge, [], set())
+
+    for host in results:
+        host["exposed_count"] = sum(
+            1 for entry in host.get("endpoints") or [] if entry.get("exposed"))
+
+
 def link_camera_firmware(results: list[dict]) -> None:
     """Give each camera the firmware its recorder was able to read.
 
@@ -1968,6 +2207,7 @@ def link_camera_firmware(results: list[dict]) -> None:
                 camera["os_name"] = firmware
                 camera["firmware_source"] = host.get("name", host.get("id", ""))
             released = entry.get("released", "")
+            camera["firmware_date_raw"] = released
             # "build 230427" — yymmdd, which is the only date the camera gives.
             digits = re.sub(r"\D", "", released)
             if len(digits) == 6:
@@ -2066,5 +2306,6 @@ def probe_all(hosts: list[dict], key: str | None, workers: int = 12) -> list[dic
     link_cameras(results)
     link_camera_firmware(results)
     link_backups(results)
+    link_exposure(results)
     annotate_web(results)
     return results

@@ -82,6 +82,14 @@ common_temps() {
 # a VPN endpoint never shows up over TCP.
 common_listeners() {
   if command -v ss >/dev/null 2>&1; then
+    # Sockets owned by root name their process only to root. Without that the
+    # card shows a bare number for exactly the ports worth naming — the VPN,
+    # the torrent daemon, the DHCP client. Passwordless sudo is used where it
+    # exists; where it does not, nothing changes.
+    ss_cmd="ss"
+    if [ "$(id -u)" != 0 ] && command -v sudo >/dev/null 2>&1 && sudo -n true 2>/dev/null; then
+      ss_cmd="sudo -n ss"
+    fi
     ss -ulnH 2>/dev/null | awk '{
       addr = $4; port = addr; sub(/.*:/, "", port)
       host = addr; sub(/:[0-9]+$/, "", host)
@@ -90,7 +98,7 @@ common_listeners() {
       print port "\t" local
     }' | sort -u | while IFS='	' read -r p scope; do
         [ "$scope" = "local" ] && continue
-        proc=$(ss -ulnpH "sport = :$p" 2>/dev/null | sed -n 's/.*users:((\"\([^\"]*\)\".*/\1/p' | head -1)
+        proc=$($ss_cmd -ulnpH "sport = :$p" 2>/dev/null | sed -n 's/.*users:((\"\([^\"]*\)\".*/\1/p' | head -1)
         row "@udp	$p	${proc:-}	$scope"
       done
     ss -tlnH 2>/dev/null | awk '{
@@ -100,7 +108,7 @@ common_listeners() {
       local = (host ~ /^\[?(::ffff:)?127\./ || host == "[::1]" || host == "::1") ? "local" : "any"
       print port "\t" local
     }' | sort -u | while IFS='	' read -r p scope; do
-        proc=$(ss -tlnpH "sport = :$p" 2>/dev/null | sed -n 's/.*users:((\"\([^\"]*\)\".*/\1/p' | head -1)
+        proc=$($ss_cmd -tlnpH "sport = :$p" 2>/dev/null | sed -n 's/.*users:((\"\([^\"]*\)\".*/\1/p' | head -1)
         row "@listen	$p	${proc:-}	$scope"
       done
   elif command -v netstat >/dev/null 2>&1; then

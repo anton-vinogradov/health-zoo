@@ -255,6 +255,16 @@ html, body {
 .bar > i.bad { background: var(--bad); }
 
 .chips { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 9px; }
+/* Categories, one row each. The label is a column of its own so the chips of
+   every row start at the same place and can be scanned vertically. */
+.chiprow { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 7px; align-items: baseline; }
+.chiprow-label {
+  flex: 0 0 92px;
+  font-size: 10px;
+  letter-spacing: .04em;
+  text-transform: uppercase;
+  color: var(--text-faint);
+}
 .chip {
   font-size: 11px;
   padding: 2px 7px;
@@ -635,6 +645,7 @@ tr.check-na .check-name { color: var(--text-faint); }
   font-size: 12px;
   text-align: right;
 }
+.set-input.set-wide { width: 150px; text-align: left; }
 .set-unit { margin-left: 4px; color: var(--text-faint); font-size: 11.5px; }
 /* The default is shown next to every field rather than hidden behind a reset:
    "what would this be if I left it alone" is the question being asked. */

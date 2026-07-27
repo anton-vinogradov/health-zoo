@@ -105,4 +105,31 @@ if [ -r /proc/net/dev ]; then
   }' /proc/net/dev
 fi
 
+# ---------- port forwards and the address they are published on ----------
+# Whether anything behind this router is reachable from the internet is decided
+# here and nowhere else: a forward counts only when the address it is published
+# on is public. An uplink sitting behind the provider's own NAT forwards
+# nothing to anybody, however many rules it carries.
+if command -v uci >/dev/null 2>&1; then
+  i=0
+  while uci -q get "firewall.@redirect[$i]" >/dev/null 2>&1; do
+    if [ "$(uci -q get "firewall.@redirect[$i].target")" = DNAT ]; then
+      off=false
+      [ "$(uci -q get "firewall.@redirect[$i].enabled")" = "0" ] && off=true
+      row "@forward	$(uci -q get "firewall.@redirect[$i].src")	dst-nat	$(uci -q get "firewall.@redirect[$i].src_dport")	$(uci -q get "firewall.@redirect[$i].dest_ip")	$(uci -q get "firewall.@redirect[$i].dest_port")	$off	$(uci -q get "firewall.@redirect[$i].name")	0	$(uci -q get "firewall.@redirect[$i].proto")"
+    fi
+    i=$((i + 1))
+  done
+  # An input policy of ACCEPT on the wan zone means the router's own listeners
+  # are offered to the internet too, not just the ports it forwards inward.
+  z=0
+  while uci -q get "firewall.@zone[$z]" >/dev/null 2>&1; do
+    [ "$(uci -q get "firewall.@zone[$z].name")" = wan ] && \
+      emit wan_input "$(uci -q get "firewall.@zone[$z].input")"
+    z=$((z + 1))
+  done
+fi
+wan=$(ip -4 route get 1.1.1.1 2>/dev/null | sed -n 's/.*src \([0-9.]*\).*/\1/p' | head -1)
+[ -n "$wan" ] && emit wan_addr "$wan"
+
 echo "ok	1"

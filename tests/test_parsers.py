@@ -613,37 +613,50 @@ def test_a_wired_speaker_is_not_blamed_for_the_air():
 def test_interference_is_not_compared_across_sites():
     """Two rooms in different buildings do not share a channel in any real sense."""
     speaker = {"id": "sonos", "agent": "sonos", "reachable": True,
-               "subnet": "10.77.77.0/24",
+               "subnet": "198.51.100.0/24",
                "link": "wifi", "wifi_band": "2.4", "wifi_channel": 7}
     far_ap = {"id": "ap", "name": "Прихожая", "reachable": True,
-              "subnet": "10.88.88.0/24",
+              "subnet": "192.0.2.0/24",
               "radios": [{"band": "2.4", "channel": 8, "utilization": 90}]}
 
     probe.analyse_wifi([speaker, far_ap])
     assert "wifi_crowded_by" not in speaker
 
 
-def test_access_points_clash_only_within_their_own_site():
-    """The same rule the speakers already had, for radio against radio."""
-    near = {"id": "ap-1", "name": "Прихожая", "reachable": True,
-            "subnet": "10.88.88.0/24",
-            "radios": [{"name": "ng", "band": "2.4", "channel": 6}]}
+def test_a_crowded_channel_is_only_crowded_on_its_own_site():
+    """Radio is local: an access point in another building jams nothing here."""
+    speaker = {"id": "sonos", "name": "Колонка", "reachable": True,
+               "subnet": "192.0.2.0/24", "link": "wifi",
+               "wifi_band": "2.4", "wifi_channel": 6}
     same_site = {"id": "rt-88", "name": "MikroTik .88", "reachable": True,
-                 "subnet": "10.88.88.0/24",
-                 "radios": [{"name": "wifi2", "band": "2.4", "channel": 7}]}
+                 "subnet": "192.0.2.0/24",
+                 "radios": [{"name": "wifi2", "band": "2.4", "channel": 7,
+                             "utilization": 55}]}
     other_site = {"id": "rt-77", "name": "MikroTik .77", "reachable": True,
-                  "subnet": "10.77.77.0/24",
-                  "radios": [{"name": "wifi2", "band": "2.4", "channel": 7}]}
+                  "subnet": "198.51.100.0/24",
+                  "radios": [{"name": "wifi2", "band": "2.4", "channel": 7,
+                              "utilization": 55}]}
 
-    probe.analyse_wifi([near, same_site, other_site])
-    assert near["radios"][0]["overlaps_with"] == ["MikroTik .88"]
-    assert "MikroTik .77" not in near["radios"][0]["overlaps_with"]
+    probe.analyse_wifi([speaker, same_site, other_site])
+    assert [c["ap"] for c in speaker["wifi_crowded_by"]] == ["MikroTik .88"]
+
+
+def test_a_channel_off_the_non_overlapping_grid_is_flagged():
+    """The one thing a configuration alone can be wrong about."""
+    router = {"id": "rt-88", "name": "MikroTik .88", "reachable": True,
+              "subnet": "192.0.2.0/24",
+              "radios": [{"name": "wifi2", "band": "2.4", "channel": 7},
+                         {"name": "wifi2b", "band": "2.4", "channel": 6}]}
+
+    probe.analyse_wifi([router])
+    assert router["radios"][0]["off_grid"] is True
+    assert "off_grid" not in router["radios"][1]
 
 
 def test_a_virtual_access_point_does_not_jam_its_own_radio():
     """Two SSIDs on one transmitter are one signal, not two."""
     router = {"id": "rt-77", "name": "MikroTik .77", "reachable": True,
-              "subnet": "10.77.77.0/24",
+              "subnet": "198.51.100.0/24",
               "radios": [
                   {"name": "wifi2", "band": "2.4", "channel": 1},
                   {"name": "wifi2-fclegacy", "band": "2.4", "channel": 1,
@@ -696,12 +709,20 @@ def test_camera_firmware_comes_from_whoever_records_it():
     assert camera["firmware_age_days"] > 0
 
 
-def test_old_camera_firmware_is_reported_by_age():
-    """There is no vendor feed to compare against, so age is the honest signal."""
+def test_old_camera_firmware_is_reported_only_against_a_known_build():
+    """Age alone is not a fault: the vendor may simply have stopped publishing."""
     camera = {"id": "cam", "reachable": True, "role": "camera",
-              "os_name": "V5.7.210", "firmware_age_days": 1762}
+              "os_name": "V5.7.210", "firmware_age_days": 1762,
+              "firmware_outdated": True,
+              "firmware_known": {"version": "V5.7.221", "built": "230413"}}
     found = {i["key"]: i for i in issues.host_issues(camera)}
     assert found["firmware_age"]["level"] == "warn"
+    assert "V5.7.221" in found["firmware_age"]["text"]
+
+    # No published build to point at — nothing to send anybody hunting for.
+    unknown = {"id": "cam", "reachable": True, "role": "camera",
+               "os_name": "V5.7.210", "firmware_age_days": 1762}
+    assert "firmware_age" not in {i["key"] for i in issues.host_issues(unknown)}
 
     fresh = {"id": "cam", "reachable": True, "role": "camera",
              "os_name": "V5.8", "firmware_age_days": 200}

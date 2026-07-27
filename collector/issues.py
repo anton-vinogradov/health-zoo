@@ -34,9 +34,6 @@ DEFAULT_THRESHOLDS = {
     "wifi_satisfaction_warn": 80,
     # Let's Encrypt renews at 30 days; a warning at 21 means renewal has
     # already failed twice, and 7 means it is now urgent.
-    # Three years without a firmware update on a network-facing camera is not
-    # a policy anybody chose; it is one nobody revisited.
-    "firmware_stale_days": 1095,
     "cert_warn_days": 21,
     "cert_bad_days": 7,
 }
@@ -241,14 +238,26 @@ def host_issues(host: dict, cfg: dict | None = None) -> list[dict]:
             add("bad" if util >= bad_at else "warn", f"radioair:{name}",
                 f"эфир {label} занят на {util}%{source}")
 
-        # Same-band neighbours on overlapping channels jam each other; the
-        # controller does not complain, and the symptom users report is
-        # "wifi is slow" with every device showing full signal.
-        overlap = radio.get("overlaps_with")
-        if overlap:
-            add("warn", f"radiooverlap:{name}",
-                f"канал {radio.get('channel')} ({label}) перекрывается с "
-                + ", ".join(overlap))
+        # Not "someone shares our channel number" but "this much of other
+        # networks' power lands in our carrier" — and the same measurement
+        # repeated for the channels we could move to, which is what turns a
+        # true statement into a decision.
+        level = radio.get("interference")
+        options = {channel: value
+                   for channel, value in (radio.get("channel_options") or {}).items()
+                   if isinstance(value, (int, float))}
+        quietest, quietest_level = min(options.items(), key=lambda item: item[1],
+                                       default=(None, None))
+        if (isinstance(level, (int, float)) and quietest
+                and level - quietest_level >= limits.get("channel_gain_db", 6)):
+            loudest = (radio.get("neighbours") or [{}])[0]
+            source = ""
+            if loudest.get("signal") is not None:
+                source = (f"; громче всех {loudest.get('essid')} "
+                          f"{loudest['signal']} дБм")
+            add("warn", f"radioneighbours:{name}",
+                f"канал {radio.get('channel')} ({label}): соседи дают {level} дБм"
+                f"{source}. На канале {quietest} было бы {quietest_level} дБм")
         elif radio.get("off_grid"):
             add("warn", f"radiogrid:{name}",
                 f"канал {radio.get('channel')} в 2.4 ГГц перекрывается с соседними; "
@@ -300,14 +309,22 @@ def host_issues(host: dict, cfg: dict | None = None) -> list[dict]:
             f"{endpoint.get('label')}:{endpoint.get('port')} доступен без "
             f"ограничения по адресу — {why}")
 
-    # Firmware nobody has touched in years. There is no vendor feed to compare
-    # against, so age is the only honest signal — and on a camera reachable
-    # from the network it is the one that matters.
-    age = host.get("firmware_age_days")
-    if isinstance(age, (int, float)) and age > limits.get("firmware_stale_days", 1095):
+    # Firmware with no vendor feed to check. Age alone is not a fault: a
+    # four-year-old build on a camera the manufacturer never updated again is
+    # simply the newest there is, and saying otherwise sends somebody hunting
+    # for a download that does not exist. So this fires only when a newer
+    # published build is known by name.
+    known = host.get("firmware_known") or {}
+    if host.get("firmware_outdated") and known:
+        newer = known.get("version") or ""
+        built = known.get("built") or ""
+        when = (f", сборка {built[4:6]}.{built[2:4]}.20{built[0:2]}"
+                if len(built) == 6 else "")
         add("warn", "firmware_age",
-            f"прошивка {host.get('os_name', '')} собрана {int(age / 365)} года назад "
-            f"({int(age)} сут) — обновлений с тех пор не ставили")
+            f"есть прошивка новее: {newer}{when} — у вас "
+            f"{host.get('os_name', '')}"
+            + (f" ({int(host['firmware_age_days'])} сут)"
+               if host.get("firmware_age_days") else ""))
 
     # Forwards and tunnels: configuration that silently stops working. Nothing
     # complains when the service behind a forward moves away, and an IPsec
@@ -687,14 +704,14 @@ def checks_for(host: dict, cfg: dict | None = None) -> list[dict]:
 
     # Said out loud rather than left blank: a camera card with no firmware line
     # otherwise reads as "firmware is fine", when the truth is nobody looked.
-    add("updates", "Возраст прошивки камеры",
-        "Версию отдаёт только сама камера и только авторизованному запросу; "
-        "спрашивает её рекордер, у которого учётные данные уже есть. "
-        "Сравнить версию не с чем — производитель не публикует список "
-        "актуальных, — поэтому проверяется возраст сборки: "
-        f"{limits.get('firmware_stale_days', 1095) // 365} года и больше это "
-        "повод обновиться.",
-        applies=bool(host.get("firmware_age_days")),
+    add("updates", "Прошивка камеры",
+        "Версию читает рекордер, у которого есть учётные данные камеры. "
+        "Автоматически сверить её не с чем: сайт производителя закрыт для "
+        "роботов, а его каталог файлов не сопоставляется с моделью без "
+        "догадок. Поэтому свежая версия вносится в настройках вручную — и "
+        "замечание появляется только тогда, когда есть конкретная более новая "
+        "сборка, которую можно скачать.",
+        applies=bool(host.get("os_name")) and host.get("role") == "camera",
         skipped=("версию камеры прочитать не удалось — нужен доступ, который "
                  "есть только у рекордера" if host.get("role") == "camera"
                  else "не камера"),

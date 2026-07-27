@@ -356,6 +356,34 @@ function showSettings() {
         }))));
     }
 
+    /* No vendor feed to check, so the newest published build is written down
+       here — and the dashboard says "есть новее" only when this says so. */
+    var fwInputs = {};
+    if ((cfg.models || []).length) {
+      root.appendChild(section('Свежие прошивки камер',
+        table(['модель', 'версия', 'сборка (ггммдд)', 'ссылка'],
+          cfg.models.map(function (model) {
+            var known = (cfg.firmware || {})[model] || {};
+            var version = h('input', { class: 'set-input set-wide', type: 'text',
+                                       value: known.version || '', placeholder: 'V5.7.210' });
+            var built = h('input', { class: 'set-input', type: 'text',
+                                     value: known.built || '', placeholder: '260402' });
+            var url = h('input', { class: 'set-input set-wide', type: 'text',
+                                   value: known.url || '', placeholder: 'откуда скачать' });
+            fwInputs[model] = { version: version, built: built, url: url };
+            return h('tr', null, [
+              h('td', { class: 'mono', text: model }),
+              h('td', null, [version]),
+              h('td', null, [built]),
+              h('td', null, [url])
+            ]);
+          }))));
+      root.appendChild(h('p', { class: 'set-hint', text:
+        'Пусто — значит новее неизвестна, и дашборд промолчит. Возраст сборки ' +
+        'сам по себе не повод ругаться: у камеры, которую производитель больше ' +
+        'не обновляет, четырёхлетняя прошивка и есть последняя.' }));
+    }
+
     /* One silence threshold cannot fit every camera: a street camera quiet
        for six hours is broken, a garage quiet for two days is a garage nobody
        entered. Empty means "follow the fleet-wide value above". */
@@ -443,6 +471,14 @@ function showSettings() {
           method: 'POST', headers: actionHeaders(),
           body: JSON.stringify({
             thresholds: thresholds,
+            firmware: Object.keys(fwInputs).reduce(function (acc, model) {
+              acc[model] = {
+                version: fwInputs[model].version.value.trim(),
+                built: fwInputs[model].built.value.trim(),
+                url: fwInputs[model].url.value.trim()
+              };
+              return acc;
+            }, {}),
             cameras: Object.keys(camInputs).reduce(function (acc, key) {
               acc[key] = {
                 warn: camInputs[key].warn.value === '' ? null : Number(camInputs[key].warn.value),
