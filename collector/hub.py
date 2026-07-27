@@ -240,6 +240,16 @@ class Jobs:
                 entry = self.jobs[job_id]["hosts"][host["id"]]
                 entry["state"] = "ok" if code == 0 else "failed"
                 entry["finished"] = int(time.time())
+                # A run that finished with packages still pending is not the
+                # same as a clean one: reporting both as "ok" is how the fleet
+                # ended up showing the same update counts after "обновить всё".
+                if code == 0:
+                    for i, line in enumerate(entry["log"]):
+                        if line.startswith("ОСТАЛОСЬ"):
+                            entry["state"] = "partial"
+                            rest = entry["log"][i + 1] if i + 1 < len(entry["log"]) else ""
+                            entry["reason"] = "осталось вручную: " + rest.strip()
+                            break
                 if code != 0:
                     # Surface why it failed without making the operator read a
                     # thousand lines of apt output. A failed mirror and a
@@ -267,12 +277,24 @@ class Jobs:
 
     def _update_host(self, job_id: str, host: dict, key: str | None) -> int:
         # DEBIAN_FRONTEND + confold: never block on a config-file prompt.
+        #
+        # --with-new-pkgs is what makes "обновить всё" mean it. Plain `upgrade`
+        # silently keeps back everything that needs a new dependency — which is
+        # every kernel, plus fwupd, netplan and rpi-eeprom — so a run would
+        # report success while the card kept showing the same six updates. The
+        # flag allows installing new packages but still never removes any;
+        # anything that would need a removal stays held back and is listed
+        # below rather than being quietly forced through.
         remote = (
             "export DEBIAN_FRONTEND=noninteractive; "
             "sudo -n apt-get update -qq && "
-            "sudo -n apt-get -y -o Dpkg::Options::=--force-confdef "
+            "sudo -n apt-get -y --with-new-pkgs -o Dpkg::Options::=--force-confdef "
             "-o Dpkg::Options::=--force-confold upgrade; "
             "rc=$?; "
+            "left=$(apt list --upgradable 2>/dev/null | tail -n +2); "
+            "[ -n \"$left\" ] && { "
+            "  echo 'ОСТАЛОСЬ (нужно удаление пакетов, вручную):'; "
+            "  echo \"$left\" | cut -d/ -f1 | tr '\\n' ' '; echo; }; "
             "[ -f /var/run/reboot-required ] && echo 'REBOOT-REQUIRED'; exit $rc"
         )
         if host.get("user") == "root":

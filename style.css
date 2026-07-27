@@ -268,6 +268,8 @@ html, body {
 .chip.warn { color: var(--warn); border-color: color-mix(in srgb, var(--warn) 45%, var(--line)); }
 .chip.bad { color: var(--bad); border-color: color-mix(in srgb, var(--bad) 45%, var(--line)); }
 .chip.info { color: var(--info); border-color: color-mix(in srgb, var(--info) 40%, var(--line)); }
+/* Accepted on the record: the fact stays on the card, the alarm does not. */
+.chip.muted { color: var(--text-faint); border-style: dashed; }
 
 /* Buttons keep their label on one line and wrap as whole chips instead; the
    card grows taller rather than shredding "ZM - Console" across two rows. */
@@ -577,7 +579,8 @@ tr.check-na .check-name { color: var(--text-faint); }
 .job-tab.running { color: var(--warn); border-color: color-mix(in srgb, var(--warn) 45%, var(--line)); }
 .job-tab.ok { color: var(--ok); border-color: color-mix(in srgb, var(--ok) 45%, var(--line)); }
 .job-tab.failed { color: var(--bad); border-color: color-mix(in srgb, var(--bad) 50%, var(--line)); }
-.job-tab.ok.active, .job-tab.running.active, .job-tab.failed.active { border-width: 2px; }
+.job-tab.ok.active, .job-tab.running.active, .job-tab.failed.active,
+.job-tab.partial.active { border-width: 2px; }
 
 /* ---------- update log colouring ---------- */
 
@@ -605,4 +608,6 @@ tr.check-na .check-name { color: var(--text-faint); }
   font-size: 13px;
 }
 .search:focus { outline: none; border-color: var(--accent); }
+.job-tab.partial { border-color: var(--warn); color: var(--warn); }
+.job-partial { color: var(--warn); font-size: 12px; margin-top: 4px; }
 .job-fail { color: var(--bad); font-size: 12px; margin-top: 4px; }

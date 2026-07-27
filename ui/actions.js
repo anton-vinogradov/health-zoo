@@ -232,9 +232,11 @@ function pollJob() {
     var finished = 0;
     ids.forEach(function (id) {
       var entry = hosts[id] || { name: id, state: 'pending', log: [] };
-      if (entry.state === 'ok' || entry.state === 'failed') finished++;
+      if (entry.state === 'ok' || entry.state === 'failed' ||
+          entry.state === 'partial') finished++;
       if (!jobTab || !hosts[jobTab]) jobTab = id;
-      var mark = { ok: '✓', failed: '✕', running: '…', pending: '·' }[entry.state] || '·';
+      var mark = { ok: '✓', partial: '!', failed: '✕',
+                   running: '…', pending: '·' }[entry.state] || '·';
       var tab = h('button', {
         class: 'job-tab ' + entry.state + (id === jobTab ? ' active' : ''),
         text: mark + ' ' + (entry.name || id),
@@ -243,7 +245,13 @@ function pollJob() {
       tabs.appendChild(tab);
     });
 
-    var failed = ids.filter(function (id) { return (hosts[id] || {}).state === 'failed'; });
+    /* "partial" is its own outcome: apt finished cleanly but left packages
+       that need a removal to install. Folding it into "ok" is what made a run
+       look successful while the card kept its update count. */
+    var failed = ids.filter(function (id) {
+      var st = (hosts[id] || {}).state;
+      return st === 'failed' || st === 'partial';
+    });
     var status = (done ? 'готово' : 'идёт параллельно: ' + (ids.length - finished) + ' из ' + ids.length) +
       ' · завершено ' + finished + '/' + ids.length +
       (job.current ? ' · последним: ' + ((hosts[job.current] || {}).name || job.current) : '');
@@ -252,8 +260,10 @@ function pollJob() {
     statusEl.appendChild(document.createTextNode(status));
     failed.forEach(function (id) {
       var entry = hosts[id];
-      statusEl.appendChild(h('div', { class: 'job-fail',
-        text: '✕ ' + entry.name + ': ' + (entry.reason || 'подробности в логе') }));
+      statusEl.appendChild(h('div', {
+        class: entry.state === 'partial' ? 'job-partial' : 'job-fail',
+        text: (entry.state === 'partial' ? '! ' : '✕ ') + entry.name + ': ' +
+              (entry.reason || 'подробности в логе') }));
     });
 
     var out = document.getElementById('job-output');

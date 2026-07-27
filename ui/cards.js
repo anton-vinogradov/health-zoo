@@ -26,6 +26,27 @@ function hottest(host) {
 
 function chip(text, cls) { return h('span', { class: 'chip ' + (cls || ''), text: text }); }
 
+/* A chip repeats what a check found, so it has to respect the same decisions.
+   Accepting "не бэкапится никуда" on the record turned the host green while
+   its chip stayed red — the card contradicted itself, and the exception looked
+   like it had not applied. A suppressed finding keeps its chip (the fact is
+   still true) but loses the colour and says it was accepted. */
+function suppressedIssue(host, key) {
+  var found = null;
+  (host.issues || []).forEach(function (i) {
+    if (i.suppressed && (i.key === key || (key.slice(-1) === ':' && i.key.indexOf(key) === 0))) found = i;
+  });
+  return found;
+}
+
+function chipFor(host, key, text, cls) {
+  var muted = suppressedIssue(host, key);
+  if (!muted) return chip(text, cls);
+  var node = chip(text + ' · принято', 'muted');
+  node.title = muted.suppress_reason || 'исключение без причины';
+  return node;
+}
+
 function hostCard(host) {
   var level = hostLevel(host);
   var chips = [];
@@ -37,7 +58,12 @@ function hostCard(host) {
       host.camera_live ? 'ok' : 'bad'));
   }
   var failed = (host.services || []).filter(function (s) { return (s.state || '').indexOf('failed') >= 0; });
-  if (failed.length) chips.push(chip('✕ ' + failed.length + ' упало', 'bad'));
+  if (failed.length) {
+    var stillLoud = failed.filter(function (s) { return !suppressedIssue(host, 'svc:' + s.name); });
+    chips.push(stillLoud.length
+      ? chip('✕ ' + stillLoud.length + ' упало', 'bad')
+      : chip('✕ ' + failed.length + ' упало · принято', 'muted'));
+  }
   var running = (host.services || []).filter(function (s) {
     return (s.state || '').indexOf('running') >= 0 || s.state === 'active/exited';
   });
@@ -51,9 +77,12 @@ function hostCard(host) {
       stopped.length ? 'bad' : ''));
   }
   if ((host.cameras || []).length) chips.push(chip('📷 ' + host.cameras.length, ''));
-  (host.degraded_raid || []).forEach(function (r) { chips.push(chip('RAID ' + r.state, 'bad')); });
+  (host.degraded_raid || []).forEach(function (r) {
+    chips.push(chipFor(host, 'raid:' + r.dev, 'RAID ' + r.state, 'bad'));
+  });
   if ((host.failing_disks || []).length) {
-    chips.push(chip('⚠ диск: ' + host.failing_disks[0].dev, 'bad'));
+    chips.push(chipFor(host, 'smart:' + host.failing_disks[0].dev,
+      '⚠ диск: ' + host.failing_disks[0].dev, 'bad'));
   } else if ((host.smarts || []).length) {
     chips.push(chip('SMART ok', 'ok'));
   }
@@ -83,7 +112,7 @@ function hostCard(host) {
   if ((host.receives_from || []).length) {
     chips.push(chip('💾 ← ' + host.receives_from.join(', '), 'ok'));
   }
-  if (host.backup_orphan) chips.push(chip('💾 без бэкапа', 'bad'));
+  if (host.backup_orphan) chips.push(chipFor(host, 'no_backup', '💾 без бэкапа', 'bad'));
   if (host.wifi_clients !== undefined && (host.radios || host.radioiws || []).length) {
     chips.push(chip('📶 клиентов: ' + host.wifi_clients, ''));
   }
@@ -94,7 +123,7 @@ function hostCard(host) {
     var rtsp = host.ports['554'];
     if (rtsp) chips.push(chip('RTSP жив', 'ok'));
     else if (host.only_via_recorder) chips.push(chip('не видна отсюда', ''));
-    else chips.push(chip('RTSP молчит', 'bad'));
+    else chips.push(chipFor(host, 'cam:', 'RTSP молчит', 'bad'));
   }
   if (host.camera_fps) chips.push(chip(Number(host.camera_fps).toFixed(1) + ' к/с', ''));
 
