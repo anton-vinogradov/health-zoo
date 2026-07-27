@@ -260,13 +260,7 @@ function hostCard(host) {
       onclick: function (e) { e.stopPropagation(); startUpdate([host.id]); }
     }));
   }
-  if (host.agent === 'linux' && host.reachable) {
-    footer.push(h('button', {
-      class: 'btn btn-sm ' + (host.reboot_required ? 'btn-warn' : ''),
-      text: 'ребут', title: 'перезагрузить ' + host.name,
-      onclick: function (e) { e.stopPropagation(); rebootHost(host); }
-    }));
-  }
+
 
   return h('div', {
     class: 'card state-' + level,
@@ -289,6 +283,10 @@ function hostCard(host) {
         class: 'head-badge warn',
         title: 'после обновлений нужна перезагрузка',
         text: 'нужен ребут'
+      }) : null,
+      host.reachable ? h('button', {
+        class: 'head-action', title: 'перезагрузить ' + host.name, text: '⏻',
+        onclick: function (e) { e.stopPropagation(); rebootHost(host); }
       }) : null,
       h('span', { class: 'card-addr', text: host.addr })
     ]),
@@ -515,9 +513,9 @@ function showHost(host) {
   if (host.note) fact('заметка', host.note);
   body.appendChild(section('Общее', h('dl', { class: 'kv' }, facts)));
 
-  if (host.agent === 'linux' && host.reachable) {
+  if (host.reachable) {
     body.appendChild(section('Действия', h('div', { class: 'card-foot' }, [
-      host.updatable ? h('button', {
+      host.updatable && host.agent === 'linux' ? h('button', {
         class: 'btn btn-sm btn-warn', text: 'обновить пакеты',
         onclick: function () { startUpdate([host.id]); }
       }) : null,

@@ -58,6 +58,30 @@ Units that would cut off access to the host — `ssh`, `network`, `firewall`,
 `systemd-*` and friends — are refused by the server, not merely hidden in the UI.
 Removal asks you to type the service name to confirm.
 
+### Rebooting
+
+Every device type can be rebooted from its card, each by the only mechanism it
+actually offers:
+
+| Type | How |
+|---|---|
+| Debian/Ubuntu, OpenWrt | `shutdown -r`, detached so the dying ssh session does not kill it |
+| RouterOS | `/system reboot` |
+| Meshtastic | the `meshtastic` CLI from the hub — the node speaks protobuf, not shell |
+| Cameras | ISAPI, issued **from the host recording them**, using credentials that stay on that machine |
+| Synology | `sudo reboot`, which DSM refuses without a password (see below) |
+
+A reboot mutes alerting for that host while it comes back, so a planned
+restart is not reported as an outage.
+
+DSM grants no passwordless sudo, and health-zoo deliberately stores no DSM
+password. To allow reboots — and SMART, which is also root-only — add one line
+with `visudo` on the NAS:
+
+```
+your-user ALL=(root) NOPASSWD: /sbin/reboot, /usr/bin/smartctl
+```
+
 ## Install
 
 ```bash

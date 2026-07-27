@@ -175,7 +175,7 @@ html, body {
 
 .cards {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(290px, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(330px, 1fr));
   gap: 10px;
   align-items: start;   /* a card with many links grows alone, not the whole row */
 }
@@ -198,9 +198,18 @@ html, body {
 .card.state-bad { border-left-color: var(--bad); }
 .card.state-off { border-left-color: var(--text-faint); opacity: .72; }
 
-.card-head { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-bottom: 2px; }
+/* The header stays on one line: the name gives way, badges and address do
+   not wrap. Cards are wide enough to fit "130 обновл." beside a hostname. */
+.card-head { display: flex; align-items: center; gap: 6px; margin-bottom: 2px; min-width: 0; }
 .card-role { font-size: 14px; line-height: 1; }
-.card-name { font-weight: 600; font-size: 14px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.card-name {
+  font-weight: 600;
+  font-size: 14px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 3ch;      /* let the name shrink before anything else does */
+}
 .card-addr { margin-left: auto; font-family: var(--mono); font-size: 11px; color: var(--text-faint); }
 .card-os { font-size: 11.5px; color: var(--text-dim); margin-bottom: 8px; min-height: 16px;
            overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -422,4 +431,18 @@ table.list td.right { text-align: right; }
 }
 .head-badge.warn { color: var(--warn); border-color: color-mix(in srgb, var(--warn) 45%, var(--line)); }
 .head-badge.info { color: var(--info); border-color: color-mix(in srgb, var(--info) 40%, var(--line)); }
+
+/* Power button lives with the host's identity, not among its services. */
+.head-action {
+  flex-shrink: 0;
+  padding: 1px 6px;
+  font-size: 12px;
+  line-height: 1.4;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-faint);
+  cursor: pointer;
+}
+.head-action:hover { color: var(--bad); border-color: var(--bad); }
 .card-head .card-addr { margin-left: auto; }

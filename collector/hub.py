@@ -280,6 +280,70 @@ class Jobs:
         thread.start()
         return job_id, ""
 
+    def _reboot_command(self, host: dict, fleet: Fleet):
+        """How to reboot this kind of device, and from where.
+
+        Returns (command, error). The command is a remote shell string for
+        `host`, or a tuple when the reboot must be issued elsewhere: from the
+        hub (a Meshtastic node speaks protobuf, not shell) or from another host
+        (a camera needs credentials only its recorder has).
+        """
+        agent = host.get("agent", "linux")
+
+        if agent in ("linux", "openwrt"):
+            # Detached: the ssh session dies with the machine, and without
+            # backgrounding the command can be killed before it takes effect.
+            cmd = "shutdown -r +0 health-zoo >/dev/null 2>&1 || reboot >/dev/null 2>&1 &"
+            if host.get("user") != "root":
+                cmd = "sudo -n " + cmd
+            return cmd + " exit 0", ""
+
+        if agent == "routeros":
+            return "/system reboot", ""
+
+        if agent == "synology":
+            # DSM grants no passwordless sudo by default, and this tool
+            # deliberately holds no DSM password.
+            return ("sudo -n reboot 2>&1 || "
+                    "{ echo 'DSM требует пароль для sudo — см. README'; exit 3; }"), ""
+
+        if agent == "meshtastic":
+            binary = self.cfg.get("meshtastic_python",
+                                  "/opt/meshtastic-zoo/.venv/bin/python")
+            if not os.path.exists(binary):
+                return None, f"нет meshtastic CLI ({binary})"
+            # --no-nodes matters: a full nodedb dump drowns the admin packet.
+            return ("local", [binary, "-m", "meshtastic", "--host", host["addr"],
+                              "--no-nodes", "--reboot"]), ""
+
+        if host.get("role") == "camera":
+            recorder_name = ""
+            for entry in fleet.get().get("hosts", []):
+                if entry.get("id") == host["id"]:
+                    recorder_name = entry.get("recorded_by", "")
+                    break
+            recorder = next((h for h in fleet.hosts()
+                             if recorder_name and h.get("name") == recorder_name), None)
+            if not recorder or recorder.get("agent") != "linux":
+                return None, ("камеру можно перезагрузить только через её рекордер "
+                              "с ZoneMinder; для этой камеры он не определён")
+            addr = host["addr"]
+            # The credentials come out of the recorder's own ZoneMinder database
+            # and are used on that machine; they never travel to the hub.
+            remote = (
+                "path=$(sudo -n mysql zm -N -B -e "
+                "\"SELECT Path FROM Monitors WHERE Path LIKE '%" + addr + "%' LIMIT 1\"); "
+                "if [ -z \"$path\" ]; then echo 'камера не найдена в ZoneMinder'; exit 4; fi; "
+                "creds=$(printf '%s' \"$path\" | sed -e 's|^[a-z]*://||' -e 's|@.*||'); "
+                "out=$(curl -s -m 15 --digest -u \"$creds\" -X PUT "
+                "'http://" + addr + "/ISAPI/System/reboot' 2>/dev/null); "
+                "case \"$out\" in *statusCode*1*) echo 'камера приняла команду';; "
+                "*) echo 'камера отказала:'; printf '%.200s\\n' \"$out\"; exit 5;; esac"
+            )
+            return ("host", recorder, remote), ""
+
+        return None, f"перезагрузка не поддержана для типа {agent}"
+
     def _run_reboot(self, job_id: str, host: dict, fleet: Fleet) -> None:
         # A planned reboot is not an outage: silence this host while it comes
         # back, or the dashboard pages about a problem we caused on purpose.
@@ -289,14 +353,23 @@ class Jobs:
         self._log(job_id, f"=== перезагрузка {host['name']} ({host['addr']}) ===")
         self._log(job_id, f"алерты по этому хосту молчат {grace // 60} мин")
 
-        # Detached and delayed: the ssh session dies with the reboot, and
-        # without the delay the command would be killed before it takes.
-        remote = "sudo -n shutdown -r +0 'health-zoo: reboot requested' >/dev/null 2>&1 & exit 0"
-        if host.get("user") == "root":
-            remote = remote.replace("sudo -n ", "")
-        code = self._exec(job_id, host, self.cfg.get("ssh_key"), remote)
+        command, error = self._reboot_command(host, fleet)
+        if error or command is None:
+            self._log(job_id, f"! {error}")
+            code = 1
+        elif isinstance(command, tuple) and command[0] == "local":
+            self._log(job_id, "команда идёт с хоста дашборда (нода не даёт shell)")
+            code = self._exec(job_id, {"local": True, "id": host["id"]}, None,
+                              " ".join(shlex.quote(c) for c in command[1]))
+        elif isinstance(command, tuple) and command[0] == "host":
+            via = command[1]
+            self._log(job_id, f"через {via.get('name', via['id'])} — только у него есть доступ")
+            code = self._exec(job_id, via, self.cfg.get("ssh_key"), command[2])
+        else:
+            code = self._exec(job_id, host, self.cfg.get("ssh_key"), command)
 
-        self._log(job_id, "команда отправлена, хост уходит в перезагрузку")
+        if code == 0:
+            self._log(job_id, "команда отправлена")
         with self.lock:
             self.jobs[job_id]["results"][host["id"]] = "ok" if code == 0 else f"failed ({code})"
             self.jobs[job_id]["state"] = "done"
@@ -563,9 +636,6 @@ class Handler(BaseHTTPRequestHandler):
             host = next((h for h in self.fleet.hosts() if h.get("id") == req.get("host")), None)
             if not host:
                 self._json({"error": "unknown host"}, 404)
-                return
-            if host.get("agent") != "linux":
-                self._json({"error": "перезагрузка поддержана только для linux-хостов"}, 400)
                 return
             job_id, err = self.jobs.start_reboot(host, self.fleet)
             if not job_id:
