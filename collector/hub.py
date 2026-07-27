@@ -9,6 +9,7 @@ page hang.
 
 from __future__ import annotations
 
+import hmac
 import json
 import os
 import re
@@ -340,6 +341,37 @@ class Handler(BaseHTTPRequestHandler):
         if self.command != "HEAD":
             self.wfile.write(body)
 
+    def _authorized(self) -> str:
+        """Guard for anything that changes state. Returns "" when allowed.
+
+        Two independent checks:
+
+        * Origin/Referer must match our own Host. Browsers attach Origin to
+          cross-site POSTs, including form submissions, so this blocks a page
+          on another site from quietly firing `apt upgrade` or a service
+          removal at a dashboard that sits on the user's LAN. Requests with no
+          Origin at all (curl, scripts) are allowed — they are not the attack.
+        * An optional shared token from the config, for when the dashboard is
+          reachable by people who should only look at it.
+        """
+        host = (self.headers.get("Host") or "").strip()
+        origin = self.headers.get("Origin") or ""
+        if not origin:
+            referer = self.headers.get("Referer") or ""
+            if referer:
+                origin = "//".join(referer.split("//")[:2]) if "//" in referer else referer
+        if origin:
+            netloc = origin.split("//", 1)[-1].split("/", 1)[0]
+            if netloc != host:
+                return f"cross-origin request refused (Origin {netloc} != Host {host})"
+
+        token = self.fleet.cfg.get("action_token") or ""
+        if token:
+            given = self.headers.get("X-Health-Zoo-Token") or ""
+            if not hmac.compare_digest(given, token):
+                return "token required"
+        return ""
+
     def _json(self, payload, code: int = 200) -> None:
         self._send(code, json.dumps(payload, ensure_ascii=False).encode("utf-8"),
                    "application/json; charset=utf-8")
@@ -357,7 +389,9 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         if path == "/api/state":
-            self._json(self.fleet.get())
+            snap = dict(self.fleet.get())
+            snap["needs_token"] = bool(self.fleet.cfg.get("action_token"))
+            self._json(snap)
             return
 
         if path == "/api/job":
@@ -374,6 +408,11 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self):  # noqa: N802
         path = self.path.split("?", 1)[0]
+
+        denied = self._authorized()
+        if denied:
+            self._json({"error": denied}, 403)
+            return
 
         if path == "/api/refresh":
             length = int(self.headers.get("Content-Length") or 0)

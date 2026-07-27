@@ -82,7 +82,10 @@ fi
 for init in /etc/init.d/*; do
   [ -x "$init" ] || continue
   name=$(basename "$init")
-  case "$name" in done|boot|umount|sysfixtime|sysctl|led|gpio_switch) continue ;; esac
+  # One-shot boot scripts sit at "stopped" by design; listing them as services
+  # only invites false alarms.
+  case "$name" in done|boot|umount|sysfixtime|sysctl|led|gpio_switch|\
+                  urandom_seed|bootcount|packet_steering|ucitrack) continue ;; esac
   enabled=disabled
   for link in /etc/rc.d/S*"$name"; do
     [ -L "$link" ] && { enabled=enabled; break; }

@@ -132,7 +132,18 @@ function hostIssues(host) {
   }
 
   (host.services || []).forEach(function (s) {
-    if ((s.state || '').indexOf('failed') >= 0) issues.push({ level: 'bad', text: s.name + ' упал' });
+    var state = s.state || '';
+    var name = s.name.replace(/\.service$/, '');
+    if (state.indexOf('failed') >= 0) {
+      issues.push({ level: 'bad', text: name + ' упал' });
+    } else if (host.agent === 'linux' && /^enabled/.test(s.enabled || '') &&
+               state.indexOf('running') < 0 && state.indexOf('exited') < 0) {
+      // systemd only: OpenWrt's init scripts report a coarse running/stopped
+      // where one-shot boot scripts legitimately sit at "stopped" forever.
+      // Enabled but not running is "supposed to work and doesn't" — quieter
+      // than a crash, but the dashboard used to swallow it entirely.
+      issues.push({ level: 'warn', text: name + ' включён, но не запущен' });
+    }
   });
   (host.degraded_raid || []).forEach(function (r) {
     issues.push({ level: 'bad', text: 'RAID ' + r.dev + ' ' + r.state });
@@ -762,10 +773,10 @@ function removeService(host, svc) {
 
   fetch('/api/service/remove', {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: actionHeaders(),
     body: JSON.stringify({ host: host.id, unit: svc.name })
   }).then(function (r) { return r.json(); }).then(function (res) {
-    if (res.error) { alert('Не вышло: ' + res.error); return; }
+    if (res.error) { if (!actionFailed(res)) alert('Не вышло: ' + res.error); return; }
     document.getElementById('modal').classList.add('hidden');
     openJobLog();
   }).catch(function (e) { alert('Ошибка запроса: ' + e); });
@@ -773,16 +784,40 @@ function removeService(host, svc) {
 
 /* ---------- updates ---------- */
 
+/* When the hub is configured with an action_token, mutating calls carry it in
+   a header. Kept in localStorage so it is typed once per browser. */
+function actionHeaders() {
+  var headers = { 'Content-Type': 'application/json' };
+  if (state && state.needs_token) {
+    var token = localStorage.getItem('hz-token');
+    if (!token) {
+      token = prompt('Введите токен доступа (задан в /etc/health-zoo.json):') || '';
+      if (token) localStorage.setItem('hz-token', token);
+    }
+    headers['X-Health-Zoo-Token'] = token;
+  }
+  return headers;
+}
+
+function actionFailed(res) {
+  if (res && res.error && /token/i.test(res.error)) {
+    localStorage.removeItem('hz-token');
+    alert('Токен не подошёл — введите заново при следующей попытке.');
+    return true;
+  }
+  return false;
+}
+
 function startUpdate(ids) {
   var what = ids && ids.length ? ids.join(', ') : 'все серверы';
   if (!confirm('Обновить пакеты: ' + what + '?\n\nЭто выполнит apt-get upgrade. Хост дашборда обновится последним.')) return;
 
   fetch('/api/update', {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: actionHeaders(),
     body: JSON.stringify({ hosts: ids || [] })
   }).then(function (r) { return r.json(); }).then(function (res) {
-    if (res.error) { alert('Не вышло: ' + res.error); return; }
+    if (res.error) { if (!actionFailed(res)) alert('Не вышло: ' + res.error); return; }
     document.getElementById('modal').classList.add('hidden');
     openJobLog();
   }).catch(function (e) { alert('Ошибка запроса: ' + e); });
@@ -840,7 +875,7 @@ function refresh() {
   var btn = document.getElementById('btn-refresh');
   btn.disabled = true;
   btn.textContent = 'опрашиваю…';
-  fetch('/api/refresh', { method: 'POST' }).then(function () {
+  fetch('/api/refresh', { method: 'POST', headers: actionHeaders() }).then(function () {
     // The hub polls asynchronously; give it a moment before re-reading.
     setTimeout(function () {
       load().then(function () {
