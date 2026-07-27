@@ -79,7 +79,6 @@ function showHost(host) {
   if ((host.roles || []).length > 1) {
     fact('роли', host.roles.map(function (r) { return ROLE_NAME[r] || r; }).join(' + '));
   }
-  if (host.may_be_offline) fact('выключение', 'считается нормой — алертов не будет');
   if (host.power_recovery !== null && host.power_recovery !== undefined) {
     fact('автостарт после сбоя питания', host.power_recovery ? 'включён' : 'ВЫКЛЮЧЕН');
   }

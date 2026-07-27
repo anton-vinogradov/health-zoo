@@ -53,6 +53,10 @@ Any monitoring system eventually shows something known, understood and not
 being fixed today. Left alone it trains the operator to ignore an amber
 dashboard; turned off, the check is forgotten entirely.
 
+There is exactly one way to accept a known state, and this is it — there is no
+config flag that quietly demotes a finding. A host that is usually switched off
+still reports as down, in red, until somebody writes down why that is expected.
+
 A suppression is neither. The check keeps running and its verdict stays
 visible, but it stops colouring the host and stops alerting, and the reason
 sits next to it. A reason is mandatory — a suppression with no explanation is
@@ -73,7 +77,10 @@ fall back to, and only values that actually differ are stored — a later change
 to a default still reaches everything nobody pinned.
 
 Roles keep their own overrides (a NAS recording video is *supposed* to sit
-near-full), and they are listed there rather than hidden.
+near-full), and they are listed there rather than hidden. Cameras get a row
+each: a street camera silent for six hours is broken, a garage camera silent
+for two days is a garage nobody entered, and one fleet-wide number makes one of
+them wrong by construction.
 
 The same view can turn on **automatic reboots**: hosts that report a pending
 reboot themselves are rebooted inside a chosen window of hours, one per poll,

@@ -145,6 +145,42 @@ class Settings:
             self._save()
             return current
 
+    # ---------- per-camera silence thresholds ----------
+    #
+    # One number for the whole fleet cannot be right: a street camera that sees
+    # nothing for six hours is broken, a garage camera that sees nothing for
+    # two days is a garage nobody entered. So each camera may carry its own
+    # pair, keyed "<host>/<camera id>".
+
+    def cameras(self) -> dict:
+        return dict(self.data.get("cameras") or {})
+
+    def camera_limits(self, host_id: str, cam_id: str) -> dict:
+        return dict(self.cameras().get(f"{host_id}/{cam_id}") or {})
+
+    def set_cameras(self, values: dict) -> dict:
+        with self.lock:
+            current = dict(self.data.get("cameras") or {})
+            for key, limits in (values or {}).items():
+                entry = {}
+                for field in ("warn", "bad"):
+                    value = (limits or {}).get(field)
+                    if value in (None, ""):
+                        continue
+                    try:
+                        entry[field] = max(1, int(value))
+                    except (TypeError, ValueError):
+                        continue
+                # An empty pair means "follow the fleet-wide value"; storing it
+                # would pin whatever that value happens to be today.
+                if entry:
+                    current[key] = entry
+                else:
+                    current.pop(key, None)
+            self.data["cameras"] = current
+            self._save()
+            return current
+
     # ---------- automatic reboots ----------
 
     def auto_reboot(self) -> dict:

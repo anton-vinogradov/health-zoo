@@ -75,11 +75,12 @@ def host_issues(host: dict, cfg: dict | None = None) -> list[dict]:
         out.append({"level": level, "key": key, "text": text})
 
     if not host.get("reachable"):
-        if host.get("may_be_offline"):
-            # Declared as usually-off: report the state, do not call it a fault.
-            add("info", "offline", "выключен (для этого хоста это норма)")
-        else:
-            add("bad", "down", host.get("error") or "не отвечает")
+        # An unreachable host is a problem, full stop. "This one is usually
+        # off" used to be a config flag that quietly demoted the finding, which
+        # meant the fleet had two different ways to accept a known state — and
+        # only one of them demanded a reason or came up for review. Now there
+        # is one: suppress the finding, in writing.
+        add("bad", "down", host.get("error") or "не отвечает")
         return out
 
     # Reachable over the network but the agent could not run: half-known is not
@@ -167,10 +168,16 @@ def host_issues(host: dict, cfg: dict | None = None) -> list[dict]:
         # thread looks identical to a quiet night, except it never ends. This
         # is the failure the whole fleet exists to avoid.
         quiet = cam.get("quiet_hours")
-        if quiet is not None and quiet >= limits.get("camera_quiet_bad_hours", 24):
+        # A camera may carry its own pair: what counts as silence differs
+        # between a street and a garage, and one fleet-wide number makes one of
+        # them wrong by construction.
+        own = (cam.get("limits") or {})
+        quiet_bad = own.get("bad", limits.get("camera_quiet_bad_hours", 24))
+        quiet_warn = own.get("warn", limits.get("camera_quiet_warn_hours", 12))
+        if quiet is not None and quiet >= quiet_bad:
             add("bad", f"camquiet:{cam.get('id')}",
                 f"камера {name}: нет событий {int(quiet)} ч — детекция молчит")
-        elif quiet is not None and quiet >= limits.get("camera_quiet_warn_hours", 12):
+        elif quiet is not None and quiet >= quiet_warn:
             add("warn", f"camquiet:{cam.get('id')}",
                 f"камера {name}: нет событий {int(quiet)} ч")
 
@@ -420,11 +427,7 @@ def checks_for(host: dict, cfg: dict | None = None) -> list[dict]:
     add("availability", "Хост отвечает",
         "ICMP и, где есть доступ, успешный опрос агентом каждые "
         f"{(cfg or {}).get('poll_interval', 180) // 60} мин",
-        keys=("down", "offline"))
-    add("availability", "Выключение считается нормой",
-        "Хост помечен may_be_offline: недоступность показывается, но не тревожит",
-        applies=bool(host.get("may_be_offline")),
-        skipped="не помечен — недоступность будет проблемой", keys=("offline",))
+        keys=("down",))
     add("availability", "Полнота опроса",
         "Агент отработал и вернул данные; иначе видно только сетевой уровень",
         keys=("noaccess",))

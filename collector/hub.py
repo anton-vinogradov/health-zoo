@@ -100,6 +100,7 @@ class Fleet:
                                       self.hosts(), self.cfg.get("ssh_key"), hosts)
             probe.poll_unifi_controller(self.cfg, hosts)
             probe.analyse_wifi(hosts)
+            self.apply_camera_limits(hosts)
             issues.annotate(hosts, self.cfg, self.suppressions)
             issues.annotate_checks(hosts, self.cfg)
             snap = {
@@ -136,6 +137,15 @@ class Fleet:
             self.poll_once()
             self.wake.wait(timeout=self.cfg.get("poll_interval", 180))
             self.wake.clear()
+
+    def apply_camera_limits(self, hosts: list[dict]) -> None:
+        """Attach each camera its own silence thresholds, where one was set."""
+        for host in hosts:
+            for cam in host.get("cameras", []):
+                limits = self.settings.camera_limits(
+                    str(host.get("id", "")), str(cam.get("id", "")))
+                if limits:
+                    cam["limits"] = limits
 
     def maybe_auto_reboot(self, hosts: list[dict]) -> None:
         """Reboot hosts that asked for it, if the operator turned this on.
@@ -191,6 +201,7 @@ class Fleet:
         if not wanted:
             return 0
         fresh = probe.probe_all(wanted, self.cfg.get("ssh_key"))
+        self.apply_camera_limits(fresh)
         issues.annotate(fresh, self.cfg, self.suppressions)
         issues.annotate_checks(fresh, self.cfg)
         by_id = {h["id"]: h for h in fresh}
@@ -740,6 +751,19 @@ class Handler(BaseHTTPRequestHandler):
                 "auto_reboot": self.fleet.settings.auto_reboot(),
                 "hosts": [{"id": h.get("id"), "name": h.get("name")}
                           for h in self.fleet.hosts()],
+                # Cameras come from the snapshot rather than the config: they
+                # are discovered from the recorders, not declared by hand.
+                "cameras": [
+                    {"key": f"{host.get('id')}/{cam.get('id')}",
+                     "host": host.get("name"),
+                     "name": cam.get("name"),
+                     "quiet_hours": cam.get("quiet_hours"),
+                     "limits": self.fleet.settings.camera_limits(
+                         str(host.get("id", "")), str(cam.get("id", "")))}
+                    for host in self.fleet.get().get("hosts", [])
+                    for cam in (host.get("cameras") or [])
+                    if cam.get("enabled") == "1"
+                ],
             })
             return
 
@@ -810,11 +834,14 @@ class Handler(BaseHTTPRequestHandler):
                 self.fleet.settings.set_thresholds(req["thresholds"], defaults)
             if isinstance(req.get("auto_reboot"), dict):
                 self.fleet.settings.set_auto_reboot(req["auto_reboot"])
+            if isinstance(req.get("cameras"), dict):
+                self.fleet.settings.set_cameras(req["cameras"])
             # Applied to the live config and the current snapshot at once: a
             # threshold changed in the browser has to recolour the fleet now,
             # not at the next poll — otherwise it reads as having been ignored.
             self.fleet.settings.apply_to(self.fleet.cfg)
             hosts = self.fleet.get().get("hosts", [])
+            self.fleet.apply_camera_limits(hosts)
             issues.annotate(hosts, self.fleet.cfg, self.fleet.suppressions)
             issues.annotate_checks(hosts, self.fleet.cfg)
             self._json({"ok": True,

@@ -356,6 +356,33 @@ function showSettings() {
         }))));
     }
 
+    /* One silence threshold cannot fit every camera: a street camera quiet
+       for six hours is broken, a garage quiet for two days is a garage nobody
+       entered. Empty means "follow the fleet-wide value above". */
+    var camInputs = {};
+    if ((cfg.cameras || []).length) {
+      root.appendChild(section('Тишина детекции по камерам',
+        table(['камера', 'сейчас без событий', 'предупреждение, ч', 'проблема, ч'],
+          cfg.cameras.map(function (cam) {
+            var warnInput = h('input', { class: 'set-input', type: 'number', min: 1, max: 336,
+              value: cam.limits && cam.limits.warn !== undefined ? cam.limits.warn : '',
+              placeholder: String(cfg.values.camera_quiet_warn_hours) });
+            var badInput = h('input', { class: 'set-input', type: 'number', min: 1, max: 336,
+              value: cam.limits && cam.limits.bad !== undefined ? cam.limits.bad : '',
+              placeholder: String(cfg.values.camera_quiet_bad_hours) });
+            camInputs[cam.key] = { warn: warnInput, bad: badInput };
+            var quiet = cam.quiet_hours;
+            return h('tr', null, [
+              h('td', null, [h('div', { text: cam.name }),
+                             h('div', { class: 'set-hint', text: cam.host })]),
+              h('td', { class: 'mono right',
+                        text: quiet === null || quiet === undefined ? '' : Math.round(quiet) + ' ч' }),
+              h('td', { class: 'right' }, [warnInput]),
+              h('td', { class: 'right' }, [badInput])
+            ]);
+          }))));
+    }
+
     /* Rebooting on its own is the one setting here that acts rather than
        measures, so it says exactly what it will do and when. */
     var auto = cfg.auto_reboot || {};
@@ -404,6 +431,13 @@ function showSettings() {
           method: 'POST', headers: actionHeaders(),
           body: JSON.stringify({
             thresholds: thresholds,
+            cameras: Object.keys(camInputs).reduce(function (acc, key) {
+              acc[key] = {
+                warn: camInputs[key].warn.value === '' ? null : Number(camInputs[key].warn.value),
+                bad: camInputs[key].bad.value === '' ? null : Number(camInputs[key].bad.value)
+              };
+              return acc;
+            }, {}),
             auto_reboot: { enabled: enabled.checked, from_hour: Number(fromHour.value),
                            to_hour: Number(toHour.value), exclude: exclude }
           })

@@ -460,3 +460,29 @@ def test_auto_reboot_window_wraps_past_midnight():
 
     assert [inside(h, 23, 5) for h in (22, 23, 0, 4, 5)] == [False, True, True, True, False]
     assert [inside(h, 4, 6) for h in (3, 4, 5, 6)] == [False, True, True, False]
+
+
+def test_camera_keeps_its_own_silence_threshold(tmp_path):
+    """A street camera quiet for six hours is broken; a garage is not."""
+    import settings as settings_mod
+    store = settings_mod.Settings(str(tmp_path / "settings.json"))
+    store.set_cameras({"rec/3": {"warn": 36, "bad": 72}})
+
+    host = {"id": "rec", "agent": "linux", "reachable": True, "cameras": [
+        {"id": "3", "name": "Garage", "enabled": "1", "status": "Connected",
+         "quiet_hours": 30, "limits": store.camera_limits("rec", "3")},
+        {"id": "4", "name": "Street", "enabled": "1", "status": "Connected",
+         "quiet_hours": 30},
+    ]}
+    found = {i["key"]: i for i in issues.host_issues(host)}
+
+    assert "camquiet:3" not in found          # 30 h is inside its own 36 h
+    assert found["camquiet:4"]["level"] == "bad"   # 30 h beats the fleet's 24 h
+
+
+def test_clearing_a_camera_threshold_follows_the_fleet_again(tmp_path):
+    import settings as settings_mod
+    store = settings_mod.Settings(str(tmp_path / "settings.json"))
+    store.set_cameras({"rec/3": {"warn": 36, "bad": 72}})
+    store.set_cameras({"rec/3": {"warn": None, "bad": None}})
+    assert store.camera_limits("rec", "3") == {}

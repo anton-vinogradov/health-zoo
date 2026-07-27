@@ -52,7 +52,6 @@ function hostCard(host) {
   var chips = [];
 
   if (host.reachable && host.error) chips.push(chip('нет доступа', 'warn'));
-  if (!host.reachable && host.may_be_offline) chips.push(chip('выключен — это норма', ''));
   if (host.recorded_by) {
     chips.push(chip(host.camera_live ? 'пишется: ' + host.recorded_by : 'запись стоит: ' + host.recorded_by,
       host.camera_live ? 'ok' : 'bad'));
@@ -366,7 +365,13 @@ function renderAlert(hosts) {
 
   hosts.forEach(function (host) {
     hostIssues(host).forEach(function (issue) {
-      (issue.level === 'bad' ? bad : warn).push({ host: host, text: issue.text });
+      // A suppressed finding keeps its place in the host's own list, with the
+      // reason next to it — but it has been accepted, so the fleet banner is
+      // exactly where it must not appear. It carries level "info", and
+      // "anything not bad is a warning" quietly put it back on the banner.
+      if (issue.suppressed) return;
+      if (issue.level === 'bad') bad.push({ host: host, text: issue.text });
+      else if (issue.level === 'warn') warn.push({ host: host, text: issue.text });
     });
   });
 
