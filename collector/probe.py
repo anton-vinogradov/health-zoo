@@ -669,7 +669,7 @@ def link_cameras(results: list[dict]) -> None:
     A camera cannot be asked how it is doing without credentials, but the box
     recording it already knows — ZoneMinder reports Connected/fps per monitor,
     Surveillance Station has the recording folders. Matching by IP turns a bare
-    "port 554 is open" into "Outdoor2 is being recorded by camholder at 25 fps".
+    "port 554 is open" into "this camera is being recorded at 25 fps".
     """
     by_addr: dict[str, dict] = {}
     for host in results:
@@ -705,8 +705,8 @@ def link_cameras(results: list[dict]) -> None:
 
         # The recorder outranks our own ping. Camera segments hang off the far
         # side of a site router and are often unroutable from wherever the
-        # dashboard runs — 10.67.67.x is reachable from camholder only. A
-        # camera actively being recorded at 25 fps is up, whatever ICMP says.
+        # dashboard runs. A camera actively being recorded at 25 fps is up,
+        # whatever ICMP says.
         if live and not host.get("reachable"):
             host["reachable"] = True
             host["error"] = ""
