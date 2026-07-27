@@ -704,16 +704,26 @@ function showHost(host) {
   var allRadios = (host.radios || []).concat(host.radioiws || []);
   if (allRadios.length) {
     body.appendChild(section('Радио (' + (host.wifi_clients || 0) + ' клиентов)',
-      table(['радио', 'SSID', 'канал', 'клиентов', 'эфир'],
+      table(['радио', 'канал', 'клиентов', 'эфир: всего', 'свой', 'чужой', 'качество'],
         allRadios.map(function (r) {
           var dead = !r.disabled && (r.channel === 0 || r.freq === 0);
+          var band = r.band ? r.band + ' ГГц' : (r.name || r.dev || '');
+          var warnAir = r.band === '2.4' ? 40 : 60;
           return h('tr', null, [
             h('td', null, [h('span', { class: 'dot ' + (dead ? 'bad' : r.disabled ? '' : 'ok') }),
-                           h('span', { text: r.name || r.dev || '' })]),
-            h('td', { text: r.ssid || '' }),
-            h('td', { class: 'mono right', text: r.channel === null || r.channel === undefined ? '' : String(r.channel) }),
+                           h('span', { text: band + (r.ssid ? ' · ' + r.ssid : '') })]),
+            h('td', { class: 'mono right' + (r.overlaps_with ? ' warn' : ''),
+                      title: r.overlaps_with ? 'перекрывается с ' + r.overlaps_with.join(', ') : '',
+                      text: (r.channel === null || r.channel === undefined ? '' : String(r.channel)) +
+                            (r.overlaps_with ? ' ⚠' : '') }),
             h('td', { class: 'mono right', text: r.clients === undefined ? '' : String(r.clients) }),
-            h('td', { class: 'mono right', text: r.utilization === undefined || r.utilization === null ? '' : r.utilization + '%' })
+            h('td', { class: 'mono right' + (r.utilization >= warnAir ? ' warn' : ''),
+                      text: r.utilization === undefined || r.utilization === null ? '' : r.utilization + '%' }),
+            h('td', { class: 'mono right', text: r.own_utilization === undefined ? '' : r.own_utilization + '%' }),
+            // Foreign airtime is the number that decides whether changing
+            // channel would help: our own load moves with us, theirs does not.
+            h('td', { class: 'mono right', text: r.foreign_utilization === undefined || r.foreign_utilization === null ? '' : r.foreign_utilization + '%' }),
+            h('td', { class: 'mono right', text: r.satisfaction === undefined || r.satisfaction === null ? '' : r.satisfaction + '%' })
           ]);
         }))));
   }

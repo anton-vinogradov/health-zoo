@@ -86,6 +86,7 @@ class Fleet:
             probe.run_external_checks(self.cfg.get("external_checks", []),
                                       self.hosts(), self.cfg.get("ssh_key"), hosts)
             probe.poll_unifi_controller(self.cfg, hosts)
+            probe.analyse_wifi(hosts)
             issues.annotate(hosts, self.cfg, self.suppressions)
             issues.annotate_checks(hosts, self.cfg)
             snap = {

@@ -27,7 +27,11 @@ DEFAULT_THRESHOLDS = {
     # a full day of silence on a street camera is broken, not quiet.
     "camera_quiet_warn_hours": 12,
     "camera_quiet_bad_hours": 24,
-    "airtime_bad": 85,
+    # 2.4 GHz has three usable channels and long airtime per frame: it is
+    # congested at levels where 5 GHz is still comfortable.
+    "airtime_warn_24": 40, "airtime_bad_24": 70,
+    "airtime_warn_5": 60, "airtime_bad_5": 85,
+    "wifi_satisfaction_warn": 80,
     # Let's Encrypt renews at 30 days; a warning at 21 means renewal has
     # already failed twice, and 7 means it is now urgent.
     "cert_warn_days": 21,
@@ -198,20 +202,54 @@ def host_issues(host: dict, cfg: dict | None = None) -> list[dict]:
     radios = host.get("radios", []) + host.get("radioiws", [])
     for radio in radios:
         name = radio.get("name") or radio.get("dev") or "?"
+        band = radio.get("band")
+        label = f"{band} ГГц" if band else name
         if radio.get("disabled"):
             continue  # deliberately off is not broken
         if radio.get("channel") == 0 or radio.get("freq") == 0:
             ssid = radio.get("ssid")
             add("bad", f"radio:{name}",
                 f"радио {name}{' (' + ssid + ')' if ssid else ''} не вещает")
+
+        # 2.4 GHz is a narrow, crowded band and degrades much earlier than 5.
         util = radio.get("utilization")
-        if isinstance(util, (int, float)) and util >= limits.get("airtime_bad", 85):
-            add("warn", f"radioair:{radio.get('name')}",
-                f"эфир {radio.get('name')} загружен на {util}%")
-    if host.get("unifi_state") not in (None, "", 2) and radios:
-        # UniFi state 2 is "adopted and managed"; anything else means the
-        # controller is not driving this AP.
-        add("warn", "unifi_state", "точка не управляется контроллером")
+        warn_at = limits.get("airtime_warn_24" if band == "2.4" else "airtime_warn_5", 60)
+        bad_at = limits.get("airtime_bad_24" if band == "2.4" else "airtime_bad_5", 80)
+        if isinstance(util, (int, float)) and util >= warn_at:
+            foreign = radio.get("foreign_utilization")
+            source = ""
+            if isinstance(foreign, (int, float)):
+                source = (f", из них {foreign}% чужие сети"
+                          if foreign * 2 >= util else f", в основном свой трафик ({util - foreign}%)")
+            add("bad" if util >= bad_at else "warn", f"radioair:{name}",
+                f"эфир {label} занят на {util}%{source}")
+
+        # Same-band neighbours on overlapping channels jam each other; the
+        # controller does not complain, and the symptom users report is
+        # "wifi is slow" with every device showing full signal.
+        overlap = radio.get("overlaps_with")
+        if overlap:
+            add("warn", f"radiooverlap:{name}",
+                f"канал {radio.get('channel')} ({label}) перекрывается с "
+                + ", ".join(overlap))
+        elif radio.get("off_grid"):
+            add("warn", f"radiogrid:{name}",
+                f"канал {radio.get('channel')} в 2.4 ГГц перекрывается с соседними; "
+                "непересекающиеся — 1, 6, 11")
+
+        satisfaction = radio.get("satisfaction")
+        if isinstance(satisfaction, (int, float)) and 0 < satisfaction < limits.get(
+                "wifi_satisfaction_warn", 80):
+            add("warn", f"radiosat:{name}",
+                f"качество связи {label}: {satisfaction}%")
+    # UniFi device states: 1 is connected and managed — the normal one. 0 is
+    # disconnected, 2 pending adoption, 4 upgrading, 5 provisioning. Only
+    # disconnected and pending are worth reporting; the rest are transient.
+    unifi_state = host.get("unifi_state")
+    if radios and unifi_state in (0, 2):
+        add("warn", "unifi_state",
+            "точка не управляется контроллером"
+            + (" (ожидает adoption)" if unifi_state == 2 else " (отключена)"))
 
     # A certificate is a scheduled outage with a known date; the only question
     # is whether anyone notices before the date arrives.
@@ -416,11 +454,30 @@ def checks_for(host: dict, cfg: dict | None = None) -> list[dict]:
         "Каждый контейнер должен быть running",
         applies=bool(host.get("containers")), skipped="контейнеров нет",
         keys=("container",))
-    add("services", "Радио точки доступа",
-        "Каждое включённое радио должно вещать; загрузка эфира "
-        f"выше {limits.get('airtime_bad', 85)}% — предупреждение",
+    add("network", "Радио вещает",
+        "Каждое включённое радио должно быть в эфире; точка должна управляться "
+        "контроллером",
         applies=bool(host.get("radios") or host.get("radioiws")),
-        skipped="радио нет", keys=("radio", "radioair", "unifi_state"))
+        skipped="радио нет", keys=("radio", "unifi_state"))
+    add("network", "Загрузка эфира",
+        f"2.4 ГГц: предупреждение с {limits.get('airtime_warn_24', 40)}%, проблема с "
+        f"{limits.get('airtime_bad_24', 70)}%; 5 ГГц — с "
+        f"{limits.get('airtime_warn_5', 60)}% и {limits.get('airtime_bad_5', 85)}%. "
+        "Отдельно считается доля чужих сетей: это разница между «мы сами грузим» "
+        "и «канал занят соседями»",
+        applies=any(r.get("utilization") is not None
+                    for r in (host.get("radios") or []) + (host.get("radioiws") or [])),
+        skipped="загрузка эфира не отдаётся", keys=("radioair",))
+    add("network", "Выбор канала",
+        "В 2.4 ГГц не перекрываются только 1, 6 и 11; соседние точки на близких "
+        "каналах глушат друг друга сильнее, чем стоя на одном",
+        applies=any(r.get("band") == "2.4" for r in host.get("radios", [])),
+        skipped="радио 2.4 ГГц нет", keys=("radiooverlap", "radiogrid"))
+    add("network", "Качество связи клиентов",
+        f"Оценка контроллера (satisfaction) ниже "
+        f"{limits.get('wifi_satisfaction_warn', 80)}%",
+        applies=any(r.get("satisfaction") is not None for r in host.get("radios", [])),
+        skipped="оценка недоступна", keys=("radiosat",))
 
     # ---------- updates ----------
     add("updates", "Обновления пакетов",

@@ -1245,12 +1245,22 @@ def poll_unifi_controller(cfg: dict, results: list[dict]) -> None:
 
         radios = []
         for radio in device.get("radio_table_stats", []):
+            total = radio.get("cu_total")
+            mine = (radio.get("cu_self_rx") or 0) + (radio.get("cu_self_tx") or 0)
             radios.append({
                 "name": radio.get("radio", radio.get("name", "")),
+                "band": "2.4" if radio.get("radio") == "ng" else "5",
                 "ssid": "",
                 "channel": radio.get("channel"),
                 "clients": radio.get("user-num_sta", radio.get("num_sta", 0)),
-                "utilization": radio.get("cu_total"),
+                "utilization": total,
+                # Splitting airtime into ours and everyone else's is what turns
+                # "the channel is busy" into an actionable answer: our own load
+                # is capacity, someone else's is a reason to change channel.
+                "own_utilization": mine,
+                "foreign_utilization": (total - mine) if isinstance(total, int) else None,
+                "satisfaction": radio.get("satisfaction"),
+                "tx_power": radio.get("tx_power"),
                 "disabled": False,
             })
         if radios:
@@ -1299,6 +1309,35 @@ def unifi_command(cfg: dict, mac: str, command: str) -> tuple[bool, str]:
         return ok, "" if ok else str(body.get("meta", {}).get("msg", "отказ контроллера"))
     except Exception as exc:
         return False, str(exc)
+
+
+# In 2.4 GHz only 1, 6 and 11 do not overlap: the channels are 5 MHz apart
+# while a 20 MHz carrier is four wide, so anything closer than five channels
+# interferes — and adjacent-but-not-equal is worse than sharing outright,
+# because carrier sense cannot see the neighbour to take turns with it.
+NON_OVERLAPPING_24 = {1, 6, 11}
+
+
+def analyse_wifi(results: list[dict]) -> None:
+    """Look at the radios as a set, not one at a time."""
+    radios_24 = []
+    for host in results:
+        for radio in host.get("radios", []):
+            channel = radio.get("channel")
+            if radio.get("band") == "2.4" and isinstance(channel, int):
+                radios_24.append((host, radio))
+
+    for host, radio in radios_24:
+        channel = radio["channel"]
+        clashes = [
+            other_host.get("name", other_host["id"])
+            for other_host, other in radios_24
+            if other is not radio and abs(other["channel"] - channel) < 5
+        ]
+        if clashes:
+            radio["overlaps_with"] = sorted(set(clashes))
+        if channel not in NON_OVERLAPPING_24:
+            radio["off_grid"] = True
 
 
 def find_unmanaged(results: list[dict], hosts: list[dict]) -> list[dict]:
