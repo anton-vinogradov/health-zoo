@@ -6,13 +6,6 @@
 # Surveillance Station database, firewall state) is simply not reported —
 # better an honest gap than a half-truth.
 
-set -u
-LC_ALL=C
-export LC_ALL
-
-emit() { printf '%s\t%s\n' "$1" "$2"; }
-row() { printf '%s\n' "$*"; }
-
 echo "kind	synology"
 echo "hostname	$(hostname 2>/dev/null)"
 
@@ -32,26 +25,13 @@ emit arch "$(uname -m 2>/dev/null)"
   emit model "$(cat /proc/sys/kernel/syno_hw_version 2>/dev/null)"
 
 # ---------- uptime / load / cpu ----------
-[ -r /proc/uptime ] && emit uptime "$(cut -d' ' -f1 /proc/uptime)"
-if [ -r /proc/loadavg ]; then
-  # shellcheck disable=SC2046  # word splitting is the point: three fields
-  set -- $(cat /proc/loadavg)
-  emit load1 "$1"; emit load5 "$2"; emit load15 "$3"
-fi
+common_uptime_load
 emit cpus "$(grep -c '^processor' /proc/cpuinfo 2>/dev/null)"
 emit cpu_model "$(awk -F': ' '/^model name/{print $2; exit}' /proc/cpuinfo 2>/dev/null)"
 
 # ---------- memory ----------
 # The 512 MB units swap constantly; swap pressure is the headline metric here.
-if [ -r /proc/meminfo ]; then
-  awk '
-    /^MemTotal:/     {print "mem_total\t"     $2*1024}
-    /^MemAvailable:/ {print "mem_available\t" $2*1024}
-    /^MemFree:/      {print "mem_free\t"      $2*1024}
-    /^SwapTotal:/    {print "swap_total\t"    $2*1024}
-    /^SwapFree:/     {print "swap_free\t"     $2*1024}
-  ' /proc/meminfo
-fi
+common_memory
 
 # ---------- volumes ----------
 df -P -k 2>/dev/null | awk '
@@ -169,18 +149,10 @@ for f in /usr/syno/etc/dsm_update_status /var/lib/dsm-update/status; do
 done
 emit pkg_manager synology
 
-# ---------- listening TCP ports ----------
+# ---------- listening ports ----------
 # DSM listens on non-standard ports far more often than not (8000/8001 here),
 # so the web link has to be discovered rather than assumed.
-netstat -tln 2>/dev/null | awk '$1 ~ /^tcp/ {
-  addr = $4
-  port = addr; sub(/.*:/, "", port)
-  host = addr; sub(/:[0-9]+$/, "", host)
-  if (port !~ /^[0-9]+$/) next
-  # A loopback-only listener is a backend behind a proxy, not a page to open.
-  local = (host ~ /^(::ffff:)?127\./ || host == "::1") ? "local" : "any"
-  print "@listen\t" port "\t\t" local
-}' | sort -u
+common_listeners
 
 # ---------- Surveillance Station: cameras this NAS records ----------
 # Recording folders are the only camera fact visible without the SS database.

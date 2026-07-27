@@ -348,7 +348,10 @@ def run_agent(host: dict, key: str | None) -> tuple[bool, str]:
     if not script.exists():
         return False, f"agent {agent}.sh not found"
 
-    body = script.read_text()
+    # Prepend the shared fragment: helpers and the collectors that are
+    # genuinely identical across platforms live once, in common.sh.
+    shared = AGENT_DIR / "common.sh"
+    body = (shared.read_text() + "\n" if shared.exists() else "") + script.read_text()
     if host.get("local"):
         cmd = ["sh", "-s"]
     else:

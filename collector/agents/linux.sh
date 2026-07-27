@@ -10,13 +10,6 @@
 # (Celeron N5105) run this every cycle, so batch the systemctl/dpkg calls
 # instead of forking per unit.
 
-set -u
-LC_ALL=C
-export LC_ALL
-
-emit() { printf '%s\t%s\n' "$1" "$2"; }
-row() { printf '%s\n' "$*"; }
-
 echo "kind	linux"
 echo "hostname	$(hostname 2>/dev/null)"
 
@@ -32,54 +25,18 @@ emit kernel "$(uname -r 2>/dev/null)"
 emit arch "$(uname -m 2>/dev/null)"
 
 # ---------- uptime / load / cpu ----------
-[ -r /proc/uptime ] && emit uptime "$(cut -d' ' -f1 /proc/uptime)"
-if [ -r /proc/loadavg ]; then
-  # shellcheck disable=SC2046  # word splitting is the point: three fields
-  set -- $(cat /proc/loadavg)
-  emit load1 "$1"; emit load5 "$2"; emit load15 "$3"
-fi
+common_uptime_load
 emit cpus "$(nproc 2>/dev/null || grep -c '^processor' /proc/cpuinfo 2>/dev/null)"
 emit cpu_model "$(awk -F': ' '/^model name/{print $2; exit}' /proc/cpuinfo 2>/dev/null)"
 
 # ---------- memory ----------
-if [ -r /proc/meminfo ]; then
-  awk '
-    /^MemTotal:/     {print "mem_total\t"     $2*1024}
-    /^MemAvailable:/ {print "mem_available\t" $2*1024}
-    /^MemFree:/      {print "mem_free\t"      $2*1024}
-    /^SwapTotal:/    {print "swap_total\t"    $2*1024}
-    /^SwapFree:/     {print "swap_free\t"     $2*1024}
-  ' /proc/meminfo
-fi
+common_memory
 
 # ---------- disks ----------
-# Real filesystems only; overlay/tmpfs/loop noise is dropped.
-df -P -k 2>/dev/null | awk 'NR>1 && $1 ~ /^\/dev\// && $1 !~ /loop/ {
-  print "@disk\t" $6 "\t" $1 "\t" $2*1024 "\t" $3*1024
-}'
+common_disks
 
 # ---------- temperatures ----------
-# hwmon and thermal_zone expose the same sensors under different names; keep
-# one reading per (label, value) pair so the card is not flooded with dupes.
-{
-  for hw in /sys/class/hwmon/hwmon*; do
-    name=$(cat "$hw/name" 2>/dev/null)
-    for f in "$hw"/temp*_input; do
-      [ -r "$f" ] || continue
-      t=$(cat "$f" 2>/dev/null)
-      lbl=$(cat "$(echo "$f" | sed 's/_input$/_label/')" 2>/dev/null)
-      [ -n "$t" ] && [ "$t" -gt 1000 ] 2>/dev/null && \
-        printf '%s\t%s\n' "${lbl:-${name:-hwmon}}" "$((t / 1000))"
-    done
-  done
-  for z in /sys/class/thermal/thermal_zone*; do
-    [ -r "$z/temp" ] || continue
-    t=$(cat "$z/temp" 2>/dev/null)
-    lbl=$(cat "$z/type" 2>/dev/null)
-    [ -n "$t" ] && [ "$t" -gt 1000 ] 2>/dev/null && \
-      printf '%s\t%s\n' "${lbl:-thermal}" "$((t / 1000))"
-  done
-} | sort -u -t'	' -k1,1 | awk -F'\t' '{print "@temp\t" $1 "\t" $2}'
+common_temps
 
 # ---------- pending package updates ----------
 # Reads the apt cache as-is: refreshing it needs root, and the host's own
@@ -246,27 +203,8 @@ if command -v smartctl >/dev/null 2>&1 && sudo -n smartctl --version >/dev/null 
   done
 fi
 
-# ---------- listening TCP ports ----------
-# Feeds the "open web UI" links: whatever answers on a web-ish port here shows
-# up as a button, so a newly installed panel is reachable without editing config.
-# The bind address matters: a backend on 127.0.0.1 is reachable only through
-# whatever proxies it, so offering a link to it would send you nowhere.
-# UDP is collected too: a VPN endpoint (WireGuard, AmneziaWG) is one of the
-# more important things a box publishes, and it never shows up over TCP.
-if command -v ss >/dev/null 2>&1; then
-  ss -ulnH 2>/dev/null | awk '{
-    addr = $4
-    port = addr; sub(/.*:/, "", port)
-    host = addr; sub(/:[0-9]+$/, "", host)
-    if (port !~ /^[0-9]+$/ || port == 0) next
-    local = (host ~ /^\[?(::ffff:)?127\./ || host == "[::1]" || host == "::1") ? "local" : "any"
-    print port "\t" local
-  }' | sort -u | while IFS='	' read -r p scope; do
-      [ "$scope" = "local" ] && continue
-      proc=$(ss -ulnpH "sport = :$p" 2>/dev/null | sed -n 's/.*users:((\"\([^\"]*\)\".*/\1/p' | head -1)
-      row "@udp	$p	${proc:-}	$scope"
-    done
-fi
+# ---------- listening ports ----------
+common_listeners
 if command -v ss >/dev/null 2>&1; then
   ss -tlnH 2>/dev/null | awk '{
     addr = $4

@@ -4,13 +4,6 @@
 # Routers are flash-constrained, so this touches only /proc and the package
 # manager's own metadata — no temp files, no heavy tooling.
 
-set -u
-LC_ALL=C
-export LC_ALL
-
-emit() { printf '%s\t%s\n' "$1" "$2"; }
-row() { printf '%s\n' "$*"; }
-
 echo "kind	openwrt"
 echo "hostname	$(uname -n 2>/dev/null)"
 
@@ -27,24 +20,11 @@ emit arch "$(uname -m 2>/dev/null)"
 [ -r /tmp/sysinfo/model ] && emit model "$(cat /tmp/sysinfo/model 2>/dev/null)"
 
 # ---------- uptime / load / cpu ----------
-[ -r /proc/uptime ] && emit uptime "$(cut -d' ' -f1 /proc/uptime)"
-if [ -r /proc/loadavg ]; then
-  # shellcheck disable=SC2046  # word splitting is the point: three fields
-  set -- $(cat /proc/loadavg)
-  emit load1 "$1"; emit load5 "$2"; emit load15 "$3"
-fi
+common_uptime_load
 emit cpus "$(grep -c '^processor' /proc/cpuinfo 2>/dev/null)"
 
 # ---------- memory ----------
-if [ -r /proc/meminfo ]; then
-  awk '
-    /^MemTotal:/     {print "mem_total\t"     $2*1024}
-    /^MemAvailable:/ {print "mem_available\t" $2*1024}
-    /^MemFree:/      {print "mem_free\t"      $2*1024}
-    /^SwapTotal:/    {print "swap_total\t"    $2*1024}
-    /^SwapFree:/     {print "swap_free\t"     $2*1024}
-  ' /proc/meminfo
-fi
+common_memory
 
 # ---------- flash ----------
 # On a router the overlay filling up is what bricks config writes, so both the
@@ -102,16 +82,8 @@ for init in /etc/init.d/*; do
   row "@service	$name	$state	$enabled	0	0	$init	OpenWrt init script"
 done
 
-# ---------- listening TCP ports ----------
-netstat -tln 2>/dev/null | awk '$1 ~ /^tcp/ {
-  addr = $4
-  port = addr; sub(/.*:/, "", port)
-  host = addr; sub(/:[0-9]+$/, "", host)
-  if (port !~ /^[0-9]+$/) next
-  # A loopback-only listener is a backend behind a proxy, not a page to open.
-  local = (host ~ /^(::ffff:)?127\./ || host == "::1") ? "local" : "any"
-  print "@listen\t" port "\t\t" local
-}' | sort -u
+# ---------- listening ports ----------
+common_listeners
 
 # ---------- WAN / interface state ----------
 # What actually matters on a router: which links are up and how much they moved.
