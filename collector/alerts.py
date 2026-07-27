@@ -19,6 +19,8 @@ import subprocess
 import threading
 import time
 
+import secrets
+
 LEVEL_ICON = {"bad": "🔴", "warn": "🟡", "ok": "🟢"}
 
 
@@ -267,7 +269,7 @@ class Alerts:
     # ---------- delivery ----------
 
     def _send(self, text: str) -> None:
-        token = self.cfg.get("token") or os.environ.get("HEALTH_ZOO_TG_TOKEN", "")
+        token = secrets.load(self.cfg, "token") or os.environ.get("HEALTH_ZOO_TG_TOKEN", "")
         chats = self.cfg.get("chats") or []
         if not token or not chats or not text:
             return

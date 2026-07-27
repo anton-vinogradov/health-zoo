@@ -40,6 +40,9 @@ if [ "$SRC" != "$DIR" ]; then
 fi
 $SUDO chown -R "$RUN_USER": "$DIR"
 
+$SUDO mkdir -p /etc/health-zoo.d
+$SUDO chmod 750 /etc/health-zoo.d
+
 # --- config: created once from the example, then left alone ---
 if [ ! -f "$CONFIG" ]; then
   echo "→ creating $CONFIG from the example — edit it, then restart the service"
@@ -69,6 +72,19 @@ if [ ! -f "$KEY_REAL" ]; then
   echo
 fi
 
+# --- encrypted secrets, if any exist ---
+# systemd refuses to start a service whose LoadCredentialEncrypted file is
+# missing, so these lines are generated only for secrets that are actually
+# there. Create one with:
+#   printf %s 'secret' | sudo systemd-creds encrypt --name=telegram-token - \
+#       /etc/health-zoo.d/telegram-token.cred
+CREDS=""
+for cred in telegram-token unifi-password; do
+  if [ -f "/etc/health-zoo.d/$cred.cred" ]; then
+    CREDS="${CREDS}LoadCredentialEncrypted=$cred:/etc/health-zoo.d/$cred.cred"$'\n'
+  fi
+done
+
 # --- systemd unit ---
 echo "→ systemd unit $SVC"
 $SUDO tee "/etc/systemd/system/$SVC.service" >/dev/null <<UNIT
@@ -80,6 +96,7 @@ Wants=network-online.target
 [Service]
 Type=simple
 User=$RUN_USER
+$CREDS
 WorkingDirectory=$DIR
 ExecStart=/usr/bin/python3 $DIR/collector/hub.py
 Restart=always

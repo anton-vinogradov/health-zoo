@@ -20,51 +20,145 @@
     "Subnets nest via 'parent', and that is what draws the topology tree:",
     "internet -> uplink router -> site router -> the camera segment behind it."
   ],
-
   "poll_interval": 180,
   "ssh_key": "~/.ssh/id_health_zoo",
   "listen": "0.0.0.0",
   "port": 8816,
-
   "subnets": [
-    { "cidr": "0.0.0.0/0",    "name": "Internet", "parent": null,           "router": "" },
-    { "cidr": "10.0.0.0/24",  "name": "Uplink",   "parent": "0.0.0.0/0",    "router": "10.0.0.1" },
-    { "cidr": "10.0.10.0/24", "name": "Site",     "parent": "10.0.0.0/24",  "router": "10.0.10.1" },
-    { "cidr": "10.0.20.0/24", "name": "Cameras",  "parent": "10.0.10.0/24", "router": "" }
+    {
+      "cidr": "0.0.0.0/0",
+      "name": "Internet",
+      "parent": null,
+      "router": ""
+    },
+    {
+      "cidr": "10.0.0.0/24",
+      "name": "Uplink",
+      "parent": "0.0.0.0/0",
+      "router": "10.0.0.1"
+    },
+    {
+      "cidr": "10.0.10.0/24",
+      "name": "Site",
+      "parent": "10.0.0.0/24",
+      "router": "10.0.10.1"
+    },
+    {
+      "cidr": "10.0.20.0/24",
+      "name": "Cameras",
+      "parent": "10.0.10.0/24",
+      "router": ""
+    }
   ],
-
   "hosts": [
-    { "id": "hub", "name": "hub", "addr": "10.0.10.5", "user": "admin",
-      "agent": "linux", "role": "server", "subnet": "10.0.10.0/24",
-      "local": true, "updatable": true, "update_last": true,
-      "note": "the box this dashboard runs on" },
-
-    { "id": "app", "name": "app server", "addr": "10.0.10.6", "user": "admin",
-      "agent": "linux", "role": "server", "subnet": "10.0.10.0/24",
-      "updatable": true },
-
-    { "id": "vps", "name": "VPS", "addr": "203.0.113.10", "user": "root",
-      "agent": "linux", "role": "server", "subnet": "0.0.0.0/0",
-      "updatable": true },
-
-    { "id": "nas", "name": "NAS", "addr": "10.0.10.20", "user": "admin",
-      "agent": "synology", "role": "nas", "subnet": "10.0.10.0/24" },
-
-    { "id": "site-router", "name": "Site router", "addr": "10.0.10.1", "user": "monitor",
-      "agent": "routeros", "role": "router", "subnet": "10.0.10.0/24",
-      "port": 22, "ports": [80, 8291] },
-
-    { "id": "uplink", "name": "Uplink router", "addr": "10.0.0.1", "user": "root",
-      "agent": "openwrt", "role": "router", "subnet": "10.0.0.0/24",
-      "ports": [22, 80, 443] },
-
-    { "id": "cam-1", "name": "Front camera", "addr": "10.0.20.11",
-      "agent": "none", "role": "camera", "subnet": "10.0.20.0/24",
-      "ports": [554, 80],
-      "note": "status comes from whichever host records it" },
-
-    { "id": "mesh-1", "name": "Mesh node", "addr": "10.0.10.41",
-      "agent": "meshtastic", "role": "mesh", "subnet": "10.0.10.0/24",
-      "ports": [4403] }
-  ]
+    {
+      "id": "hub",
+      "name": "hub",
+      "addr": "10.0.10.5",
+      "user": "admin",
+      "agent": "linux",
+      "role": "server",
+      "subnet": "10.0.10.0/24",
+      "local": true,
+      "updatable": true,
+      "update_last": true,
+      "note": "the box this dashboard runs on"
+    },
+    {
+      "id": "app",
+      "name": "app server",
+      "addr": "10.0.10.6",
+      "user": "admin",
+      "agent": "linux",
+      "role": "server",
+      "subnet": "10.0.10.0/24",
+      "updatable": true
+    },
+    {
+      "id": "vps",
+      "name": "VPS",
+      "addr": "203.0.113.10",
+      "user": "root",
+      "agent": "linux",
+      "role": "server",
+      "subnet": "0.0.0.0/0",
+      "updatable": true
+    },
+    {
+      "id": "nas",
+      "name": "NAS",
+      "addr": "10.0.10.20",
+      "user": "admin",
+      "agent": "synology",
+      "role": "nas",
+      "subnet": "10.0.10.0/24"
+    },
+    {
+      "id": "site-router",
+      "name": "Site router",
+      "addr": "10.0.10.1",
+      "user": "monitor",
+      "agent": "routeros",
+      "role": "router",
+      "subnet": "10.0.10.0/24",
+      "port": 22,
+      "ports": [
+        80,
+        8291
+      ]
+    },
+    {
+      "id": "uplink",
+      "name": "Uplink router",
+      "addr": "10.0.0.1",
+      "user": "root",
+      "agent": "openwrt",
+      "role": "router",
+      "subnet": "10.0.0.0/24",
+      "ports": [
+        22,
+        80,
+        443
+      ]
+    },
+    {
+      "id": "cam-1",
+      "name": "Front camera",
+      "addr": "10.0.20.11",
+      "agent": "none",
+      "role": "camera",
+      "subnet": "10.0.20.0/24",
+      "ports": [
+        554,
+        80
+      ],
+      "note": "status comes from whichever host records it"
+    },
+    {
+      "id": "mesh-1",
+      "name": "Mesh node",
+      "addr": "10.0.10.41",
+      "agent": "meshtastic",
+      "role": "mesh",
+      "subnet": "10.0.10.0/24",
+      "ports": [
+        4403
+      ]
+    }
+  ],
+  "telegram": {
+    "enabled": false,
+    "token_credential": "telegram-token",
+    "chats": [],
+    "min_level": "bad",
+    "digest_hour": 10,
+    "flap_cycles": 2,
+    "dashboard_url": "http://10.0.10.5:8816"
+  },
+  "unifi_controller": {
+    "url": "https://10.0.10.13:8443",
+    "site": "default",
+    "username": "health-zoo",
+    "password_credential": "unifi-password"
+  }
 }

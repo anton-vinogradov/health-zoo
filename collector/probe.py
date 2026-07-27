@@ -24,6 +24,8 @@ import time
 import urllib.request
 from pathlib import Path
 
+import secrets
+
 AGENT_DIR = Path(__file__).resolve().parent / "agents"
 
 # Enough for a busy Celeron to answer, short enough that one dead host does not
@@ -1068,7 +1070,8 @@ def poll_unifi_controller(cfg: dict, results: list[dict]) -> None:
     """
     conf = cfg.get("unifi_controller") or {}
     base = (conf.get("url") or "").rstrip("/")
-    user, password = conf.get("username"), conf.get("password")
+    user = conf.get("username")
+    password = secrets.load(conf, "password")
     if not (base and user and password):
         return
 
@@ -1153,7 +1156,8 @@ def unifi_command(cfg: dict, mac: str, command: str) -> tuple[bool, str]:
     """
     conf = cfg.get("unifi_controller") or {}
     base = (conf.get("url") or "").rstrip("/")
-    user, password = conf.get("username"), conf.get("password")
+    user = conf.get("username")
+    password = secrets.load(conf, "password")
     if not (base and user and password):
         return False, "контроллер UniFi не настроен в конфиге"
     if not mac:

@@ -58,6 +58,36 @@ Units that would cut off access to the host — `ssh`, `network`, `firewall`,
 `systemd-*` and friends — are refused by the server, not merely hidden in the UI.
 Removal asks you to type the service name to confirm.
 
+### Secrets
+
+Passwords do not belong in the config file: it ends up in backups, in `cat`
+output and on shared screens. Two of them are needed — the Telegram bot token
+and the UniFi controller password — and both are referenced rather than
+stored:
+
+```bash
+printf %s 'the-secret' | sudo systemd-creds encrypt --name=telegram-token - \
+    /etc/health-zoo.d/telegram-token.cred
+```
+
+`systemd-creds` encrypts with a key held by the machine — sealed to the TPM
+where one exists — so the file is useless if copied elsewhere. systemd
+decrypts it at service start into a tmpfs directory that only this service can
+read. The config then names it instead of holding it:
+
+```json
+"telegram":         { "token_credential":    "telegram-token" },
+"unifi_controller": { "password_credential": "unifi-password" }
+```
+
+`<field>_file` is also accepted for hosts without systemd credentials, and a
+plain `<field>` still works so existing setups keep running.
+
+One honest limit: the decrypted value is readable by the account the service
+runs as. This protects the config, backups and anyone looking over your
+shoulder — not someone already logged in as that user. Run the service as its
+own account if that matters.
+
 ### Access points
 
 UniFi Network 10 removed per-device SSH authentication from the standalone
