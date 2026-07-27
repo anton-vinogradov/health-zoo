@@ -27,6 +27,7 @@ DEFAULT_THRESHOLDS = {
     # a full day of silence on a street camera is broken, not quiet.
     "camera_quiet_warn_hours": 12,
     "camera_quiet_bad_hours": 24,
+    "airtime_bad": 85,
 }
 
 # A NAS recording video is *supposed* to sit near-full: the archive grows until
@@ -180,6 +181,26 @@ def host_issues(host: dict, cfg: dict | None = None) -> list[dict]:
     if host.get("power_recovery") is False:
         add("warn", "power_recovery",
             "не включится сам после пропадания электричества")
+
+    # An access point with a dead radio still pings, still answers ssh, and
+    # serves nobody — the one failure a network-level check cannot see.
+    radios = host.get("radios", []) + host.get("radioiws", [])
+    for radio in radios:
+        name = radio.get("name") or radio.get("dev") or "?"
+        if radio.get("disabled"):
+            continue  # deliberately off is not broken
+        if radio.get("channel") == 0 or radio.get("freq") == 0:
+            ssid = radio.get("ssid")
+            add("bad", f"radio:{name}",
+                f"радио {name}{' (' + ssid + ')' if ssid else ''} не вещает")
+        util = radio.get("utilization")
+        if isinstance(util, (int, float)) and util >= limits.get("airtime_bad", 85):
+            add("warn", f"radioair:{radio.get('name')}",
+                f"эфир {radio.get('name')} загружен на {util}%")
+    if host.get("unifi_state") not in (None, "", 2) and radios:
+        # UniFi state 2 is "adopted and managed"; anything else means the
+        # controller is not driving this AP.
+        add("warn", "unifi_state", "точка не управляется контроллером")
 
     if host.get("reboot_required"):
         # "Needs a reboot" on its own is not actionable; say what is waiting —

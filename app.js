@@ -5,9 +5,13 @@
 'use strict';
 
 var ROLE_ICON = {
-  router: '🛜', server: '🖥️', nas: '💽', camera: '📷', mesh: '📡', other: '📦'
+  router: '🛜', ap: '📶', server: '🖥️', nas: '💽', camera: '📷', mesh: '📡', other: '📦'
 };
-var ROLE_ORDER = { router: 0, server: 1, nas: 2, camera: 3, mesh: 4, other: 5 };
+var ROLE_ORDER = { router: 0, ap: 1, server: 2, nas: 3, camera: 4, mesh: 5, other: 6 };
+var ROLE_NAME = {
+  router: 'роутер', ap: 'точка доступа', server: 'сервер', nas: 'NAS',
+  camera: 'камера', mesh: 'меш-нода', other: 'устройство'
+};
 
 /* Thresholds shared by the bars and the card's overall colour.
    Temperatures are tuned for the low-power x86 boxes this watches: a Celeron
@@ -190,6 +194,13 @@ function hostCard(host) {
     chips.push(chip('⇄ ' + name.replace('/udp', '') + ':' + byService[name].join(', ') +
       (name.indexOf('/udp') >= 0 ? '/udp' : ''), ''));
   });
+  // A device with more than one job says so: "роутер + точка доступа".
+  if ((host.roles || []).length > 1) {
+    chips.push(chip(host.roles.map(function (r) { return ROLE_NAME[r] || r; }).join(' + '), ''));
+  }
+  if (host.wifi_clients !== undefined && (host.radios || host.radioiws || []).length) {
+    chips.push(chip('📶 клиентов: ' + host.wifi_clients, ''));
+  }
   if (host.role === 'camera' && host.ports) {
     var rtsp = host.ports['554'];
     if (rtsp) chips.push(chip('RTSP жив', 'ok'));
@@ -300,8 +311,8 @@ function hostCard(host) {
 /* ---------- fleet, drawn as the actual network tree ---------- */
 
 var ROLE_TITLE = {
-  router: 'Роутеры', server: 'Серверы', nas: 'NAS', camera: 'Камеры',
-  mesh: 'Меш-ноды', other: 'Прочее'
+  router: 'Роутеры', ap: 'Точки доступа', server: 'Серверы', nas: 'NAS',
+  camera: 'Камеры', mesh: 'Меш-ноды', other: 'Прочее'
 };
 
 function roleGroups(hosts) {

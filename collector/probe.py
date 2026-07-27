@@ -54,6 +54,8 @@ LIST_FIELDS = {
     "camlink": ["addr", "proto"],
     "camevent": ["id", "name", "day_count", "last", "oldest"],
     "smart": ["dev", "health", "temp", "hours", "realloc", "pending", "wear", "model"],
+    "radio": ["name", "channel", "clients", "noise", "utilization"],
+    "radioiw": ["dev", "ssid", "freq", "clients"],
     "listen": ["port", "process", "scope"],
     "udp": ["port", "process", "scope"],
     "raid": ["dev", "level", "state"],
@@ -187,6 +189,14 @@ def _post_process(data: dict) -> dict:
         bad = bad or (isinstance(disk.get("realloc"), int) and disk["realloc"] > 0)
         disk["failing"] = bad
     data["failing_disks"] = [d for d in data.get("smarts", []) if d.get("failing")]
+
+    for radio in data.get("radios", []) + data.get("radioiws", []):
+        for field in ("clients", "channel", "noise", "utilization", "freq"):
+            if radio.get(field) not in (None, ""):
+                radio[field] = _num(radio[field])
+    data["wifi_clients"] = sum(
+        r.get("clients", 0) for r in data.get("radios", []) + data.get("radioiws", [])
+        if isinstance(r.get("clients"), int))
 
     for repo in data.get("backuprepos", []):
         repo["last"] = _num(repo.get("last", 0)) or 0
@@ -385,7 +395,17 @@ ROUTEROS_CMD = (
     '."|".[:tostr [/ip service get $i disabled]])}; '
     ':put "@@interface"; :foreach i in=[/interface find] do={'
     ':put ([:tostr [/interface get $i name]]."|".[:tostr [/interface get $i running]]'
-    '."|".[:tostr [/interface get $i type]]."|".[:tostr [/interface get $i disabled]])}'
+    '."|".[:tostr [/interface get $i type]]."|".[:tostr [/interface get $i disabled]])}; '
+    # RouterOS 7 renamed the wireless stack: /interface wifi, not
+    # /interface wireless. A router here is also the site's access point, so
+    # its radios and client count matter as much as its uplink.
+    ':put "@@wifi"; :do {:foreach i in=[/interface wifi find] do={'
+    ':put ([:tostr [/interface wifi get $i name]]."|"'
+    '.[:tostr [/interface wifi get $i configuration.ssid]]."|"'
+    '.[:tostr [/interface wifi get $i disabled]]."|"'
+    '.[:tostr [/interface wifi get $i running]]."|"'
+    '.[:tostr [:len [/interface wifi registration-table find '
+    'where interface=[/interface wifi get $i name]]]])}} on-error={}'
 )
 
 
@@ -582,6 +602,21 @@ def probe_routeros(host: dict, key: str | None) -> dict:
         })
     if ifaces:
         data["ifaces"] = ifaces
+
+    radios = []
+    for cells in _routeros_rows(sections.get("wifi", [])):
+        name = cells[0]
+        if not name:
+            continue
+        radios.append({
+            "name": name,
+            "ssid": cells[1] if len(cells) > 1 else "",
+            "channel": 0 if (len(cells) > 3 and cells[3] != "true") else None,
+            "clients": _num(cells[4]) if len(cells) > 4 else 0,
+            "disabled": (cells[2] if len(cells) > 2 else "false") == "true",
+        })
+    if radios:
+        data["radios"] = radios
     return data
 
 
@@ -643,7 +678,11 @@ def probe_host(host: dict, key: str | None) -> dict:
         "id": host.get("id") or host["addr"],
         "name": host.get("name") or host.get("id") or host["addr"],
         "addr": host["addr"],
-        "role": host.get("role", "server"),
+        # A device can do more than one job — a router that is also an access
+        # point, a NAS that also records cameras. The first role decides where
+        # it is grouped and which icon it gets; the rest are shown as well.
+        "role": (host.get("roles") or [host.get("role", "server")])[0],
+        "roles": host.get("roles") or [host.get("role", "server")],
         "agent": host.get("agent", "linux"),
         "subnet": host.get("subnet", ""),
         "note": host.get("note", ""),
