@@ -70,8 +70,13 @@ printf %s 'the-secret' | sudo systemd-creds encrypt --name=telegram-token - \
     /etc/health-zoo.d/telegram-token.cred
 ```
 
-`systemd-creds` encrypts with a key held by the machine — sealed to the TPM
-where one exists — so the file is useless if copied elsewhere. systemd
+`systemd-creds` encrypts with a key held by the machine. Add
+`--with-key=host+tpm2` to bind it to the TPM as well: without that the host
+key sits in `/var/lib/systemd/credential.secret` and travels with any full
+backup, so a copied credential plus a copied backup is a readable secret.
+(systemd reports "TPM2 support is not installed" until `libtss2-rc0` is
+present — the one library it dlopens for TPM, easy to miss when every other
+libtss2 package is already there.) systemd
 decrypts it at service start into a tmpfs directory that only this service can
 read. The config then names it instead of holding it:
 
