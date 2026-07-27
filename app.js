@@ -272,6 +272,13 @@ function hostCard(host) {
       onclick: function (e) { e.stopPropagation(); }
     }));
   });
+  if (host.agent === 'unifi' && host.update_count > 0) {
+    footer.push(h('button', {
+      class: 'btn btn-sm btn-warn', text: 'прошивка',
+      title: 'обновить прошивку точки через контроллер',
+      onclick: function (e) { e.stopPropagation(); upgradeAccessPoint(host); }
+    }));
+  }
   if (host.updatable && host.update_count > 0) {
     footer.push(h('button', {
       class: 'btn btn-sm btn-warn', text: 'обновить',
@@ -935,6 +942,20 @@ function rebootHost(host) {
     if (res.error) { if (!actionFailed(res)) alert('Не вышло: ' + res.error); return; }
     document.getElementById('modal').classList.add('hidden');
     openJobLog();
+  }).catch(function (e) { alert('Ошибка запроса: ' + e); });
+}
+
+/* Firmware upgrades go through the controller too — the AP itself takes no
+   orders from us. */
+function upgradeAccessPoint(host) {
+  if (!confirm('Обновить прошивку ' + host.name + '?\n\n' +
+               'Точка перезагрузится, клиенты переподключатся к соседней.')) return;
+  fetch('/api/unifi/upgrade', {
+    method: 'POST', headers: actionHeaders(),
+    body: JSON.stringify({ host: host.id })
+  }).then(function (r) { return r.json(); }).then(function (res) {
+    if (res.error) { if (!actionFailed(res)) alert('Не вышло: ' + res.error); return; }
+    alert('Команда отправлена контроллеру — обновление идёт в фоне.');
   }).catch(function (e) { alert('Ошибка запроса: ' + e); });
 }
 

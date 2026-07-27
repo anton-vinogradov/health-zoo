@@ -58,6 +58,29 @@ Units that would cut off access to the host — `ssh`, `network`, `firewall`,
 `systemd-*` and friends — are refused by the server, not merely hidden in the UI.
 Removal asks you to type the service name to confirm.
 
+### Access points
+
+UniFi Network 10 removed per-device SSH authentication from the standalone
+application, so access points are read through the controller's API instead —
+which is the better route anyway: one login returns every AP's radios, client
+counts, airtime and firmware state without touching the access points at all.
+
+Configure it with an account that can also act, not a view-only one: reading
+statistics and rebooting a radio go through the same endpoint, so a read-only
+account means the reboot and firmware buttons cannot work.
+
+```json
+"unifi_controller": {
+  "url": "https://10.0.10.13:8443",
+  "site": "default",
+  "username": "health-zoo",
+  "password": "…"
+}
+```
+
+A router that is also an access point simply declares both roles:
+`"roles": ["router", "ap"]`.
+
 ### Rebooting
 
 Every device type can be rebooted from its card, each by the only mechanism it

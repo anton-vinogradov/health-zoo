@@ -1058,6 +1058,134 @@ MAC_VENDORS = {
 }
 
 
+def poll_unifi_controller(cfg: dict, results: list[dict]) -> None:
+    """Enrich access points from the UniFi controller's API.
+
+    UniFi Network 10 dropped per-device SSH authentication from the standalone
+    application, so the controller is the only way in — and the better one
+    anyway: one login returns every AP's radios, clients, airtime and firmware
+    state, without touching the access points at all.
+    """
+    conf = cfg.get("unifi_controller") or {}
+    base = (conf.get("url") or "").rstrip("/")
+    user, password = conf.get("username"), conf.get("password")
+    if not (base and user and password):
+        return
+
+    site = conf.get("site", "default")
+    context = ssl.create_default_context()
+    # Controller certificates are self-signed unless someone went out of their
+    # way; this reads statistics, it does not trust the endpoint with secrets
+    # beyond the credentials it was given for exactly this purpose.
+    context.check_hostname = False
+    context.verify_mode = ssl.CERT_NONE
+
+    import http.cookiejar
+    import json as _json
+    jar = http.cookiejar.CookieJar()
+    opener = urllib.request.build_opener(
+        urllib.request.HTTPSHandler(context=context),
+        urllib.request.HTTPCookieProcessor(jar))
+
+    try:
+        login = urllib.request.Request(
+            f"{base}/api/login",
+            data=_json.dumps({"username": user, "password": password}).encode(),
+            headers={"Content-Type": "application/json"})
+        opener.open(login, timeout=10).read()
+        devices = _json.loads(
+            opener.open(f"{base}/api/s/{site}/stat/device", timeout=15).read())
+    except Exception as exc:
+        for host in results:
+            if host.get("agent") == "unifi" and not host.get("reachable"):
+                host["error"] = f"контроллер UniFi недоступен: {exc}"
+        return
+
+    by_addr = {h.get("addr"): h for h in results}
+    for device in devices.get("data", []):
+        host = by_addr.get(device.get("ip"))
+        if not host:
+            continue
+        host["reachable"] = True
+        host["error"] = ""
+        # The MAC is what the controller's command API addresses devices by.
+        host["unifi_mac"] = device.get("mac", "")
+        host["os_name"] = f"UniFi {device.get('version', '')}".strip()
+        host["model"] = device.get("model", "")
+        host["uptime"] = device.get("uptime", 0)
+        host["wifi_clients"] = device.get("num_sta", 0)
+        host["unifi_state"] = device.get("state")
+        if device.get("upgradable"):
+            host["updates"] = [{"pkg": "UniFi firmware",
+                                "old": device.get("version", ""),
+                                "new": device.get("upgrade_to_firmware", ""),
+                                "security": "0", "suite": ""}]
+            host["update_count"] = 1
+        load = device.get("sys_stats") or {}
+        if load.get("loadavg_1"):
+            host["load1"] = float(load["loadavg_1"])
+            host["cpus"] = 1
+        if load.get("mem_total"):
+            host["mem_total"] = int(load["mem_total"])
+            host["mem_available"] = int(load["mem_total"]) - int(load.get("mem_used", 0))
+
+        radios = []
+        for radio in device.get("radio_table_stats", []):
+            radios.append({
+                "name": radio.get("radio", radio.get("name", "")),
+                "ssid": "",
+                "channel": radio.get("channel"),
+                "clients": radio.get("user-num_sta", radio.get("num_sta", 0)),
+                "utilization": radio.get("cu_total"),
+                "disabled": False,
+            })
+        if radios:
+            host["radios"] = radios
+        _post_process(host)
+
+
+def unifi_command(cfg: dict, mac: str, command: str) -> tuple[bool, str]:
+    """Send a device command through the controller (restart, upgrade).
+
+    Access points take orders from the controller, not from us — which is also
+    why the controller account has to be an admin rather than view-only:
+    reading statistics and rebooting a radio come through the same door.
+    """
+    conf = cfg.get("unifi_controller") or {}
+    base = (conf.get("url") or "").rstrip("/")
+    user, password = conf.get("username"), conf.get("password")
+    if not (base and user and password):
+        return False, "контроллер UniFi не настроен в конфиге"
+    if not mac:
+        return False, "неизвестен MAC точки (контроллер её не видит)"
+
+    import http.cookiejar
+    import json as _json
+    context = ssl.create_default_context()
+    context.check_hostname = False
+    context.verify_mode = ssl.CERT_NONE
+    jar = http.cookiejar.CookieJar()
+    opener = urllib.request.build_opener(
+        urllib.request.HTTPSHandler(context=context),
+        urllib.request.HTTPCookieProcessor(jar))
+
+    site = conf.get("site", "default")
+    try:
+        opener.open(urllib.request.Request(
+            f"{base}/api/login",
+            data=_json.dumps({"username": user, "password": password}).encode(),
+            headers={"Content-Type": "application/json"}), timeout=10).read()
+        response = opener.open(urllib.request.Request(
+            f"{base}/api/s/{site}/cmd/devmgr",
+            data=_json.dumps({"cmd": command, "mac": mac.lower()}).encode(),
+            headers={"Content-Type": "application/json"}), timeout=20).read()
+        body = _json.loads(response)
+        ok = (body.get("meta", {}).get("rc") == "ok")
+        return ok, "" if ok else str(body.get("meta", {}).get("msg", "отказ контроллера"))
+    except Exception as exc:
+        return False, str(exc)
+
+
 def find_unmanaged(results: list[dict], hosts: list[dict]) -> list[dict]:
     """Devices the network knows about but the config does not.
 

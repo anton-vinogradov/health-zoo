@@ -82,6 +82,7 @@ class Fleet:
             hosts = probe.probe_all(self.hosts(), self.cfg.get("ssh_key"))
             probe.run_external_checks(self.cfg.get("external_checks", []),
                                       self.hosts(), self.cfg.get("ssh_key"), hosts)
+            probe.poll_unifi_controller(self.cfg, hosts)
             issues.annotate(hosts, self.cfg)
             snap = {
                 "unmanaged": probe.find_unmanaged(hosts, self.hosts()),
@@ -310,6 +311,12 @@ class Jobs:
             return ("sudo -n reboot 2>&1 || "
                     "{ echo 'DSM требует пароль для sudo — см. README'; exit 3; }"), ""
 
+        if agent == "unifi":
+            # Access points obey the controller; the hub asks it, not them.
+            snapshot = {h.get("id"): h for h in fleet.get().get("hosts", [])}
+            mac = (snapshot.get(host["id"], {}) or {}).get("unifi_mac", "")
+            return ("unifi", mac, "restart"), ""
+
         if agent == "meshtastic":
             binary = self.cfg.get("meshtastic_python",
                                   "/opt/meshtastic-zoo/.venv/bin/python")
@@ -360,6 +367,12 @@ class Jobs:
         if error or command is None:
             self._log(job_id, f"! {error}")
             code = 1
+        elif isinstance(command, tuple) and command[0] == "unifi":
+            self._log(job_id, "команда идёт через контроллер UniFi")
+            ok, error = probe.unifi_command(self.cfg, command[1], command[2])
+            if not ok:
+                self._log(job_id, f"! {error}")
+            code = 0 if ok else 1
         elif isinstance(command, tuple) and command[0] == "local":
             self._log(job_id, "команда идёт с хоста дашборда (нода не даёт shell)")
             code = self._exec(job_id, {"local": True, "id": host["id"]}, None,
@@ -691,6 +704,22 @@ class Handler(BaseHTTPRequestHandler):
                 self._json({"error": err}, 409)
                 return
             self._json({"ok": True, "job": job_id})
+            return
+
+        if path == "/api/unifi/upgrade":
+            length = int(self.headers.get("Content-Length") or 0)
+            try:
+                req = json.loads(self.rfile.read(length).decode("utf-8") or "{}")
+            except json.JSONDecodeError:
+                self._json({"error": "bad json"}, 400)
+                return
+            snapshot = {h.get("id"): h for h in self.fleet.get().get("hosts", [])}
+            host = snapshot.get(req.get("host"))
+            if not host or host.get("agent") != "unifi":
+                self._json({"error": "unknown access point"}, 404)
+                return
+            ok, error = probe.unifi_command(self.fleet.cfg, host.get("unifi_mac", ""), "upgrade")
+            self._json({"ok": True} if ok else {"error": error}, 200 if ok else 400)
             return
 
         if path == "/api/service/action":
