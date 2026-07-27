@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import concurrent.futures
 import html
+import json
 import os
 import re
 import shlex
@@ -1036,6 +1037,87 @@ def probe_sonos(host: dict) -> dict:
     return data
 
 
+# Firmware version and the latest release, both cached: the version changes
+# when somebody flashes a node, and GitHub does not need asking every 3 minutes.
+_MESH_INFO_CACHE: dict[str, tuple[dict, float]] = {}
+_MESH_INFO_TTL = 6 * 3600
+_MESH_RELEASE_CACHE: tuple[str, float] = ("", 0.0)
+_MESH_RELEASE_TTL = 12 * 3600
+_MESH_LOCK = threading.Lock()
+# Where the meshtastic CLI lives, told to us once at startup: probe_host has no
+# config of its own, and threading a whole config through every probe to reach
+# one path would be worse than a module-level setting.
+MESHTASTIC_PYTHON = "/opt/meshtastic-zoo/.venv/bin/python"
+
+
+def configure(cfg: dict) -> None:
+    """Take the few settings the probes need from the config, once."""
+    global MESHTASTIC_PYTHON
+    MESHTASTIC_PYTHON = cfg.get("meshtastic_python", MESHTASTIC_PYTHON)
+
+
+def _mesh_latest_release() -> str:
+    """The newest published firmware tag, or "" if GitHub is not reachable.
+
+    A dashboard that cannot reach the internet must still work; not knowing the
+    latest version is a missing answer, not a failure.
+    """
+    global _MESH_RELEASE_CACHE
+    with _MESH_LOCK:
+        tag, when = _MESH_RELEASE_CACHE
+        if tag and time.time() - when < _MESH_RELEASE_TTL:
+            return tag
+    try:
+        request = urllib.request.Request(
+            "https://api.github.com/repos/meshtastic/firmware/releases/latest",
+            headers={"User-Agent": "health-zoo", "Accept": "application/vnd.github+json"})
+        with urllib.request.urlopen(request, timeout=8) as resp:
+            payload = json.loads(resp.read().decode("utf-8", "replace"))
+        tag = (payload.get("tag_name") or "").lstrip("v")
+    except Exception:
+        tag = ""
+    if tag:
+        with _MESH_LOCK:
+            _MESH_RELEASE_CACHE = (tag, time.time())
+    return tag
+
+
+def _mesh_device_info(host: dict, cfg: dict | None = None) -> dict:
+    """Firmware version and hardware model, over the protobuf API.
+
+    /json/report does not carry them — the node reports airtime and memory but
+    not what it is running. The CLI does, at the cost of a full API handshake,
+    so the answer is cached for hours rather than asked every poll.
+    """
+    addr = host.get("addr", "")
+    with _MESH_LOCK:
+        hit = _MESH_INFO_CACHE.get(addr)
+        if hit and time.time() - hit[1] < _MESH_INFO_TTL:
+            return hit[0]
+
+    binary = (cfg or {}).get("meshtastic_python", MESHTASTIC_PYTHON)
+    info: dict = {}
+    if os.path.exists(binary):
+        try:
+            result = subprocess.run(
+                [binary, "-m", "meshtastic", "--host", addr, "--no-nodes", "--info"],
+                capture_output=True, timeout=40, text=True)
+            found = re.search(r'"firmwareVersion":\s*"([^"]+)"', result.stdout)
+            if found:
+                info["firmware"] = found.group(1)
+            model = re.search(r'"hwModel":\s*"([^"]+)"', result.stdout)
+            if model:
+                info["model"] = model.group(1).replace("_", " ").title()
+            role = re.search(r'"role":\s*"([^"]+)"', result.stdout)
+            if role:
+                info["role"] = role.group(1)
+        except (subprocess.SubprocessError, OSError):
+            info = {}
+    with _MESH_LOCK:
+        _MESH_INFO_CACHE[addr] = (info, time.time())
+    return info
+
+
 def probe_meshtastic(host: dict) -> dict:
     """Meshtastic firmware serves /json/report over plain HTTP — no protobuf,
     no meshtastic python package, and it works on the nodes that refuse a full
@@ -1058,9 +1140,14 @@ def probe_meshtastic(host: dict) -> dict:
     radio = body.get("radio", {})
     wifi = body.get("wifi", {})
 
+    info = _mesh_device_info(host)
+    latest = _mesh_latest_release() if info.get("firmware") else ""
     data: dict = {
         "kind": "meshtastic",
         "os_id": "meshtastic",
+        "os_name": (f"Meshtastic {info['firmware']}" if info.get("firmware") else ""),
+        "model": info.get("model", ""),
+        "mesh_role": info.get("role", ""),
         # The same HTTP server that answered /json/report serves the node UI.
         "web": [{"port": 80, "scheme": "http", "label": "node UI"}],
         "uptime": air.get("seconds_since_boot", 0),
@@ -1070,6 +1157,13 @@ def probe_meshtastic(host: dict) -> dict:
         "frequency": round(radio.get("frequency", 0), 3),
         "wifi_rssi": wifi.get("rssi"),
     }
+    # Same shape as every other update in the fleet, so the card, the checks
+    # and the alerts all treat it the same way.
+    if latest and info.get("firmware") and info["firmware"] != latest:
+        data["updates"] = [{"pkg": "Meshtastic firmware", "old": info["firmware"],
+                            "new": latest, "security": "0", "suite": ""}]
+        data["update_count"] = 1
+
     heap_total = mem.get("heap_total") or 0
     if heap_total:
         data["mem_total"] = heap_total

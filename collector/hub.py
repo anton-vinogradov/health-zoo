@@ -77,6 +77,7 @@ class Fleet:
         self.settings = settings_mod.Settings(
             cfg.get("settings_file", "/var/lib/health-zoo/settings.json"))
         self.settings.apply_to(cfg)
+        probe.configure(cfg)
         self.history = history.History(
             cfg.get("history_db", "/var/lib/health-zoo/history.db"),
             cfg.get("history_retention_days", 180))

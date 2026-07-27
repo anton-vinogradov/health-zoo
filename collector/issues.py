@@ -652,9 +652,23 @@ def checks_for(host: dict, cfg: dict | None = None) -> list[dict]:
 
     add("updates", "Прошивка устройства",
         "Точка доступа спрашивает контроллер, колонка — сервис обновлений "
-        "Sonos; обе сравнивают предложенную версию с текущей.",
-        applies=agent in ("unifi", "sonos"),
+        "Sonos, мешнода — последний релиз meshtastic/firmware на GitHub; все "
+        "сравнивают предложенную версию с текущей.",
+        applies=agent in ("unifi", "sonos", "meshtastic"),
         skipped="не устройство с собственной прошивкой", keys=("updates",))
+
+    # Said out loud rather than left blank: a camera card with no firmware line
+    # otherwise reads as "firmware is fine", when the truth is nobody looked.
+    add("updates", "Прошивка камеры",
+        "Версию отдаёт только сама камера, и только авторизованному запросу "
+        "(ISAPI отвечает 401 без учётных данных). Учётных данных камер этот "
+        "инструмент не хранит, поэтому версия неизвестна — а сравнивать её всё "
+        "равно не с чем: производитель не публикует машиночитаемый список "
+        "актуальных версий.",
+        applies=False,
+        skipped=("нет учётных данных камеры — версия неизвестна"
+                 if host.get("role") == "camera" else "не камера"),
+        keys=())
 
     add("network", "Доступность снаружи",
         "Порт проверяется с другого хоста в интернете — то, что видит клиент",

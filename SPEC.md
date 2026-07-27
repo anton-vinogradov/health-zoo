@@ -99,7 +99,8 @@ Marked: **✓** done, **▶** in progress, **○** deliberately not done.
 | ✓ | Cameras: stream state, silent detection, archive depth |
 | ✓ | Wi-Fi: radios on air, airtime (own and foreign), channel choice, per-SSID quality |
 | ✓ | Wireless clients (speakers): a channel the access points are saturating |
-| ✓ | Device firmware: UniFi through the controller, Sonos through its own update service |
+| ✓ | Device firmware: UniFi through the controller, Sonos through its own update service, mesh nodes against the latest meshtastic/firmware release |
+| ○ | Camera firmware: the version needs an authenticated ISAPI request and there is nothing to compare it against — the vendor publishes no machine-readable list |
 | ✓ | TLS certificate expiry |
 | ✓ | Reachability from outside (measured from an external host) |
 | ✓ | Port forwards that lead nowhere; IPsec policies that never came up |
