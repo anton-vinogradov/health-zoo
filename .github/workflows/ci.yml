@@ -33,7 +33,7 @@ jobs:
         # and on dash, where bashisms fail at runtime rather than at review.
         run: |
           shellcheck --shell=sh collector/agents/*.sh
-          shellcheck --shell=bash install.sh
+          shellcheck --shell=bash install.sh sync-config.sh
 
   config:
     name: example config
