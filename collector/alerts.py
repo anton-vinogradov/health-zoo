@@ -13,6 +13,7 @@ been full for a week must not send a message every poll cycle.
 
 from __future__ import annotations
 
+import json
 import os
 import subprocess
 import threading
@@ -35,9 +36,49 @@ class Alerts:
         # Where to look when a message arrives; without it an alert tells you
         # something broke but not where to go.
         self.dashboard_url = (self.cfg.get("dashboard_url") or "").rstrip("/")
+        # A problem must persist this many consecutive polls before it is
+        # announced, and be gone as long before "cleared" is sent. Without it
+        # a host that answers every other poll pages you all day.
+        self.flap_cycles = int(self.cfg.get("flap_cycles", 2))
+        # A standing problem nobody has fixed (security updates, a pending
+        # reboot) is worth one reminder a day, not one every poll.
+        self.digest_hour = self.cfg.get("digest_hour", 10)
+        self.startup_cooldown = int(self.cfg.get("startup_cooldown_hours", 6)) * 3600
+        self.state_path = self.cfg.get(
+            "state_file", "/var/lib/health-zoo/alerts-state.json")
+
         self.lock = threading.Lock()
         self.active: dict[str, dict] = {}
+        self.pending: dict[str, int] = {}   # candidate problems and their streak
+        self.clearing: dict[str, int] = {}  # problems that look resolved
         self.seeded = False
+        self._load_state()
+
+    # ---------- persistence ----------
+    # Kept on disk so a restart neither forgets what has already been reported
+    # nor re-announces it; during development that alone was the loudest
+    # source of messages.
+
+    def _load_state(self) -> None:
+        try:
+            with open(self.state_path, encoding="utf-8") as fh:
+                saved = json.load(fh)
+        except (OSError, ValueError):
+            saved = {}
+        self.active = saved.get("active", {})
+        self.last_startup = saved.get("last_startup", 0)
+        self.last_digest = saved.get("last_digest", 0)
+        self.seeded = bool(self.active) or bool(self.last_startup)
+
+    def _save_state(self) -> None:
+        try:
+            os.makedirs(os.path.dirname(self.state_path), exist_ok=True)
+            with open(self.state_path, "w", encoding="utf-8") as fh:
+                json.dump({"active": self.active,
+                           "last_startup": self.last_startup,
+                           "last_digest": self.last_digest}, fh, ensure_ascii=False)
+        except OSError:
+            pass
 
     # ---------- state diffing ----------
 
@@ -74,21 +115,50 @@ class Alerts:
         if not self.enabled:
             return
         current = self._current(hosts)
+        now = int(time.time())
+
         with self.lock:
-            previous = self.active
-            self.active = {
-                key: (previous.get(key) or value) for key, value in current.items()
-            }
+            previous = dict(self.active)
+
+            # Debounce in both directions: count how many polls in a row a
+            # problem has been present (or absent) before acting on it.
+            appeared, cleared = [], []
+            for key, value in current.items():
+                if key in previous:
+                    self.clearing.pop(key, None)
+                    continue
+                self.pending[key] = self.pending.get(key, 0) + 1
+                if self.pending[key] >= self.flap_cycles:
+                    appeared.append(value)
+                    self.active[key] = value
+                    self.pending.pop(key, None)
+            for key in list(self.pending):
+                if key not in current:
+                    self.pending.pop(key, None)
+
+            for key, value in previous.items():
+                if key in current:
+                    continue
+                self.clearing[key] = self.clearing.get(key, 0) + 1
+                if self.clearing[key] >= self.flap_cycles:
+                    cleared.append(value)
+                    self.active.pop(key, None)
+                    self.clearing.pop(key, None)
+
             first_run = not self.seeded
             self.seeded = True
-
-        appeared = [v for k, v in current.items() if k not in previous]
-        cleared = [v for k, v in previous.items() if k not in current]
+            startup_due = first_run and (now - self.last_startup) > self.startup_cooldown
+            if startup_due:
+                self.last_startup = now
+            digest_due = self._digest_due(now)
+            if digest_due:
+                self.last_digest = now
+            self._save_state()
 
         if first_run:
-            # Restarting the hub is not an incident: report the standing state
-            # once instead of announcing every pre-existing problem as new.
-            if self.startup_summary:
+            # A restart is not an incident. Report the standing state at most
+            # once every few hours, not on every service restart.
+            if self.startup_summary and startup_due:
                 self._send(self._startup_text(hosts, current))
             return
 
@@ -96,6 +166,38 @@ class Alerts:
             self._send(self._change_text("Появилось", appeared, "🔴"))
         if cleared:
             self._send(self._change_text("Ушло", cleared, "🟢"))
+        if digest_due:
+            text = self._digest_text(hosts)
+            if text:
+                self._send(text)
+
+    def _digest_due(self, now: int) -> bool:
+        """Once a day, at the configured hour, and never twice."""
+        if self.digest_hour is None or self.digest_hour < 0:
+            return False
+        if now - self.last_digest < 20 * 3600:
+            return False
+        return time.localtime(now).tm_hour == int(self.digest_hour)
+
+    def _digest_text(self, hosts: list[dict]) -> str:
+        """Everything still outstanding — the nag for things nobody fixed."""
+        bad, warn = [], []
+        for host in hosts:
+            for issue in host.get("issues", []):
+                name = host.get("name", host["id"])
+                (bad if issue["level"] == "bad" else warn).append((name, issue["text"]))
+        if not bad and not warn:
+            return ""
+        lines = ["🩺 health-zoo — сводка за сутки"]
+        if bad:
+            lines.append("")
+            lines.append(f"🔴 требует внимания ({len(bad)}):")
+            lines += [f"• {n}: {t}" for n, t in bad[:15]]
+        if warn:
+            lines.append("")
+            lines.append(f"🟡 замечания ({len(warn)}):")
+            lines += [f"• {n}: {t}" for n, t in warn[:15]]
+        return "\n".join(lines + self._footer())
 
     # ---------- message shaping ----------
 

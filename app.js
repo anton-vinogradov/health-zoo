@@ -176,6 +176,15 @@ function hostCard(host) {
   if (host.agent === 'meshtastic' && host.channel_utilization !== undefined) {
     chips.push(chip('эфир ' + host.channel_utilization + '%', host.channel_utilization > 25 ? 'warn' : ''));
   }
+  // Published services that are not web pages — VPN endpoints, proxies, RTSP.
+  // They are as much a part of "what this box does" as the panels are.
+  (host.endpoints || []).slice(0, 5).forEach(function (ep) {
+    var name = ep.label || ep.process || ep.port;
+    chips.push(chip('⇄ ' + name + ':' + ep.port + (ep.proto === 'udp' ? '/udp' : ''), ''));
+  });
+  if ((host.endpoints || []).length > 5) {
+    chips.push(chip('+' + (host.endpoints.length - 5) + ' портов', ''));
+  }
   if (host.role === 'camera' && host.ports) {
     var rtsp = host.ports['554'];
     if (rtsp) chips.push(chip('RTSP жив', 'ok'));
@@ -656,6 +665,17 @@ function showHost(host) {
           class: 'btn btn-sm btn-link', target: '_blank', rel: 'noopener',
           href: webUrl(host, link), text: '⧉ ' + webUrl(host, link) + name
         });
+      }))));
+  }
+
+  if ((host.endpoints || []).length) {
+    body.appendChild(section('Публикует наружу', table(['порт', 'протокол', 'сервис'],
+      host.endpoints.map(function (ep) {
+        return h('tr', null, [
+          h('td', { class: 'mono', text: String(ep.port) }),
+          h('td', { class: 'mono', text: ep.proto }),
+          h('td', { text: ep.label || ep.process || '' })
+        ]);
       }))));
   }
 

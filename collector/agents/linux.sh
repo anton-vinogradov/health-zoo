@@ -249,6 +249,22 @@ fi
 # up as a button, so a newly installed panel is reachable without editing config.
 # The bind address matters: a backend on 127.0.0.1 is reachable only through
 # whatever proxies it, so offering a link to it would send you nowhere.
+# UDP is collected too: a VPN endpoint (WireGuard, AmneziaWG) is one of the
+# more important things a box publishes, and it never shows up over TCP.
+if command -v ss >/dev/null 2>&1; then
+  ss -ulnH 2>/dev/null | awk '{
+    addr = $4
+    port = addr; sub(/.*:/, "", port)
+    host = addr; sub(/:[0-9]+$/, "", host)
+    if (port !~ /^[0-9]+$/ || port == 0) next
+    local = (host ~ /^\[?(::ffff:)?127\./ || host == "[::1]" || host == "::1") ? "local" : "any"
+    print port "\t" local
+  }' | sort -u | while IFS='	' read -r p scope; do
+      [ "$scope" = "local" ] && continue
+      proc=$(ss -ulnpH "sport = :$p" 2>/dev/null | sed -n 's/.*users:((\"\([^\"]*\)\".*/\1/p' | head -1)
+      row "@udp	$p	${proc:-}	$scope"
+    done
+fi
 if command -v ss >/dev/null 2>&1; then
   ss -tlnH 2>/dev/null | awk '{
     addr = $4

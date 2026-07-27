@@ -54,6 +54,7 @@ LIST_FIELDS = {
     "camlink": ["addr", "proto"],
     "smart": ["dev", "health", "temp", "hours", "realloc", "pending", "wear", "model"],
     "listen": ["port", "process", "scope"],
+    "udp": ["port", "process", "scope"],
     "raid": ["dev", "level", "state"],
     "backup": ["task", "name", "last"],
     "iface": ["name", "status", "rx", "tx", "comment"],
@@ -171,7 +172,58 @@ def _post_process(data: dict) -> dict:
     # links from listening ports when nobody set them.
     if not data.get("web"):
         data["web"] = _web_links(data)
+    data["endpoints"] = _endpoints(data)
     return data
+
+
+# Ports whose service is worth naming even though it serves no web page.
+KNOWN_SERVICES = {
+    22: "SSH", 21: "FTP", 23: "telnet", 25: "SMTP", 53: "DNS", 123: "NTP",
+    139: "SMB", 445: "SMB", 554: "RTSP", 1935: "RTMP", 3306: "MySQL",
+    5432: "PostgreSQL", 6379: "Redis", 8291: "Winbox", 8728: "MikroTik API",
+    8729: "MikroTik API-SSL", 4403: "Meshtastic API", 6281: "HyperBackup",
+    5000: "DSM", 5001: "DSM", 51820: "WireGuard", 1080: "SOCKS5",
+    1081: "SOCKS5", 9091: "Transmission", 3261: "iSCSI", 111: "portmap",
+}
+
+
+def _endpoints(data: dict) -> list[dict]:
+    """Everything this host publishes, web or not.
+
+    A VPN endpoint and an MTProto proxy are as much a published service as a
+    web panel — they simply cannot be opened in a browser. Listing only the
+    HTTP ones would hide half of what a VPS actually does.
+    """
+    out: list[dict] = []
+    web_ports = {link["port"] for link in data.get("web", []) if not link.get("local")}
+
+    for entry in data.get("listens", []) + data.get("udps", []):
+        try:
+            port = int(entry.get("port"))
+        except (TypeError, ValueError):
+            continue
+        proto = "udp" if entry in data.get("udps", []) else "tcp"
+        if entry.get("scope") == "local":
+            continue
+        if proto == "tcp" and port in web_ports:
+            continue  # already offered as a link
+        process = entry.get("process") or ""
+        out.append({
+            "port": port,
+            "proto": proto,
+            "process": process,
+            "label": process or KNOWN_SERVICES.get(port, ""),
+        })
+
+    seen = set()
+    unique = []
+    for item in sorted(out, key=lambda e: (e["proto"], e["port"])):
+        key = (item["proto"], item["port"])
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append(item)
+    return unique
 
 
 # Ports that mean "there is a web UI here". Anything in the 8000-9000 range
