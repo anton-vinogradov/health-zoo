@@ -1,0 +1,376 @@
+/* health-zoo — fleet dashboard.
+   Dark by default (it lives on a wall display), light on request.
+   No frameworks, no build step: the hub serves these three files as-is. */
+
+:root {
+  --bg: #0f1216;
+  --bg-raise: #171b21;
+  --bg-card: #1b2028;
+  --line: #2a313b;
+  --text: #e6e9ee;
+  --text-dim: #99a3b1;
+  --text-faint: #6b7684;
+  --ok: #4ba86a;
+  --warn: #d9a441;
+  --bad: #d95757;
+  --info: #4b8fd9;
+  --accent: #5b9dd9;
+  --shadow: 0 1px 3px rgba(0, 0, 0, .4);
+  --radius: 10px;
+  --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+}
+
+:root[data-theme="light"] {
+  --bg: #f4f6f8;
+  --bg-raise: #ffffff;
+  --bg-card: #ffffff;
+  --line: #dde2e8;
+  --text: #1b2028;
+  --text-dim: #5a6472;
+  --text-faint: #8b95a3;
+  --shadow: 0 1px 3px rgba(16, 22, 30, .12);
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  margin: 0;
+  padding: 0;
+  background: var(--bg);
+  color: var(--text);
+  font: 14px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  -webkit-text-size-adjust: 100%;
+}
+
+/* ---------- top bar ---------- */
+
+.topbar {
+  position: sticky;
+  top: 0;
+  z-index: 20;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 16px;
+  padding-top: max(10px, env(safe-area-inset-top));
+  background: var(--bg-raise);
+  border-bottom: 1px solid var(--line);
+}
+
+.brand { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.logo { font-size: 22px; line-height: 1; }
+.topbar h1 { margin: 0; font-size: 16px; font-weight: 600; letter-spacing: .2px; }
+.sub { margin: 1px 0 0; font-size: 12px; color: var(--text-dim); }
+.actions { display: flex; gap: 8px; flex-shrink: 0; }
+
+.btn {
+  padding: 7px 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--bg-card);
+  color: var(--text);
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+  transition: border-color .12s, background .12s;
+}
+.btn:hover:not(:disabled) { border-color: var(--accent); }
+.btn:disabled { opacity: .5; cursor: default; }
+.btn-primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+.btn-primary:hover:not(:disabled) { filter: brightness(1.1); }
+.btn-icon { padding: 7px 10px; }
+.btn-sm { padding: 4px 9px; font-size: 12px; }
+
+/* ---------- fleet-wide alert banner ---------- */
+
+.alert {
+  margin: 12px 16px -4px;
+  padding: 10px 12px;
+  border: 1px solid;
+  border-left-width: 4px;
+  border-radius: var(--radius);
+  font-size: 13px;
+}
+.alert.hidden { display: none; }
+.alert.bad {
+  border-color: color-mix(in srgb, var(--bad) 55%, var(--line));
+  background: color-mix(in srgb, var(--bad) 12%, transparent);
+}
+.alert.warn {
+  border-color: color-mix(in srgb, var(--warn) 55%, var(--line));
+  background: color-mix(in srgb, var(--warn) 12%, transparent);
+}
+.alert.ok {
+  border-color: color-mix(in srgb, var(--ok) 45%, var(--line));
+  background: color-mix(in srgb, var(--ok) 10%, transparent);
+}
+.alert-title { font-weight: 600; margin-bottom: 6px; }
+.alert.bad .alert-title { color: var(--bad); }
+.alert.warn .alert-title { color: var(--warn); }
+.alert.ok .alert-title { color: var(--ok); }
+.alert-list { display: flex; flex-wrap: wrap; gap: 6px; }
+.alert-item {
+  font-size: 12px;
+  padding: 3px 9px;
+  border-radius: 20px;
+  border: 1px solid var(--line);
+  background: var(--bg-card);
+  cursor: pointer;
+}
+.alert-item:hover { border-color: var(--accent); }
+.alert-item b { font-weight: 600; }
+.alert-item.bad b { color: var(--bad); }
+.alert-item.warn b { color: var(--warn); }
+
+@media (max-width: 560px) { .alert { margin: 10px 12px -2px; } }
+
+/* ---------- subnet groups ---------- */
+
+.fleet { padding: 16px; display: flex; flex-direction: column; gap: 18px; }
+
+/* Subnets nest to mirror the real topology: uplink -> site -> camera segment.
+   Each level indents and grows a guide rail on the left. */
+.subnet > .subnet-body { display: flex; flex-direction: column; gap: 12px; }
+
+/* A parent with children grows a guide rail down its whole body, so a nested
+   subnet visibly hangs off the parent's heading rather than off whichever
+   device group happened to render last (the mesh nodes). */
+.subnet.has-children > .subnet-body {
+  padding-left: 16px;
+  border-left: 2px solid var(--line);
+  margin-left: 3px;
+}
+
+/* A nested subnet is its own panel, not a continuation of the group above it. */
+.subnet .subnet {
+  margin: 16px 0 2px -16px;
+  padding: 10px 10px 12px 16px;
+  border-left: 2px solid var(--accent);
+  border-radius: 0 var(--radius) var(--radius) 0;
+  background: color-mix(in srgb, var(--bg-raise) 55%, transparent);
+}
+.subnet .subnet .subnet-head { border-bottom-style: dashed; }
+.subnet-pipe { color: var(--accent); font-size: 12px; }
+
+.role-head {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: .07em;
+  color: var(--text-faint);
+  margin: 2px 0 -2px 2px;
+}
+
+.subnet-head {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  margin: 0 2px 8px;
+  padding-bottom: 6px;
+  border-bottom: 1px solid var(--line);
+}
+.subnet-head h2 { margin: 0; font-size: 14px; font-weight: 600; }
+.subnet-cidr { font-family: var(--mono); font-size: 12px; color: var(--text-dim); }
+.subnet-count { margin-left: auto; font-size: 12px; color: var(--text-faint); }
+
+.cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(270px, 1fr));
+  gap: 10px;
+}
+
+/* ---------- host card ---------- */
+
+.card {
+  background: var(--bg-card);
+  border: 1px solid var(--line);
+  border-left: 3px solid var(--line);
+  border-radius: var(--radius);
+  padding: 10px 12px;
+  box-shadow: var(--shadow);
+  cursor: pointer;
+  transition: transform .1s, border-color .12s;
+}
+.card:hover { transform: translateY(-1px); border-color: var(--accent); }
+.card.state-ok { border-left-color: var(--ok); }
+.card.state-warn { border-left-color: var(--warn); }
+.card.state-bad { border-left-color: var(--bad); }
+.card.state-off { border-left-color: var(--text-faint); opacity: .72; }
+
+.card-head { display: flex; align-items: center; gap: 7px; margin-bottom: 2px; }
+.card-role { font-size: 14px; line-height: 1; }
+.card-name { font-weight: 600; font-size: 14px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.card-addr { margin-left: auto; font-family: var(--mono); font-size: 11px; color: var(--text-faint); }
+.card-os { font-size: 11.5px; color: var(--text-dim); margin-bottom: 8px; min-height: 16px;
+           overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+.metrics { display: flex; flex-direction: column; gap: 5px; }
+
+.metric { display: flex; align-items: center; gap: 8px; font-size: 12px; min-width: 0; }
+.metric-label { width: 46px; color: var(--text-faint); flex-shrink: 0; }
+/* Long mount points must not push the card open — clip them instead. */
+.metric-value {
+  margin-left: auto;
+  font-family: var(--mono);
+  font-size: 11.5px;
+  color: var(--text-dim);
+  max-width: 58%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.bar { flex: 1; height: 5px; border-radius: 3px; background: var(--line); overflow: hidden; min-width: 40px; }
+.bar > i { display: block; height: 100%; border-radius: 3px; background: var(--ok); transition: width .3s; }
+.bar > i.warn { background: var(--warn); }
+.bar > i.bad { background: var(--bad); }
+
+.chips { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 9px; }
+.chip {
+  font-size: 11px;
+  padding: 2px 7px;
+  border-radius: 20px;
+  background: var(--bg-raise);
+  border: 1px solid var(--line);
+  color: var(--text-dim);
+  white-space: nowrap;
+}
+.chip.ok { color: var(--ok); border-color: color-mix(in srgb, var(--ok) 40%, var(--line)); }
+.chip.warn { color: var(--warn); border-color: color-mix(in srgb, var(--warn) 45%, var(--line)); }
+.chip.bad { color: var(--bad); border-color: color-mix(in srgb, var(--bad) 45%, var(--line)); }
+.chip.info { color: var(--info); border-color: color-mix(in srgb, var(--info) 40%, var(--line)); }
+
+.card-foot { display: flex; align-items: center; gap: 6px; margin-top: 9px; }
+.card-err { font-size: 11.5px; color: var(--bad); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* ---------- modal ---------- */
+
+.modal {
+  position: fixed;
+  inset: 0;
+  z-index: 40;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+  background: rgba(0, 0, 0, .55);
+}
+.modal.hidden { display: none; }
+
+.modal-card {
+  width: min(780px, 100%);
+  max-height: 86vh;
+  max-height: 86dvh;          /* iOS clips the bottom without dvh */
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-raise);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  overflow: hidden;
+}
+
+.modal-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 14px;
+  border-bottom: 1px solid var(--line);
+}
+.modal-head h2 { margin: 0; font-size: 15px; font-weight: 600; }
+.modal-head .btn { margin-left: auto; }
+
+.modal-body { padding: 14px; overflow-y: auto; }
+
+.section { margin-bottom: 16px; }
+.section:last-child { margin-bottom: 0; }
+.section > h3 {
+  margin: 0 0 7px;
+  font-size: 12px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: .06em;
+  color: var(--text-faint);
+}
+
+.kv { display: grid; grid-template-columns: minmax(110px, max-content) 1fr; gap: 3px 14px; font-size: 13px; }
+.kv dt { color: var(--text-dim); }
+.kv dd { margin: 0; font-family: var(--mono); font-size: 12px; word-break: break-word; }
+
+table.list { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+table.list th {
+  text-align: left;
+  font-weight: 500;
+  color: var(--text-faint);
+  padding: 3px 8px 5px 0;
+  border-bottom: 1px solid var(--line);
+  font-size: 11.5px;
+}
+table.list td { padding: 4px 8px 4px 0; border-bottom: 1px solid var(--line); vertical-align: top; }
+table.list tr:last-child td { border-bottom: 0; }
+table.list td.mono { font-family: var(--mono); font-size: 11.5px; color: var(--text-dim); }
+table.list td.right { text-align: right; }
+.dot { display: inline-block; width: 7px; height: 7px; border-radius: 50%; background: var(--text-faint); margin-right: 6px; }
+.dot.ok { background: var(--ok); }
+.dot.warn { background: var(--warn); }
+.dot.bad { background: var(--bad); }
+
+.scroll-y { max-height: 260px; overflow-y: auto; }
+
+/* ---------- job log ---------- */
+
+.job-status { padding: 10px 14px; font-size: 13px; border-bottom: 1px solid var(--line); color: var(--text-dim); }
+.job-output {
+  margin: 0;
+  padding: 12px 14px;
+  overflow: auto;
+  flex: 1;
+  min-height: 200px;
+  font-family: var(--mono);
+  font-size: 11.5px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-word;
+  color: var(--text-dim);
+  background: var(--bg);
+}
+
+/* ---------- footer ---------- */
+
+.foot {
+  padding: 10px 16px;
+  padding-bottom: max(10px, env(safe-area-inset-bottom));
+  font-size: 11.5px;
+  color: var(--text-faint);
+  text-align: center;
+}
+
+/* ---------- narrow screens ---------- */
+
+.btn-danger { border-color: color-mix(in srgb, var(--bad) 50%, var(--line)); color: var(--bad); }
+.btn-danger:hover:not(:disabled) { background: var(--bad); color: #fff; border-color: var(--bad); }
+
+/* Web links read as links, update actions read as actions. */
+.btn-link {
+  border-color: color-mix(in srgb, var(--info) 45%, var(--line));
+  color: var(--info);
+  text-decoration: none;
+}
+.btn-link:hover:not(:disabled) { background: var(--info); color: #fff; border-color: var(--info); }
+
+.btn-warn { border-color: color-mix(in srgb, var(--warn) 55%, var(--line)); color: var(--warn); }
+.btn-warn:hover:not(:disabled) { background: var(--warn); color: #16191d; border-color: var(--warn); }
+
+@media (max-width: 560px) {
+  .subnet .subnet { margin-left: 6px; padding-left: 8px; }
+  .topbar { flex-wrap: wrap; }
+  .actions { width: 100%; }
+  .actions .btn { flex: 1; }
+  .fleet { padding: 12px; gap: 14px; }
+  .cards { grid-template-columns: 1fr; }
+  .modal { padding: 0; }
+  .modal-card { max-height: 100dvh; height: 100dvh; border-radius: 0; border: 0; }
+}
+
+.sitelink { color: var(--info); font-family: var(--mono); font-size: 11.5px; text-decoration: none; }
+.sitelink:hover { text-decoration: underline; }

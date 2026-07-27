@@ -1,0 +1,320 @@
+{
+  "_comment": [
+    "health-zoo configuration. Copy to /etc/health-zoo.json and edit.",
+    "Only hosts are listed here — services, containers, cameras and package",
+    "updates are discovered by the agents at runtime, so installing something",
+    "new on a server makes it appear on the dashboard without touching this file.",
+    "",
+    "agent: linux | synology | openwrt | routeros | meshtastic | none",
+    "  'none' means network-level probing only (ping + TCP ports).",
+    "updatable: show the 'update packages' button for this host.",
+    "update_last: update this host after all others (the box hosting the",
+    "  dashboard must go last, or it kills its own service mid-run)."
+  ],
+  "poll_interval": 180,
+  "ssh_key": "~/.ssh/id_health_zoo",
+  "listen": "0.0.0.0",
+  "port": 8816,
+  "subnets": [
+    {
+      "cidr": "0.0.0.0/0",
+      "name": "Интернет",
+      "parent": null,
+      "router": ""
+    },
+    {
+      "cidr": "10.88.0.0/24",
+      "name": "Аплинк .88",
+      "parent": "0.0.0.0/0",
+      "router": "10.88.0.1"
+    },
+    {
+      "cidr": "10.88.88.0/24",
+      "name": "Площадка .88",
+      "parent": "10.88.0.0/24",
+      "router": "10.88.88.1"
+    },
+    {
+      "cidr": "10.66.66.0/24",
+      "name": "Камеры .66",
+      "parent": "10.88.88.0/24",
+      "router": ""
+    },
+    {
+      "cidr": "10.77.0.0/24",
+      "name": "Аплинк .77",
+      "parent": "0.0.0.0/0",
+      "router": "10.77.0.1"
+    },
+    {
+      "cidr": "10.77.77.0/24",
+      "name": "Площадка .77",
+      "parent": "10.77.0.0/24",
+      "router": "10.77.77.1"
+    },
+    {
+      "cidr": "10.67.67.0/24",
+      "name": "Камеры .67",
+      "parent": "10.77.77.0/24",
+      "router": ""
+    }
+  ],
+  "hosts": [
+    {
+      "id": "watchcats",
+      "name": "watchcats",
+      "addr": "10.88.88.8",
+      "user": "randoom",
+      "agent": "linux",
+      "role": "server",
+      "subnet": "10.88.88.0/24",
+      "local": true,
+      "updatable": true,
+      "update_last": true,
+      "note": "ZoneMinder, meshtastic-zoo, ipad-cam, health-zoo"
+    },
+    {
+      "id": "camholder",
+      "name": "camholder",
+      "addr": "10.77.77.8",
+      "user": "randoom",
+      "agent": "linux",
+      "role": "server",
+      "subnet": "10.77.77.0/24",
+      "updatable": true,
+      "note": "ZoneMinder"
+    },
+    {
+      "id": "fornex",
+      "name": "fornex VPS",
+      "addr": "203.0.113.10",
+      "user": "root",
+      "agent": "linux",
+      "role": "server",
+      "subnet": "0.0.0.0/0",
+      "updatable": true,
+      "note": "telemt, Amnezia"
+    },
+    {
+      "id": "vdsina",
+      "name": "vdsina VPS",
+      "addr": "198.51.100.20",
+      "user": "root",
+      "agent": "linux",
+      "role": "server",
+      "subnet": "0.0.0.0/0",
+      "updatable": true,
+      "note": ""
+    },
+    {
+      "id": "nas-photo",
+      "name": "Photo",
+      "addr": "10.88.88.54",
+      "user": "randoom",
+      "agent": "synology",
+      "role": "nas",
+      "subnet": "10.88.88.0/24"
+    },
+    {
+      "id": "nas-street",
+      "name": "Street",
+      "addr": "10.88.88.51",
+      "user": "randoom",
+      "agent": "synology",
+      "role": "nas",
+      "subnet": "10.88.88.0/24"
+    },
+    {
+      "id": "nas-corridor",
+      "name": "Corridor",
+      "addr": "10.88.88.52",
+      "user": "randoom",
+      "agent": "synology",
+      "role": "nas",
+      "subnet": "10.88.88.0/24"
+    },
+    {
+      "id": "nas-backup",
+      "name": "Backup",
+      "addr": "10.77.77.19",
+      "user": "randoom",
+      "agent": "synology",
+      "role": "nas",
+      "subnet": "10.77.77.0/24"
+    },
+    {
+      "id": "rt-88",
+      "name": "MikroTik .88",
+      "addr": "10.88.88.1",
+      "user": "randoom",
+      "agent": "routeros",
+      "role": "router",
+      "subnet": "10.88.88.0/24",
+      "ports": [
+        80,
+        8291
+      ],
+      "port": 17,
+      "aliases": [
+        "10.66.66.1",
+        "10.88.0.10"
+      ],
+      "serves": [
+        "10.88.88.0/24",
+        "10.66.66.0/24"
+      ]
+    },
+    {
+      "id": "rt-77",
+      "name": "MikroTik .77",
+      "addr": "10.77.77.1",
+      "user": "randoom",
+      "agent": "routeros",
+      "role": "router",
+      "subnet": "10.77.77.0/24",
+      "ports": [
+        80,
+        8291
+      ],
+      "port": 17,
+      "aliases": [
+        "10.67.67.1",
+        "10.77.0.10"
+      ],
+      "serves": [
+        "10.77.77.0/24",
+        "10.67.67.0/24"
+      ]
+    },
+    {
+      "id": "rt-uplink-88",
+      "name": "OpenWrt .88",
+      "addr": "10.88.0.1",
+      "user": "root",
+      "agent": "openwrt",
+      "role": "router",
+      "subnet": "10.88.0.0/24",
+      "ports": [
+        22,
+        80,
+        443
+      ],
+      "serves": [
+        "10.88.0.0/24"
+      ]
+    },
+    {
+      "id": "rt-uplink-77",
+      "name": "OpenWrt .77",
+      "addr": "10.77.0.1",
+      "user": "root",
+      "agent": "openwrt",
+      "role": "router",
+      "subnet": "10.77.0.0/24",
+      "ports": [
+        22,
+        80,
+        443
+      ],
+      "serves": [
+        "10.77.0.0/24"
+      ]
+    },
+    {
+      "id": "cam-street",
+      "name": "Street camera",
+      "addr": "10.66.66.12",
+      "agent": "none",
+      "role": "camera",
+      "subnet": "10.66.66.0/24",
+      "ports": [
+        554,
+        80
+      ],
+      "note": "recorded by Street NAS"
+    },
+    {
+      "id": "cam-corridor",
+      "name": "Corridor camera",
+      "addr": "10.66.66.11",
+      "agent": "none",
+      "role": "camera",
+      "subnet": "10.66.66.0/24",
+      "ports": [
+        554,
+        80
+      ],
+      "note": "recorded by Corridor NAS and watchcats"
+    },
+    {
+      "id": "cam-outdoor",
+      "name": "Outdoor camera",
+      "addr": "10.67.67.11",
+      "agent": "none",
+      "role": "camera",
+      "subnet": "10.67.67.0/24",
+      "ports": [
+        554,
+        80
+      ],
+      "note": "recorded by camholder"
+    },
+    {
+      "id": "cam-outdoor2",
+      "name": "Outdoor2 camera",
+      "addr": "10.77.0.11",
+      "agent": "none",
+      "role": "camera",
+      "subnet": "10.77.0.0/24",
+      "ports": [
+        554,
+        80
+      ],
+      "note": "recorded by camholder, streamed by ipad-cam"
+    },
+    {
+      "id": "mesh-fc1",
+      "name": "FerretClub 1",
+      "addr": "10.88.88.41",
+      "agent": "meshtastic",
+      "role": "mesh",
+      "subnet": "10.88.88.0/24",
+      "ports": [
+        4403
+      ]
+    },
+    {
+      "id": "mesh-fca",
+      "name": "FerretClub A",
+      "addr": "10.88.88.40",
+      "agent": "meshtastic",
+      "role": "mesh",
+      "subnet": "10.88.88.0/24",
+      "ports": [
+        4403
+      ]
+    },
+    {
+      "id": "mesh-fc2",
+      "name": "FerretClub 2",
+      "addr": "10.77.77.41",
+      "agent": "meshtastic",
+      "role": "mesh",
+      "subnet": "10.77.77.0/24",
+      "ports": [
+        4403
+      ]
+    },
+    {
+      "id": "mesh-fcb",
+      "name": "FerretClub B",
+      "addr": "10.77.77.40",
+      "agent": "meshtastic",
+      "role": "mesh",
+      "subnet": "10.77.77.0/24",
+      "ports": [
+        4403
+      ]
+    }
+  ]
+}

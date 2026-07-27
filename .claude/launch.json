@@ -1,0 +1,11 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "health-zoo",
+      "runtimeExecutable": "python3",
+      "runtimeArgs": ["collector/hub.py"],
+      "port": 8816
+    }
+  ]
+}

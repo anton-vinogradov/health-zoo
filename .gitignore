@@ -1,0 +1,5 @@
+collector/config.json
+collector/config.local.json
+__pycache__/
+*.pyc
+collector/config.prod.json

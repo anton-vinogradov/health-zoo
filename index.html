@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>health-zoo</title>
+<link rel="stylesheet" href="style.css">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>🩺</text></svg>">
+</head>
+<body>
+
+<header class="topbar">
+  <div class="brand">
+    <span class="logo">🩺</span>
+    <div>
+      <h1>health-zoo</h1>
+      <p class="sub" id="summary">загрузка…</p>
+    </div>
+  </div>
+  <div class="actions">
+    <button id="btn-sites" class="btn" title="Все веб-интерфейсы парка">Сайты</button>
+    <button id="btn-refresh" class="btn" title="Переопросить все хосты">Обновить данные</button>
+    <button id="btn-upgrade-all" class="btn btn-primary" title="Обновить пакеты на всех серверах">Обновить всё</button>
+    <button id="btn-theme" class="btn btn-icon" title="Тема">◐</button>
+  </div>
+</header>
+
+<div id="alert" class="alert hidden"></div>
+
+<main id="fleet" class="fleet"></main>
+
+<footer class="foot">
+  <span id="foot-note"></span>
+</footer>
+
+<!-- host detail -->
+<div id="modal" class="modal hidden">
+  <div class="modal-card">
+    <header class="modal-head">
+      <h2 id="modal-title"></h2>
+      <button class="btn btn-icon" data-close>✕</button>
+    </header>
+    <div id="modal-body" class="modal-body"></div>
+  </div>
+</div>
+
+<!-- update job log -->
+<div id="joblog" class="modal hidden">
+  <div class="modal-card">
+    <header class="modal-head">
+      <h2 id="job-title">Обновление</h2>
+      <button class="btn btn-icon" data-close>✕</button>
+    </header>
+    <div class="job-status" id="job-status"></div>
+    <pre id="job-output" class="job-output"></pre>
+  </div>
+</div>
+
+<script src="app.js"></script>
+</body>
+</html>
