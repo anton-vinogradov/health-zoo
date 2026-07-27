@@ -22,6 +22,7 @@ echo "hostname	$(hostname 2>/dev/null)"
 
 # ---------- OS / kernel ----------
 if [ -r /etc/os-release ]; then
+  # shellcheck disable=SC1091  # target-side file, not available to the linter
   . /etc/os-release 2>/dev/null
   emit os_name "${PRETTY_NAME:-${NAME:-Linux}}"
   emit os_id "${ID:-linux}"
@@ -33,6 +34,7 @@ emit arch "$(uname -m 2>/dev/null)"
 # ---------- uptime / load / cpu ----------
 [ -r /proc/uptime ] && emit uptime "$(cut -d' ' -f1 /proc/uptime)"
 if [ -r /proc/loadavg ]; then
+  # shellcheck disable=SC2046  # word splitting is the point: three fields
   set -- $(cat /proc/loadavg)
   emit load1 "$1"; emit load5 "$2"; emit load15 "$3"
 fi
@@ -245,18 +247,28 @@ fi
 # ---------- listening TCP ports ----------
 # Feeds the "open web UI" links: whatever answers on a web-ish port here shows
 # up as a button, so a newly installed panel is reachable without editing config.
+# The bind address matters: a backend on 127.0.0.1 is reachable only through
+# whatever proxies it, so offering a link to it would send you nowhere.
 if command -v ss >/dev/null 2>&1; then
   ss -tlnH 2>/dev/null | awk '{
-    split($4, a, ":"); port = a[length(a)]
-    if (port ~ /^[0-9]+$/) print port
-  }' | sort -un | while read -r p; do
+    addr = $4
+    port = addr; sub(/.*:/, "", port)
+    host = addr; sub(/:[0-9]+$/, "", host)
+    if (port !~ /^[0-9]+$/) next
+    local = (host ~ /^\[?(::ffff:)?127\./ || host == "[::1]" || host == "::1") ? "local" : "any"
+    print port "\t" local
+  }' | sort -u | while IFS='	' read -r p scope; do
       proc=$(ss -tlnpH "sport = :$p" 2>/dev/null | sed -n 's/.*users:((\"\([^\"]*\)\".*/\1/p' | head -1)
-      row "@listen	$p	${proc:-}"
+      row "@listen	$p	${proc:-}	$scope"
     done
 elif command -v netstat >/dev/null 2>&1; then
   netstat -tln 2>/dev/null | awk '$1 ~ /^tcp/ {
-    split($4, a, ":"); port = a[length(a)]
-    if (port ~ /^[0-9]+$/) print "@listen\t" port "\t"
+    addr = $4
+    port = addr; sub(/.*:/, "", port)
+    host = addr; sub(/:[0-9]+$/, "", host)
+    if (port !~ /^[0-9]+$/) next
+    local = (host ~ /^(::ffff:)?127\./ || host == "::1") ? "local" : "any"
+    print "@listen\t" port "\t\t" local
   }' | sort -u
 fi
 

@@ -16,6 +16,7 @@ echo "hostname	$(uname -n 2>/dev/null)"
 
 # ---------- release ----------
 if [ -r /etc/os-release ]; then
+  # shellcheck disable=SC1091  # target-side file, not available to the linter
   . /etc/os-release 2>/dev/null
   emit os_name "${PRETTY_NAME:-OpenWrt}"
   emit os_version "${VERSION_ID:-}"
@@ -28,6 +29,7 @@ emit arch "$(uname -m 2>/dev/null)"
 # ---------- uptime / load / cpu ----------
 [ -r /proc/uptime ] && emit uptime "$(cut -d' ' -f1 /proc/uptime)"
 if [ -r /proc/loadavg ]; then
+  # shellcheck disable=SC2046  # word splitting is the point: three fields
   set -- $(cat /proc/loadavg)
   emit load1 "$1"; emit load5 "$2"; emit load15 "$3"
 fi
@@ -102,8 +104,13 @@ done
 
 # ---------- listening TCP ports ----------
 netstat -tln 2>/dev/null | awk '$1 ~ /^tcp/ {
-  split($4, a, ":"); port = a[length(a)]
-  if (port ~ /^[0-9]+$/) print "@listen\t" port "\t"
+  addr = $4
+  port = addr; sub(/.*:/, "", port)
+  host = addr; sub(/:[0-9]+$/, "", host)
+  if (port !~ /^[0-9]+$/) next
+  # A loopback-only listener is a backend behind a proxy, not a page to open.
+  local = (host ~ /^(::ffff:)?127\./ || host == "::1") ? "local" : "any"
+  print "@listen\t" port "\t\t" local
 }' | sort -u
 
 # ---------- WAN / interface state ----------

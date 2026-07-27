@@ -32,11 +32,26 @@ class Alerts:
         # Only alert on real breakage by default; warnings are for the screen.
         self.min_level = self.cfg.get("min_level", "bad")
         self.startup_summary = bool(self.cfg.get("startup_summary", True))
+        # Where to look when a message arrives; without it an alert tells you
+        # something broke but not where to go.
+        self.dashboard_url = (self.cfg.get("dashboard_url") or "").rstrip("/")
         self.lock = threading.Lock()
         self.active: dict[str, dict] = {}
         self.seeded = False
 
     # ---------- state diffing ----------
+
+    @staticmethod
+    def _host_url(host: dict) -> str:
+        """The most useful address for this host: its own web UI if it has one."""
+        for link in host.get("web", []):
+            if link.get("stub"):
+                continue
+            port = link.get("port")
+            std = ((link.get("scheme") == "http" and port == 80)
+                   or (link.get("scheme") == "https" and port == 443))
+            return f"{link['scheme']}://{host['addr']}" + ("" if std else f":{port}")
+        return ""
 
     def _current(self, hosts: list[dict]) -> dict[str, dict]:
         wanted = ("bad",) if self.min_level == "bad" else ("bad", "warn")
@@ -47,6 +62,8 @@ class Alerts:
                     continue
                 out[f"{host['id']}/{issue['key']}"] = {
                     "host": host.get("name", host["id"]),
+                    "addr": host.get("addr", ""),
+                    "url": self._host_url(host),
                     "level": issue["level"],
                     "text": issue["text"],
                     "since": int(time.time()),
@@ -87,22 +104,42 @@ class Alerts:
         lines = [f"🩺 health-zoo запущен: {len(hosts)} устройств"]
         if down:
             lines.append(f"не отвечают: {', '.join(down)}")
+
         if current:
             lines.append("")
-            lines.append(f"Известные проблемы ({len(current)}):")
+            lines.append(f"Отслеживаемые проблемы ({len(current)}):")
             for value in list(current.values())[:15]:
                 lines.append(f"{LEVEL_ICON.get(value['level'], '•')} {value['host']}: {value['text']}")
         else:
-            lines.append("проблем нет")
-        return "\n".join(lines)
+            lines.append("🟢 проблем нет" if self.min_level != "bad"
+                         else "🟢 критических проблем нет")
+
+        # Warnings are not alerted on by default, but staying silent about them
+        # here reads as "everything is fine" when it is not.
+        if self.min_level == "bad":
+            warns = [(h.get("name", h["id"]), i["text"])
+                     for h in hosts for i in h.get("issues", []) if i["level"] == "warn"]
+            if warns:
+                lines.append("")
+                lines.append(f"🟡 замечания ({len(warns)}), алертов по ним не будет:")
+                for name, text in warns[:10]:
+                    lines.append(f"• {name}: {text}")
+                if len(warns) > 10:
+                    lines.append(f"…и ещё {len(warns) - 10}")
+        return "\n".join(lines + self._footer())
 
     def _change_text(self, title: str, entries: list[dict], icon: str) -> str:
         lines = [f"{icon} health-zoo — {title.lower()} ({len(entries)}):"]
         for entry in entries[:20]:
-            lines.append(f"• {entry['host']}: {entry['text']}")
+            where = entry.get("url") or entry.get("addr") or ""
+            lines.append(f"• {entry['host']}: {entry['text']}"
+                         + (f"\n  {where}" if where else ""))
         if len(entries) > 20:
             lines.append(f"…и ещё {len(entries) - 20}")
-        return "\n".join(lines)
+        return "\n".join(lines + self._footer())
+
+    def _footer(self) -> list[str]:
+        return ["", f"дашборд: {self.dashboard_url}"] if self.dashboard_url else []
 
     # ---------- delivery ----------
 
@@ -132,5 +169,6 @@ class Alerts:
         """Send a probe message; used by /api/alerts/test."""
         if not self.enabled:
             return False, "алерты выключены в конфиге"
-        self._send("🩺 health-zoo: проверка связи — алерты настроены и работают")
+        self._send("🩺 health-zoo: проверка связи — алерты настроены и работают"
+                   + (f"\n\nдашборд: {self.dashboard_url}" if self.dashboard_url else ""))
         return True, "отправлено"

@@ -122,7 +122,24 @@ def host_issues(host: dict, cfg: dict | None = None) -> list[dict]:
             add("bad", f"cam:{cam.get('id')}", f"камера {cam.get('name')}: {status}")
 
     if host.get("reboot_required"):
-        add("warn", "reboot", "нужна перезагрузка")
+        # "Needs a reboot" on its own is not actionable; say what is waiting —
+        # a flashed RouterBOARD firmware, a new kernel, a libc upgrade.
+        why = (host.get("reboot_pkgs") or "").strip()
+        packages = why.split()
+        if "->" in why:
+            # Not a package list: RouterOS phrases it as
+            # "routerboard firmware 7.23.1 -> 7.23.2".
+            detail = why
+        elif any(p.startswith(("linux-image", "linux-base")) for p in packages):
+            detail = "новое ядро"
+            rest = [p for p in packages if not p.startswith("linux-")]
+            if rest:
+                detail += f" и ещё {len(rest)}"
+        elif len(packages) > 3:
+            detail = ", ".join(packages[:3]) + f" и ещё {len(packages) - 3}"
+        else:
+            detail = why
+        add("warn", "reboot", f"нужна перезагрузка: {detail}" if detail else "нужна перезагрузка")
 
     security = host.get("security_count") or 0
     if security:

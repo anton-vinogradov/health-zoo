@@ -53,7 +53,7 @@ LIST_FIELDS = {
                "fps", "afps", "bandwidth", "last_event", "retention_days"],
     "camlink": ["addr", "proto"],
     "smart": ["dev", "health", "temp", "hours", "realloc", "pending", "wear", "model"],
-    "listen": ["port", "process"],
+    "listen": ["port", "process", "scope"],
     "raid": ["dev", "level", "state"],
     "backup": ["task", "name", "last"],
     "iface": ["name", "status", "rx", "tx", "comment"],
@@ -214,8 +214,13 @@ def _web_links(data: dict) -> list[dict]:
             "port": port,
             "scheme": "https" if port in TLS_PORTS else "http",
             "label": entry.get("process") or KNOWN_WEB.get(port, ""),
+            # Loopback-only listeners are backends behind a proxy. Still worth
+            # showing — knowing the app exists is the point — but they are not
+            # reachable from another machine, so the UI must not offer a link.
+            "local": entry.get("scope") == "local",
         })
-    links.sort(key=lambda link: (link["port"] not in (80, 443), link["port"]))
+    links.sort(key=lambda link: (link.get("local", False),
+                                 link["port"] not in (80, 443), link["port"]))
     return links
 
 
@@ -417,6 +422,27 @@ def probe_routeros(host: dict, key: str | None) -> dict:
             data["fan_rpm"] = value
     if temps:
         data["temps"] = temps
+
+    # ---------- version and pending firmware ----------
+    # RouterOS reports one available channel version rather than a package list.
+    installed = update.get("installed-version", "")
+    latest = update.get("latest-version", "")
+    if latest and installed and latest != installed:
+        data["updates"] = [{"pkg": "RouterOS", "old": installed, "new": latest,
+                            "security": "0", "suite": update.get("channel", "")}]
+    data["firmware_installed"] = installed
+    data["firmware_latest"] = latest
+
+    # A RouterBOARD whose flashed firmware is newer than the running one needs
+    # a reboot to take effect — the same signal Ubuntu gives via reboot-required.
+    current_fw = board.get("current-firmware", "")
+    upgrade_fw = board.get("upgrade-firmware", "")
+    if current_fw:
+        data["routerboard_firmware"] = current_fw
+    if upgrade_fw and current_fw and upgrade_fw != current_fw:
+        data["routerboard_upgrade"] = upgrade_fw
+        data["reboot_required"] = 1
+        data["reboot_pkgs"] = f"routerboard firmware {current_fw} -> {upgrade_fw}"
 
     # ---------- services ----------
     # Two different things count as a "service" on RouterOS: the management
@@ -675,8 +701,8 @@ def annotate_web(results: list[dict], workers: int = 12) -> None:
     for host in results:
         for link in host.get("web", []):
             port = link.get("port")
-            if not port:
-                continue
+            if not port or link.get("local"):
+                continue  # not reachable from here; nothing to fetch a title from
             std = (link["scheme"] == "http" and port == 80) or \
                   (link["scheme"] == "https" and port == 443)
             url = f"{link['scheme']}://{host['addr']}" + ("" if std else f":{port}")

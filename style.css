@@ -399,3 +399,12 @@ table.list td.right { text-align: right; }
 .trend-empty { color: var(--text-faint); font-size: 11px; }
 .spark { display: block; }
 .spark polyline { fill: none; stroke: var(--accent); stroke-width: 1.5; stroke-linejoin: round; }
+
+/* Loopback-only services: shown because they exist, not clickable because
+   they are not reachable from anywhere but the host itself. */
+.btn-local {
+  color: var(--text-faint);
+  border-style: dashed;
+  cursor: default;
+}
+.sitelink.local { color: var(--text-faint); }

@@ -1,0 +1,51 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  python:
+    name: parsers and health rules
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install pytest
+        run: pip install pytest
+      - name: Run tests
+        run: python -m pytest tests/ -v
+      - name: Byte-compile the collector
+        run: python -m compileall -q collector
+
+  shell:
+    name: agents
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install shellcheck
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq shellcheck
+      - name: Lint agents and installer
+        # Agents must stay POSIX sh: they run on BusyBox (Synology, OpenWrt)
+        # and on dash, where bashisms fail at runtime rather than at review.
+        run: |
+          shellcheck --shell=sh collector/agents/*.sh
+          shellcheck --shell=bash install.sh
+
+  config:
+    name: example config
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate JSON and check for leaked addresses
+        run: |
+          python -c "import json; json.load(open('collector/config.example.json'))"
+          # The repository must carry no real infrastructure: addresses live
+          # only in /etc/health-zoo.json on the deployed host.
+          ! grep -rEn '10\.(88|77|66|67)\.[0-9]+\.[0-9]+' \
+              --include='*.py' --include='*.js' --include='*.sh' \
+              --include='*.json' --include='*.md' . \
+            || (echo "real addresses leaked into the repository" && exit 1)

@@ -645,11 +645,16 @@ function showHost(host) {
   if ((host.web || []).length) {
     body.appendChild(section('Веб-интерфейсы', h('div', { class: 'chips' },
       host.web.map(function (link) {
+        var name = link.title ? ' — ' + link.title : (link.label ? ' — ' + link.label : '');
+        if (link.local) {
+          return h('span', {
+            class: 'btn btn-sm btn-local',
+            text: '⌂ localhost:' + link.port + name + ' (только локально)'
+          });
+        }
         return h('a', {
           class: 'btn btn-sm btn-link', target: '_blank', rel: 'noopener',
-          href: webUrl(host, link),
-          text: '⧉ ' + webUrl(host, link) +
-            (link.title ? ' — ' + link.title : (link.label ? ' — ' + link.label : ''))
+          href: webUrl(host, link), text: '⧉ ' + webUrl(host, link) + name
         });
       }))));
   }
@@ -752,10 +757,10 @@ function showSites() {
           h('span', { class: 'dot ' + (host.reachable ? 'ok' : 'bad') }),
           h('span', { text: host.name })
         ]),
-        h('td', null, [h('a', {
-          class: 'sitelink', href: url, target: '_blank', rel: 'noopener', text: url
-        })]),
-        h('td', { text: link.title || link.label || '' })
+        h('td', null, [link.local
+          ? h('span', { class: 'sitelink local', text: 'localhost:' + link.port })
+          : h('a', { class: 'sitelink', href: url, target: '_blank', rel: 'noopener', text: url })]),
+        h('td', { text: (link.title || link.label || '') + (link.local ? ' · только локально' : '') })
       ]));
     });
   });

@@ -96,8 +96,13 @@ $SUDO systemctl daemon-reload
 $SUDO systemctl enable "$SVC" >/dev/null
 $SUDO systemctl restart "$SVC"
 sleep 1
-$SUDO systemctl is-active --quiet "$SVC" && echo "✓ $SVC running" || {
-  echo "✗ $SVC failed to start:"; $SUDO journalctl -u "$SVC" -n 20 --no-pager; exit 1; }
+if $SUDO systemctl is-active --quiet "$SVC"; then
+  echo "✓ $SVC running"
+else
+  echo "✗ $SVC failed to start:"
+  $SUDO journalctl -u "$SVC" -n 20 --no-pager
+  exit 1
+fi
 
 IP=$(hostname -I 2>/dev/null | awk '{print $1}')
 echo "✓ dashboard: http://${IP:-localhost}:$PORT"
