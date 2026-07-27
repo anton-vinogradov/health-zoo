@@ -10,7 +10,7 @@ No agents to install, no database, no dependencies beyond `python3`. The hub log
 into each host over SSH, runs a small shell script there, and renders what comes
 back.
 
-![dashboard](docs/screenshot.png)
+
 
 ## What it shows
 
