@@ -316,6 +316,9 @@ KNOWN_SERVICES = {
     8729: "MikroTik API-SSL", 4403: "Meshtastic API", 6281: "HyperBackup",
     5000: "DSM", 5001: "DSM", 51820: "WireGuard", 1080: "SOCKS5",
     1081: "SOCKS5", 9091: "Transmission", 3261: "iSCSI", 111: "portmap",
+    # A camera has no web link to click (its console needs credentials), so the
+    # port shows up as a chip — "порт 80:80" said nothing twice.
+    80: "HTTP", 443: "HTTPS",
 }
 
 
