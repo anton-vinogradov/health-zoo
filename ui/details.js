@@ -219,38 +219,65 @@ function showHost(host) {
       }))));
   }
 
-  var services = (host.services || []).slice().sort(function (a, b) {
+  /* Two groups, because they answer different questions. "Did my service
+     break" is what the operator opens this view for; "is systemd-udevd
+     running" is background noise until it is not, so it stays available but
+     out of the way — and off the card entirely. */
+  function serviceRows(list) {
+    // Removal only makes sense where we manage units: systemd and OpenWrt init.
+    var removable = host.agent === 'linux' || host.agent === 'openwrt';
+    return list.map(function (s) {
+      var failed = (s.state || '').indexOf('failed') >= 0;
+      var running = (s.state || '').indexOf('running') >= 0 || s.state === 'active/exited';
+      return h('tr', null, [
+        h('td', null, [h('span', { class: 'dot ' + (failed ? 'bad' : running ? 'ok' : '') })]),
+        h('td', { text: s.name.replace(/\.service$/, ''), title: s.desc || '' }),
+        h('td', { class: 'mono', text: s.state }),
+        h('td', { class: 'mono', text: s.version || '' }),
+        h('td', { class: 'right nowrap' }, [
+          // Restart first: a crashed service usually needs starting again,
+          // not removing. Removal stays available but is not the default.
+          removable ? h('button', {
+            class: 'btn btn-sm', text: '↻', title: 'перезапустить сервис',
+            onclick: function (e) { e.stopPropagation(); serviceAction(host, s, 'restart'); }
+          }) : null,
+          removable && !isProtected(s.name) ? h('button', {
+            class: 'btn btn-sm btn-danger', text: '✕', title: 'удалить сервис с хоста',
+            onclick: function (e) { e.stopPropagation(); removeService(host, s); }
+          }) : null
+        ])
+      ]);
+    });
+  }
+
+  var byName = function (a, b) {
     var af = (a.state || '').indexOf('failed') >= 0 ? 0 : 1;
     var bf = (b.state || '').indexOf('failed') >= 0 ? 0 : 1;
     return af - bf || a.name.localeCompare(b.name);
-  });
-  if (services.length) {
-    // Removal only makes sense where we manage units: systemd and OpenWrt init.
-    var removable = host.agent === 'linux' || host.agent === 'openwrt';
-    body.appendChild(section('Сервисы (' + services.length + ')',
+  };
+  var allServices = (host.services || []).slice().sort(byName);
+  var ownServices = allServices.filter(function (s) { return s.scope !== 'system'; });
+  var sysServices = allServices.filter(function (s) { return s.scope === 'system'; });
+
+  if (ownServices.length) {
+    body.appendChild(section('Сервисы (' + ownServices.length + ')',
       h('div', { class: 'scroll-y' }, [table(['', 'сервис', 'состояние', 'версия', ''],
-        services.map(function (s) {
-          var failed = (s.state || '').indexOf('failed') >= 0;
-          var running = (s.state || '').indexOf('running') >= 0 || s.state === 'active/exited';
-          return h('tr', null, [
-            h('td', null, [h('span', { class: 'dot ' + (failed ? 'bad' : running ? 'ok' : '') })]),
-            h('td', { text: s.name.replace(/\.service$/, ''), title: s.desc || '' }),
-            h('td', { class: 'mono', text: s.state }),
-            h('td', { class: 'mono', text: s.version || '' }),
-            h('td', { class: 'right nowrap' }, [
-              // Restart first: a crashed service usually needs starting again,
-              // not removing. Removal stays available but is not the default.
-              removable ? h('button', {
-                class: 'btn btn-sm', text: '↻', title: 'перезапустить сервис',
-                onclick: function (e) { e.stopPropagation(); serviceAction(host, s, 'restart'); }
-              }) : null,
-              removable && !isProtected(s.name) ? h('button', {
-                class: 'btn btn-sm btn-danger', text: '✕', title: 'удалить сервис с хоста',
-                onclick: function (e) { e.stopPropagation(); removeService(host, s); }
-              }) : null
-            ])
-          ]);
-        }))])));
+        serviceRows(ownServices))])));
+  }
+  if (sysServices.length) {
+    // Collapsed: present when needed, silent otherwise. A failed one is the
+    // exception — it opens by itself, since that is the case worth seeing.
+    var brokenSys = sysServices.some(function (s) {
+      return (s.state || '').indexOf('failed') >= 0;
+    });
+    var details = h('details', { class: 'sys-services' }, [
+      h('summary', { text: 'Системные сервисы (' + sysServices.length + ')' +
+                           (brokenSys ? ' — есть упавшие' : '') }),
+      h('div', { class: 'scroll-y' }, [table(['', 'сервис', 'состояние', 'версия', ''],
+        serviceRows(sysServices))])
+    ]);
+    if (brokenSys) details.open = true;
+    body.appendChild(h('div', { class: 'section' }, [details]));
   }
 
   if ((host.timers || []).length) {

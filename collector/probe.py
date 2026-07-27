@@ -47,8 +47,11 @@ LIST_FIELDS = {
     "disk": ["mount", "fs", "total", "used"],
     "temp": ["label", "c"],
     "update": ["pkg", "old", "new", "security", "suite"],
-    "service": ["name", "state", "enabled", "since_mono", "restarts", "path", "desc"],
-    "timer": ["name", "state", "next", "desc"],
+    # "scope" is system|user: whose service this is, the distribution's or the
+    # operator's. Agents that cannot tell leave it empty and it defaults to user.
+    "service": ["name", "state", "enabled", "since_mono", "restarts", "path",
+                "desc", "scope"],
+    "timer": ["name", "state", "next", "desc", "scope"],
     "unitpkg": ["unit", "pkg", "version"],
     "container": ["name", "image", "state", "status"],
     "repo": ["path", "branch", "commit", "describe", "committed"],
@@ -153,6 +156,15 @@ def _post_process(data: dict) -> dict:
             data_now = time.time()
             svc["started"] = int(data_now - uptime + since_mono / 1_000_000)
         svc.pop("since_mono", None)
+        # Agents on DSM and OpenWrt report packages and init scripts, which are
+        # applications by definition there; only the systemd agent classifies.
+        if not svc.get("scope"):
+            svc["scope"] = "user"
+    data["user_service_count"] = sum(
+        1 for s in data.get("services", []) if s.get("scope") != "system")
+    for timer in data.get("timers", []):
+        if not timer.get("scope"):
+            timer["scope"] = "user"
 
     updates = data.get("updates", [])
     data["update_count"] = len(updates)

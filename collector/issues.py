@@ -112,9 +112,16 @@ def host_issues(host: dict, cfg: dict | None = None) -> list[dict]:
     for svc in host.get("services", []):
         state = svc.get("state", "")
         name = svc.get("name", "").removesuffix(".service")
+        # The operator's services are the point of the host; the distribution's
+        # are its plumbing. A broken one of ours is a problem, a broken one of
+        # theirs is worth seeing but does not turn the host red — some units
+        # (e2scrub_reap, remount-fs) sit at "failed" on a healthy machine and
+        # would otherwise drown out everything that matters.
+        own = svc.get("scope") != "system"
         if "failed" in state:
-            add("bad", f"svc:{svc.get('name')}", f"{name} упал")
-        elif (host.get("agent") == "linux"
+            add("bad" if own else "warn", f"svc:{svc.get('name')}",
+                f"{name} упал" + ("" if own else " (системный)"))
+        elif (host.get("agent") == "linux" and own
               and str(svc.get("enabled", "")).startswith("enabled")
               and "running" not in state and "exited" not in state):
             # systemd only: OpenWrt reports a coarse running/stopped where

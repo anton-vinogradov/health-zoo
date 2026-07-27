@@ -60,84 +60,140 @@ fi
   emit reboot_pkgs "$(tr '\n' ' ' < /var/run/reboot-required.pkgs)"
 
 # ---------- services (auto-discovered) ----------
-# Shown when the unit is enabled, hand-installed under /etc/systemd/system, or
-# failed — minus base-OS noise. No per-host whitelist anywhere in this project,
-# so a newly installed unit appears on the dashboard by itself.
-skip_unit() {
-  case "$1" in
-    systemd-*|dbus*|user@*|user-runtime-dir@*|getty@*|serial-getty@*|console-setup*|\
-    apparmor*|polkit*|udisks2*|modprobe@*|blk-availability*|cryptsetup*|\
-    e2scrub*|keyboard-setup*|kmod*|lvm2*|multipathd*|networkd-dispatcher*|\
-    plymouth*|rsyslog*|setvtrgb*|snapd.*|ssh.service|sshd.service|\
-    cron.service|dmesg*|finalrd*|ifupdown*|irqbalance*|open-vm-tools*|\
-    packagekit*|rescue*|emergency*|sys-*|swap*|thermald*|unattended-upgrades*|\
-    upower*|wpa_supplicant*|ureadahead*|uuidd*|whoopsie*|kerneloops*|apport*|\
-    binfmt*|hwclock*|logrotate.*|man-db*|apt-daily*|dpkg-db-backup*|fwupd*|\
-    fstrim*|motd-news*|update-notifier*|anacron*|plocate*|sysstat*|ua-*|\
-    cloud-init*|cloud-config*|cloud-final*|chrony*|ntp*|rpcbind*|nfs-*|\
-    auditd*|rc-local*|secureboot*|grub-*|kdump*|lm-sensors*) return 0 ;;
-  esac
-  return 1
-}
+# Every unit that is running or broken is reported; what differs is whose it is.
+# The card shows the operator's services, the detail view shows both.
+#
+# No single fact answers "whose is this", and each candidate was tried:
+#   - package priority: modern Ubuntu marks nearly everything "optional", so
+#     ufw and rsyslog came out looking like applications;
+#   - apt-mark showmanual: true on watchcats, useless on the VPS images and on
+#     Raspberry Pi OS, where the base system is flagged manual as well;
+#   - unit path alone: says nothing about anything shipped in /lib.
+# So three signals are combined, and a short list names the base-OS families
+# that no metadata separates. The list only *classifies* — nothing is hidden
+# because of it, which is what made the previous skip list wrong in both
+# directions.
+sys_family='^(systemd-|user@|user-runtime-dir@|getty@|serial-getty@|console-setup|
+keyboard-setup|setvtrgb|apparmor|polkit|udisks2|upower|snapd|dbus|cron|anacron|
+rsyslog|syslog-ng|apport|whoopsie|kerneloops|ModemManager|wpa_supplicant|
+NetworkManager|networkd-dispatcher|ifupdown|networking|systemd|blk-availability|
+lvm2|multipathd|cryptsetup|e2scrub|kmod|modprobe@|plymouth|finalrd|thermald|
+fwupd|unattended-upgrades|apt-daily|dpkg-db-backup|man-db|logrotate|fstrim|
+motd-news|update-notifier|plocate|sysstat|ua-|ubuntu-fan|cloud-init|cloud-config|
+cloud-final|chrony|ntp|systemd-timesyncd|rpcbind|nfs-|auditd|rc-local|secureboot|
+grub-|kdump|lm-sensors|irqbalance|open-vm-tools|packagekit|rescue|emergency|sys-|
+rpc-|qemu-guest-agent|serial-getty|rc-local|
+swap|uuidd|ureadahead|binfmt|hwclock|dmesg|avahi-daemon|bluetooth|triggerhappy|
+raspi-config|rpi-|dphys-swapfile|fake-hwclock|hciuart|nftables|containerd)'
+sys_family=$(printf '%s' "$sys_family" | tr -d '\n')
+
+unit_scopes=""
+if command -v dpkg >/dev/null 2>&1; then
+  unit_scopes=$( { apt-mark showmanual 2>/dev/null | sed 's/^/MAN\t/'
+                   dpkg-query -W -f='PRIO\t${Package}\t${Priority}\n' 2>/dev/null
+                   dpkg -S /lib/systemd/system/*.service /usr/lib/systemd/system/*.service \
+                          /lib/systemd/system/*.timer /usr/lib/systemd/system/*.timer \
+                     2>/dev/null | sed 's/^/OWN\t/'; } \
+    | awk -F'\t' '
+        $1 == "MAN"  { manual[$2] = 1; next }
+        $1 == "PRIO" { prio[$2] = $3; next }
+        $1 == "OWN" {
+          i = index($2, ": ")
+          if (i == 0) next
+          split(substr($2, 1, i - 1), owners, ", ")
+          pkg = owners[1]
+          base = 0; app = 0
+          for (j in owners) {
+            if (prio[owners[j]] ~ /^(required|important|standard)$/) base = 1
+            # Deliberately installed, or from a repository dpkg has no priority
+            # for at all (docker, zoneminder): the operator put it there.
+            if (manual[owners[j]] || prio[owners[j]] == "") app = 1
+          }
+          print substr($2, i + 2) "\t" (base ? "system" : (app ? "user" : "system"))
+        }')
+fi
 
 if command -v systemctl >/dev/null 2>&1; then
   # One `systemctl show` for all units beats one call per unit on slow boxes.
   units=$(systemctl list-units --type=service --all --no-legend --plain --no-pager 2>/dev/null \
           | awk '$3 ~ /^(active|failed|activating)$/ {print $1}')
-  keep=""
-  for u in $units; do skip_unit "$u" || keep="$keep $u"; done
-  if [ -n "$keep" ]; then
+  if [ -n "$units" ]; then
     # shellcheck disable=SC2086
     systemctl show -p Id -p ActiveState -p SubState -p UnitFileState \
       -p ActiveEnterTimestampMonotonic -p NRestarts -p FragmentPath -p Description \
-      $keep 2>/dev/null \
-    | awk -v RS='' -F'\n' '
+      $units 2>/dev/null \
+    | awk -v RS='' -F'\n' -v scopemap="$unit_scopes" -v family="$sys_family" '
+      BEGIN {
+        n = split(scopemap, lines, "\n")
+        for (i = 1; i <= n; i++) {
+          split(lines[i], kv, "\t")
+          if (kv[1] != "") uscope[kv[1]] = kv[2]
+        }
+      }
       {
         delete f
         for (i = 1; i <= NF; i++) { split($i, kv, "="); k = kv[1]
           v = substr($i, index($i, "=") + 1); f[k] = v }
-        # Base-OS units that are neither enabled nor hand-installed are noise.
-        keepit = (f["UnitFileState"] ~ /^enabled/) ||
-                 (f["FragmentPath"] ~ /^\/etc\/systemd\//) ||
-                 (f["ActiveState"] == "failed")
-        if (!keepit) next
-        printf "@service\t%s\t%s/%s\t%s\t%s\t%s\t%s\t%s\n",
+        path = f["FragmentPath"]
+        # Base-OS families first: a VPS image ships serial-getty@ttyS0 as a
+        # hand-written unit under /etc, and it is still part of the base
+        # system. Only then does the location argument apply.
+        if (f["Id"] ~ family) scope = "system"
+        else if (path ~ /^\/(etc|opt|usr\/local|srv|home)\//) scope = "user"
+        else {
+          scope = uscope[path]
+          # No owning package and not a known base-OS unit: installed outside
+          # dpkg, which on these hosts means somebody put it there on purpose.
+          if (scope == "") scope = "user"
+        }
+        printf "@service\t%s\t%s/%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
           f["Id"], f["ActiveState"], f["SubState"],
           (f["UnitFileState"] == "" ? "unknown" : f["UnitFileState"]),
           (f["ActiveEnterTimestampMonotonic"] == "" ? 0 : f["ActiveEnterTimestampMonotonic"]),
           (f["NRestarts"] == "" ? 0 : f["NRestarts"]),
-          f["FragmentPath"], f["Description"]
+          path, f["Description"], scope
       }'
   fi
 
   # Timers matter here: zm-telegram-drain is a timer, not a long-lived service.
   timers=$(systemctl list-timers --all --no-legend --no-pager 2>/dev/null \
            | awk '{ for (i = 1; i <= NF; i++) if ($i ~ /\.timer$/) { print $i; break } }')
-  keept=""
-  for t in $timers; do skip_unit "$t" || keept="$keept $t"; done
-  if [ -n "$keept" ]; then
+  if [ -n "$timers" ]; then
     # shellcheck disable=SC2086
     systemctl show -p Id -p ActiveState -p NextElapseUSecRealtime -p Description \
-      $keept 2>/dev/null \
-    | awk -v RS='' -F'\n' '
+      -p FragmentPath $timers 2>/dev/null \
+    | awk -v RS='' -F'\n' -v scopemap="$unit_scopes" -v family="$sys_family" '
+      BEGIN {
+        n = split(scopemap, lines, "\n")
+        for (i = 1; i <= n; i++) {
+          split(lines[i], kv, "\t")
+          if (kv[1] != "") uscope[kv[1]] = kv[2]
+        }
+      }
       {
         delete f
         for (i = 1; i <= NF; i++) { split($i, kv, "="); k = kv[1]
           v = substr($i, index($i, "=") + 1); f[k] = v }
-        printf "@timer\t%s\t%s\t%s\t%s\n", f["Id"], f["ActiveState"],
+        if (f["Id"] ~ family) scope = "system"
+        else if (f["FragmentPath"] ~ /^\/(etc|opt|usr\/local|srv|home)\//) scope = "user"
+        else {
+          scope = uscope[f["FragmentPath"]]
+          if (scope == "") scope = "user"
+        }
+        printf "@timer\t%s\t%s\t%s\t%s\t%s\n", f["Id"], f["ActiveState"],
           (f["NextElapseUSecRealtime"] == "" ? 0 : f["NextElapseUSecRealtime"]),
-          f["Description"]
+          f["Description"], scope
       }'
   fi
 
   # ---------- version behind each unit ----------
   # unit -> owning .deb -> version answers "which ZoneMinder is this" without
   # the collector knowing anything about ZoneMinder.
-  if command -v dpkg >/dev/null 2>&1 && [ -n "$keep" ]; then
+  if command -v dpkg >/dev/null 2>&1 && [ -n "$units" ]; then
     tmpd=${TMPDIR:-/tmp}/.hz.$$
     mkdir -p "$tmpd" 2>/dev/null || tmpd=/tmp
     # shellcheck disable=SC2086
-    systemctl show -p Id -p FragmentPath $keep 2>/dev/null \
+    systemctl show -p Id -p FragmentPath $units 2>/dev/null \
     | awk -v RS='' -F'\n' '{
         delete f
         for (i = 1; i <= NF; i++) { split($i, kv, "="); f[kv[1]] = substr($i, index($i, "=") + 1) }

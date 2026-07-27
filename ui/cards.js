@@ -64,8 +64,11 @@ function hostCard(host) {
       ? chip('✕ ' + stillLoud.length + ' упало', 'bad')
       : chip('✕ ' + failed.length + ' упало · принято', 'muted'));
   }
+  /* The card counts the operator's own services. Counting systemd's too made
+     every host look alike — "⚙ 41" on a box running one application. */
   var running = (host.services || []).filter(function (s) {
-    return (s.state || '').indexOf('running') >= 0 || s.state === 'active/exited';
+    return s.scope !== 'system' &&
+      ((s.state || '').indexOf('running') >= 0 || s.state === 'active/exited');
   });
   if (running.length) chips.push(chip('⚙ ' + running.length, ''));
   var containers = host.containers || [];

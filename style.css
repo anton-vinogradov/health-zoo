@@ -271,6 +271,15 @@ html, body {
 /* Accepted on the record: the fact stays on the card, the alarm does not. */
 .chip.muted { color: var(--text-faint); border-style: dashed; }
 
+/* The distribution's own units: available, not in the way. */
+.sys-services > summary {
+  cursor: pointer;
+  font-size: 13px;
+  color: var(--text-faint);
+  padding: 4px 0;
+}
+.sys-services[open] > summary { color: var(--text-dim); margin-bottom: 6px; }
+
 /* Buttons keep their label on one line and wrap as whole chips instead; the
    card grows taller rather than shredding "ZM - Console" across two rows. */
 .card-foot {

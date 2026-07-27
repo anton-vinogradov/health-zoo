@@ -25,7 +25,7 @@ names live in `LIST_FIELDS` in `collector/probe.py`:
 
 ```
 @disk	/	/dev/nvme0n1p2	249792131072	154116878336
-@service	zoneminder.service	active/running	enabled	5710660325	0	/lib/systemd/system/zoneminder.service	ZoneMinder
+@service	zoneminder.service	active/running	enabled	5710660325	0	/lib/systemd/system/zoneminder.service	ZoneMinder	user
 ```
 
 Trailing fields may be omitted when a value is unavailable; the parser fills
@@ -63,8 +63,12 @@ distinguishes "the agent ran and found nothing" from "ssh died halfway through".
 | `@disk` | mount, device, total bytes, used bytes |
 | `@temp` | sensor label, °C |
 | `@update` | package, old version, new version, security flag, suite |
-| `@service` | unit, state, enabled, start (monotonic µs), restarts, path, description |
-| `@timer` | timer unit, state, next elapse, description |
+| `@service` | unit, state, enabled, start (monotonic µs), restarts, path, description, scope |
+| `@timer` | timer unit, state, next elapse, description, scope |
+
+`scope` is `user` or `system`: whose service this is, the operator's or the
+distribution's. Only the card and the alerting rules care — the detail view
+lists both. An agent that cannot tell leaves it empty, which reads as `user`.
 | `@unitpkg` | unit, owning package, package version |
 | `@container` | name, image, state, status |
 | `@repo` | path, branch, commit, describe, commit time |
