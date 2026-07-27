@@ -22,6 +22,9 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+import alerts  # noqa: E402
+import history  # noqa: E402
+import issues  # noqa: E402
 import probe  # noqa: E402
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -57,6 +60,16 @@ class Fleet:
         self.lock = threading.Lock()
         self.snapshot: dict = {"generated": 0, "hosts": [], "polling": False}
         self.wake = threading.Event()
+        self.alerts = alerts.Alerts(cfg)
+        self.history = history.History(
+            cfg.get("history_db", "/var/lib/health-zoo/history.db"),
+            cfg.get("history_retention_days", 180))
+        # Serve the last known state immediately after a restart instead of an
+        # empty page while the first poll runs.
+        restored = self.history.last_snapshot()
+        if restored:
+            restored["restored"] = True
+            self.snapshot = restored
 
     def hosts(self) -> list[dict]:
         return self.cfg.get("hosts", [])
@@ -67,6 +80,7 @@ class Fleet:
             self.snapshot["polling"] = True
         try:
             hosts = probe.probe_all(self.hosts(), self.cfg.get("ssh_key"))
+            issues.annotate(hosts, self.cfg)
             snap = {
                 "generated": int(time.time()),
                 "duration_ms": int((time.time() - started) * 1000),
@@ -77,6 +91,16 @@ class Fleet:
             }
             with self.lock:
                 self.snapshot = snap
+            try:
+                self.history.record(hosts, snap)
+            except Exception as exc:
+                # History is a nicety and must never break polling — but it
+                # should not fail silently either.
+                print(f"health-zoo: history write failed: {exc}", flush=True)
+            # Alerting compares whole snapshots, so it runs only on full polls;
+            # a single-host refresh after an action would look like everything
+            # else vanished.
+            self.alerts.process(hosts)
         except Exception as exc:  # keep the loop alive whatever happens
             with self.lock:
                 self.snapshot["polling"] = False
@@ -99,6 +123,7 @@ class Fleet:
         if not wanted:
             return 0
         fresh = probe.probe_all(wanted, self.cfg.get("ssh_key"))
+        issues.annotate(fresh, self.cfg)
         by_id = {h["id"]: h for h in fresh}
         with self.lock:
             hosts = list(self.snapshot.get("hosts", []))
@@ -394,6 +419,33 @@ class Handler(BaseHTTPRequestHandler):
             self._json(snap)
             return
 
+        if path.startswith("/api/history/"):
+            # /api/history/<host>/<metric>?days=7
+            parts = path.split("/")
+            if len(parts) < 5:
+                self._json({"error": "usage: /api/history/<host>/<metric>"}, 400)
+                return
+            host_id, metric = parts[3], "/".join(parts[4:])
+            query = self.path.split("?", 1)[1] if "?" in self.path else ""
+            days = 7
+            for chunk in query.split("&"):
+                if chunk.startswith("days="):
+                    try:
+                        days = max(1, min(365, int(chunk[5:])))
+                    except ValueError:
+                        pass
+            since = int(time.time()) - days * 86400
+            self._json({
+                "host": host_id, "metric": metric, "days": days,
+                "series": self.fleet.history.series(host_id, metric, since),
+                "trend": self.fleet.history.trend(host_id, metric, days),
+            })
+            return
+
+        if path.startswith("/api/metrics/"):
+            self._json({"metrics": self.fleet.history.metrics(path.split("/")[3])})
+            return
+
         if path == "/api/job":
             job = self.jobs.latest()
             self._json(job or {"state": "idle"})
@@ -455,6 +507,11 @@ class Handler(BaseHTTPRequestHandler):
                 return
             self._json({"ok": True, "job": job_id,
                         "targets": [t["id"] for t in targets]})
+            return
+
+        if path == "/api/alerts/test":
+            ok, message = self.fleet.alerts.test()
+            self._json({"ok": ok, "message": message}, 200 if ok else 400)
             return
 
         if path == "/api/service/remove":

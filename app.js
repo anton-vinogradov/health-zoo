@@ -29,6 +29,8 @@ var DISK_BY_ROLE = {
 };
 
 function diskLimits(host) {
+  var t = host.thresholds;
+  if (t && t.disk_warn) return { warn: t.disk_warn, bad: t.disk_bad };
   return DISK_BY_ROLE[host.role] || { warn: WARN.disk, bad: BAD.disk };
 }
 
@@ -107,74 +109,13 @@ function pctClass(value, kind) {
 /* ---------- per-host severity ---------- */
 
 function hostIssues(host) {
-  var issues = [];
-  if (!host.reachable) { issues.push({ level: 'bad', text: host.error || 'не отвечает' }); return issues; }
-
-  // Alive on the network but the agent could not run: half-known is not healthy,
-  // otherwise a router with no SSH key would sit there looking perfectly fine.
-  if (host.error) issues.push({ level: 'warn', text: 'нет доступа: ' + host.error });
-
-  (host.disks || []).forEach(function (d) {
-    var cls = diskClass(d.pct, host);
-    if (cls) issues.push({ level: cls, text: 'диск ' + d.mount + ' ' + d.pct + '%' });
-  });
-  if (host.mem_pct >= BAD.mem) issues.push({ level: 'bad', text: 'память ' + host.mem_pct + '%' });
-  if (host.swap_pct >= WARN.swap) issues.push({ level: 'warn', text: 'swap ' + host.swap_pct + '%' });
-
-  // Only the hottest sensor: a quad-core reports one reading per core plus a
-  // package total, and six identical "82°" chips say nothing extra.
-  var hot = hottest(host);
-  if (hot && hot.c >= WARN.temp) {
-    issues.push({
-      level: hot.c >= BAD.temp ? 'bad' : 'warn',
-      text: 'нагрев ' + hot.c + '° (' + hot.label + ')'
-    });
-  }
-
-  (host.services || []).forEach(function (s) {
-    var state = s.state || '';
-    var name = s.name.replace(/\.service$/, '');
-    if (state.indexOf('failed') >= 0) {
-      issues.push({ level: 'bad', text: name + ' упал' });
-    } else if (host.agent === 'linux' && /^enabled/.test(s.enabled || '') &&
-               state.indexOf('running') < 0 && state.indexOf('exited') < 0) {
-      // systemd only: OpenWrt's init scripts report a coarse running/stopped
-      // where one-shot boot scripts legitimately sit at "stopped" forever.
-      // Enabled but not running is "supposed to work and doesn't" — quieter
-      // than a crash, but the dashboard used to swallow it entirely.
-      issues.push({ level: 'warn', text: name + ' включён, но не запущен' });
-    }
-  });
-  (host.degraded_raid || []).forEach(function (r) {
-    issues.push({ level: 'bad', text: 'RAID ' + r.dev + ' ' + r.state });
-  });
-  (host.failing_disks || []).forEach(function (d) {
-    var why = d.health && d.health.toUpperCase() !== 'PASSED' ? 'SMART ' + d.health
-      : (d.pending ? d.pending + ' pending-секторов' : d.realloc + ' переназначенных секторов');
-    issues.push({ level: 'bad', text: 'диск ' + d.dev + ': ' + why });
-  });
-  (host.cameras || []).forEach(function (c) {
-    if (c.enabled === '1' && c.status && c.status !== 'Connected' && c.status !== 'recording') {
-      issues.push({ level: 'bad', text: 'камера ' + c.name + ': ' + c.status });
-    }
-  });
-  if (host.reboot_required) issues.push({ level: 'warn', text: 'нужна перезагрузка' });
-  if (host.security_count > 0) {
-    issues.push({
-      level: 'warn',
-      text: host.security_count + ' ' +
-        plural(host.security_count, 'security-обновление', 'security-обновления', 'security-обновлений')
-    });
-  }
-  return issues;
+  /* The hub computes these (collector/issues.py) so the banner, the card
+     colours and the Telegram alerts cannot drift apart. */
+  return host.issues || [];
 }
 
 function hostLevel(host) {
-  var issues = hostIssues(host);
-  if (!host.reachable) return 'off';
-  if (issues.some(function (i) { return i.level === 'bad'; })) return 'bad';
-  if (issues.some(function (i) { return i.level === 'warn'; })) return 'warn';
-  return 'ok';
+  return host.level || 'ok';
 }
 
 /* ---------- card ---------- */
@@ -558,6 +499,12 @@ function showHost(host) {
       }))));
   }
 
+  if (host.reachable) {
+    var trends = h('div', { class: 'trends' }, []);
+    body.appendChild(section('Динамика за 2 недели', trends));
+    loadHistory(host, trends);
+  }
+
   if ((host.smarts || []).length) {
     body.appendChild(section('Здоровье дисков', table(
       ['', 'устройство', 'модель', 'темп.', 'наработка', 'износ', 'realloc/pending'],
@@ -715,6 +662,77 @@ function showHost(host) {
   }
 
   document.getElementById('modal').classList.remove('hidden');
+}
+
+/* ---------- history sparklines ---------- */
+
+function sparkline(series, width, height) {
+  /* A tiny inline SVG: enough to see "climbing steadily" versus "flat", which
+     is the whole point of keeping history. */
+  width = width || 150; height = height || 28;
+  if (!series || series.length < 2) return null;
+  var values = series.map(function (p) { return p[1]; });
+  var min = Math.min.apply(null, values), max = Math.max.apply(null, values);
+  var span = (max - min) || 1;
+  var t0 = series[0][0], t1 = series[series.length - 1][0];
+  var tspan = (t1 - t0) || 1;
+
+  var points = series.map(function (p) {
+    var x = ((p[0] - t0) / tspan) * (width - 2) + 1;
+    var y = height - 1 - ((p[1] - min) / span) * (height - 2);
+    return x.toFixed(1) + ',' + y.toFixed(1);
+  }).join(' ');
+
+  var ns = 'http://www.w3.org/2000/svg';
+  var svg = document.createElementNS(ns, 'svg');
+  svg.setAttribute('viewBox', '0 0 ' + width + ' ' + height);
+  svg.setAttribute('width', width);
+  svg.setAttribute('height', height);
+  svg.setAttribute('class', 'spark');
+  var line = document.createElementNS(ns, 'polyline');
+  line.setAttribute('points', points);
+  svg.appendChild(line);
+  return svg;
+}
+
+function trendText(trend, metric) {
+  if (!trend) return 'данных пока мало';
+  var per = trend.slope_per_day;
+  var unit = metric.indexOf('disk') === 0 || metric.indexOf('_pct') > 0 ? '%' :
+             metric === 'temp_max' ? '°' : '';
+  var dir = Math.abs(per) < 0.01 ? 'ровно'
+          : (per > 0 ? '+' : '') + per.toFixed(2) + unit + '/сут';
+  if (trend.days_to_full !== undefined) {
+    dir += ' · заполнится за ' + Math.round(trend.days_to_full) + ' сут';
+  }
+  return dir;
+}
+
+function loadHistory(host, container) {
+  /* Which series are worth showing depends on the host: a router has no
+     disks worth trending, a mesh node has no temperature sensor. */
+  var wanted = [];
+  var disk = biggestDisk(host);
+  if (disk) wanted.push({ metric: 'disk:' + disk.mount, label: 'диск ' + disk.mount });
+  if ((host.temps || []).length) wanted.push({ metric: 'temp_max', label: 'температура' });
+  if (host.mem_pct !== undefined) wanted.push({ metric: 'mem_pct', label: 'память' });
+  if (host.update_count) wanted.push({ metric: 'update_count', label: 'обновления' });
+
+  wanted.forEach(function (item) {
+    fetch('/api/history/' + encodeURIComponent(host.id) + '/' +
+          encodeURIComponent(item.metric) + '?days=14')
+      .then(function (r) { return r.json(); })
+      .then(function (data) {
+        var chart = sparkline(data.series);
+        var row = h('div', { class: 'trend-row' }, [
+          h('span', { class: 'trend-label', text: item.label }),
+          chart || h('span', { class: 'trend-empty', text: '—' }),
+          h('span', { class: 'trend-value', text: trendText(data.trend, item.metric) })
+        ]);
+        container.appendChild(row);
+      })
+      .catch(function () { /* history is optional */ });
+  });
 }
 
 /* ---------- every web UI in the fleet ---------- */
