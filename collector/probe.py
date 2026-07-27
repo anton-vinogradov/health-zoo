@@ -626,6 +626,8 @@ def probe_host(host: dict, key: str | None) -> dict:
         "error": "",
     }
 
+    # An explicit name from the config wins; otherwise fall back to PTR.
+    result["web_host"] = host.get("web_host") or reverse_name(host["addr"])
     result["rtt_ms"] = ping(host["addr"])
     ports = host.get("ports") or []
     if ports:
@@ -779,6 +781,45 @@ def annotate_web(results: list[dict], workers: int = 12) -> None:
                 # button; keep it in the full list, but off the card. By now
                 # the sub-paths have been tried, so this really is all there is.
                 link["stub"] = bool(PLACEHOLDER_TITLE.search(title))
+
+
+_PTR_CACHE: dict[str, tuple[str, float]] = {}
+_PTR_TTL = 6 * 3600
+
+
+def _is_private(addr: str) -> bool:
+    parts = addr.split(".")
+    if len(parts) != 4 or not parts[0].isdigit():
+        return True
+    a, b = int(parts[0]), int(parts[1] or 0)
+    return (a == 10 or a == 127 or (a == 192 and b == 168)
+            or (a == 172 and 16 <= b <= 31) or (a == 169 and b == 254))
+
+
+def reverse_name(addr: str) -> str:
+    """PTR for a public address, so links use the name a TLS certificate is
+    actually issued for. A VPS reached by IP answers with a certificate error
+    or the wrong virtual host; by name it just works."""
+    if _is_private(addr):
+        return ""
+    now = time.time()
+    hit = _PTR_CACHE.get(addr)
+    if hit and now - hit[1] < _PTR_TTL:
+        return hit[0]
+    name = ""
+    try:
+        socket.setdefaulttimeout(3)
+        candidate = socket.gethostbyaddr(addr)[0].rstrip(".")
+        # Trust it only if it resolves back to the same address; a stale or
+        # hostile PTR should not redirect a link somewhere else.
+        if candidate and addr in socket.gethostbyname_ex(candidate)[2]:
+            name = candidate
+    except (OSError, socket.herror, socket.gaierror):
+        name = ""
+    finally:
+        socket.setdefaulttimeout(None)
+    _PTR_CACHE[addr] = (name, now)
+    return name
 
 
 def link_cameras(results: list[dict]) -> None:

@@ -164,7 +164,14 @@ function hostCard(host) {
     return (s.state || '').indexOf('running') >= 0 || s.state === 'active/exited';
   });
   if (running.length) chips.push(chip('⚙ ' + running.length, ''));
-  if ((host.containers || []).length) chips.push(chip('🐳 ' + host.containers.length, ''));
+  var containers = host.containers || [];
+  if (containers.length) {
+    var stopped = containers.filter(function (c) { return c.state !== 'running'; });
+    var names = containers.map(function (c) { return c.name; }).join(', ');
+    // "2 containers" says nothing; the names are the useful part.
+    chips.push(chip('🐳 ' + (names.length <= 28 ? names : containers.length + ': ' + names.slice(0, 24) + '…'),
+      stopped.length ? 'bad' : ''));
+  }
   if ((host.cameras || []).length) chips.push(chip('📷 ' + host.cameras.length, ''));
   if (host.reboot_required) chips.push(chip('⟳ перезагрузка', 'warn'));
   (host.degraded_raid || []).forEach(function (r) { chips.push(chip('RAID ' + r.state, 'bad')); });
