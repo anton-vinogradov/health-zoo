@@ -621,3 +621,88 @@ def test_interference_is_not_compared_across_sites():
 
     probe.analyse_wifi([speaker, far_ap])
     assert "wifi_crowded_by" not in speaker
+
+
+def test_access_points_clash_only_within_their_own_site():
+    """The same rule the speakers already had, for radio against radio."""
+    near = {"id": "ap-1", "name": "Прихожая", "reachable": True,
+            "subnet": "10.88.88.0/24",
+            "radios": [{"name": "ng", "band": "2.4", "channel": 6}]}
+    same_site = {"id": "rt-88", "name": "MikroTik .88", "reachable": True,
+                 "subnet": "10.88.88.0/24",
+                 "radios": [{"name": "wifi2", "band": "2.4", "channel": 7}]}
+    other_site = {"id": "rt-77", "name": "MikroTik .77", "reachable": True,
+                  "subnet": "10.77.77.0/24",
+                  "radios": [{"name": "wifi2", "band": "2.4", "channel": 7}]}
+
+    probe.analyse_wifi([near, same_site, other_site])
+    assert near["radios"][0]["overlaps_with"] == ["MikroTik .88"]
+    assert "MikroTik .77" not in near["radios"][0]["overlaps_with"]
+
+
+def test_a_virtual_access_point_does_not_jam_its_own_radio():
+    """Two SSIDs on one transmitter are one signal, not two."""
+    router = {"id": "rt-77", "name": "MikroTik .77", "reachable": True,
+              "subnet": "10.77.77.0/24",
+              "radios": [
+                  {"name": "wifi2", "band": "2.4", "channel": 1},
+                  {"name": "wifi2-fclegacy", "band": "2.4", "channel": 1,
+                   "virtual": True, "master": "wifi2"},
+              ]}
+
+    probe.analyse_wifi([router])
+    assert "overlaps_with" not in router["radios"][0]
+    assert "overlaps_with" not in router["radios"][1]
+
+
+def test_forty_megahertz_in_the_crowded_band_is_reported():
+    ap = {"id": "ap", "name": "Кухня", "reachable": True,
+          "radios": [{"name": "ng", "band": "2.4", "channel": 6, "width": 40},
+                     {"name": "na", "band": "5", "channel": 44, "width": 80}]}
+
+    found = {i["key"]: i for i in issues.host_issues(ap)}
+    assert "radiowidth:ng" in found
+    assert "40 МГц" in found["radiowidth:ng"]["text"]
+    assert "radiowidth:na" not in found  # 80 MHz in 5 GHz is normal
+
+
+def test_routeros_wifi_row_carries_width_and_master():
+    output = """@@wifi
+wifi2|ferretclub|false|true|4|2412/ax|
+wifi2-fclegacy|fclegacy|false|true|1|2412/ax|wifi2
+wifi1|ferretclub|false|true|1|5500/ax/Ceee|
+"""
+    radios = {r["name"]: r for r in _routeros(output)["radios"]}
+
+    assert radios["wifi2"]["width"] == 20
+    assert radios["wifi2"].get("virtual") is None
+    assert radios["wifi2-fclegacy"]["virtual"] is True
+    assert radios["wifi2-fclegacy"]["master"] == "wifi2"
+    assert radios["wifi1"]["width"] == 80
+
+
+def test_camera_firmware_comes_from_whoever_records_it():
+    """The camera only answers an authenticated request; the recorder has the login."""
+    recorder = {"id": "rec", "name": "camholder", "addr": "10.0.0.8",
+                "camfws": [{"addr": "10.0.0.11", "model": "DS-I403(D)",
+                            "firmware": "V5.7.2", "released": "build 230427"}]}
+    camera = {"id": "cam", "name": "Outdoor", "addr": "10.0.0.11", "role": "camera"}
+
+    probe.link_camera_firmware([recorder, camera])
+
+    assert camera["os_name"] == "V5.7.2"
+    assert camera["model"] == "DS-I403(D)"
+    assert camera["firmware_source"] == "camholder"
+    assert camera["firmware_age_days"] > 0
+
+
+def test_old_camera_firmware_is_reported_by_age():
+    """There is no vendor feed to compare against, so age is the honest signal."""
+    camera = {"id": "cam", "reachable": True, "role": "camera",
+              "os_name": "V5.7.210", "firmware_age_days": 1762}
+    found = {i["key"]: i for i in issues.host_issues(camera)}
+    assert found["firmware_age"]["level"] == "warn"
+
+    fresh = {"id": "cam", "reachable": True, "role": "camera",
+             "os_name": "V5.8", "firmware_age_days": 200}
+    assert "firmware_age" not in {i["key"] for i in issues.host_issues(fresh)}

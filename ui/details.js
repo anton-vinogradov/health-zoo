@@ -91,6 +91,11 @@ function showHost(host) {
     fact('в контроллере', host.unifi_state === 2 ? 'управляется' : 'не управляется (' + host.unifi_state + ')');
   }
   fact('зона', host.zone);
+  if (host.firmware_age_days) {
+    fact('прошивка', host.os_name + ' — сборке ' + host.firmware_age_days +
+         ' сут; версию прочитал ' + (host.firmware_source || 'рекордер') +
+         ', у него есть учётные данные камеры');
+  }
   if (host.link) {
     fact('подключение', host.link === 'ethernet' ? 'кабелем'
          : 'по Wi-Fi' + (host.wifi_band ? ', ' + host.wifi_band + ' ГГц' : '') +

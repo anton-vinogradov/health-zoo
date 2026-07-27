@@ -59,6 +59,7 @@ LIST_FIELDS = {
     "camera": ["id", "name", "enabled", "addr", "resolution", "status",
                "fps", "afps", "bandwidth", "last_event", "retention_days"],
     "camlink": ["addr", "proto"],
+    "camfw": ["addr", "model", "firmware", "released"],
     "camevent": ["id", "name", "day_count", "last", "oldest"],
     "smart": ["dev", "health", "temp", "hours", "realloc", "pending", "wear", "model"],
     "radio": ["name", "channel", "clients", "noise", "utilization"],
@@ -170,6 +171,10 @@ def _post_process(data: dict) -> dict:
             timer["scope"] = "user"
 
     data["orphan_count"] = len(data.get("orphans", []))
+    # Whether anybody actually looked. "No updates pending" and "nothing asked"
+    # look identical on a card, and only one of them is good news.
+    if data.get("pkg_manager") or data.get("kind") in ("routeros", "synology"):
+        data["updates_checked"] = True
 
     updates = data.get("updates", [])
     data["update_count"] = len(updates)
@@ -529,13 +534,17 @@ ROUTEROS_CMD = (
     # "auto" and a card with no channel cannot be compared with anything.
     ':put "@@wifi"; :do {:foreach i in=[/interface wifi find] do={'
     ':local mon [/interface wifi monitor $i once as-value]; '
+    # A virtual access point has a master; asking a master for one is an
+    # error, so it gets its own handler instead of aborting the whole loop.
+    ':local master ""; :do {:set master '
+    '[:tostr [/interface wifi get $i master-interface]]} on-error={}; '
     ':put ([:tostr [/interface wifi get $i name]]."|"'
     '.[:tostr [/interface wifi get $i configuration.ssid]]."|"'
     '.[:tostr [/interface wifi get $i disabled]]."|"'
     '.[:tostr [/interface wifi get $i running]]."|"'
     '.[:tostr [:len [/interface wifi registration-table find '
     'where interface=[/interface wifi get $i name]]]]."|"'
-    '.[:tostr ($mon->"channel")])}} on-error={}'
+    '.[:tostr ($mon->"channel")]."|".$master)}} on-error={}'
 )
 
 
@@ -825,10 +834,13 @@ def probe_routeros(host: dict, key: str | None) -> dict:
         name = cells[0]
         if not name:
             continue
-        # "2442/ax/Ce" — frequency, protocol, channel width layout.
+        # "2442/ax/Ce" — frequency, protocol, channel width layout. The layout
+        # spells out one letter per 20 MHz block ("Ce" is 40 MHz wide, "Ceee"
+        # is 80); a plain "2412/ax" is a single 20 MHz carrier.
         frequency = 0
         raw = cells[5] if len(cells) > 5 else ""
-        head = raw.split("/")[0]
+        parts = raw.split("/")
+        head = parts[0]
         if head.isdigit():
             frequency = int(head)
         radio = {
@@ -837,6 +849,13 @@ def probe_routeros(host: dict, key: str | None) -> dict:
             "clients": _num(cells[4]) if len(cells) > 4 else 0,
             "disabled": (cells[2] if len(cells) > 2 else "false") == "true",
         }
+        if frequency:
+            layout = parts[2] if len(parts) > 2 else ""
+            radio["width"] = 20 * len(layout) if layout else 20
+        master = cells[6] if len(cells) > 6 else ""
+        if master:
+            radio["virtual"] = True
+            radio["master"] = master
         if frequency:
             radio["band"] = "2.4" if frequency < 3000 else "5"
             radio["channel"] = ((frequency - 2407) // 5 if frequency < 3000
@@ -1029,6 +1048,7 @@ def probe_sonos(host: dict) -> dict:
                                 "<CachedOnly>1</CachedOnly><Version></Version>"))
     offered = re.search(r'<UpdateItem[^>]*Version="([^"]*)"', update)
     running = data.get("os_name", "").replace("Sonos ", "").strip()
+    data["updates_checked"] = bool(offered and running)
     if offered and running and offered.group(1) != running:
         data["updates"] = [{"pkg": "Sonos", "old": running,
                             "new": offered.group(1), "security": "0", "suite": ""}]
@@ -1159,6 +1179,7 @@ def probe_meshtastic(host: dict) -> dict:
     }
     # Same shape as every other update in the fleet, so the card, the checks
     # and the alerts all treat it the same way.
+    data["updates_checked"] = bool(latest and info.get("firmware"))
     if latest and info.get("firmware") and info["firmware"] != latest:
         data["updates"] = [{"pkg": "Meshtastic firmware", "old": info["firmware"],
                             "new": latest, "security": "0", "suite": ""}]
@@ -1615,6 +1636,9 @@ def poll_unifi_controller(cfg: dict, results: list[dict]) -> None:
         host["uptime"] = device.get("uptime", 0)
         host["wifi_clients"] = device.get("num_sta", 0)
         host["unifi_state"] = device.get("state")
+        # The controller answers this for every adopted device, so the check
+        # ran whether or not it found anything.
+        host["updates_checked"] = True
         if device.get("upgradable"):
             host["updates"] = [{"pkg": "UniFi firmware",
                                 "old": device.get("version", ""),
@@ -1629,11 +1653,16 @@ def poll_unifi_controller(cfg: dict, results: list[dict]) -> None:
             host["mem_total"] = int(load["mem_total"])
             host["mem_available"] = int(load["mem_total"]) - int(load.get("mem_used", 0))
 
+        # Channel width lives in the configuration, not in the statistics —
+        # and in 2.4 GHz it decides how much of the band the radio occupies.
+        widths = {entry.get("radio"): entry.get("ht")
+                  for entry in device.get("radio_table", [])}
         radios = []
         for radio in device.get("radio_table_stats", []):
             total = radio.get("cu_total")
             mine = (radio.get("cu_self_rx") or 0) + (radio.get("cu_self_tx") or 0)
             radios.append({
+                "width": widths.get(radio.get("radio")),
                 "name": radio.get("radio", radio.get("name", "")),
                 "band": "2.4" if radio.get("radio") == "ng" else "5",
                 "ssid": "",
@@ -1730,6 +1759,10 @@ def analyse_wifi(results: list[dict]) -> None:
     for host in results:
         for radio in host.get("radios", []):
             channel = radio.get("channel")
+            # A second SSID is not a second radio: virtual access points share
+            # the transmitter of their master and cannot interfere with it.
+            if radio.get("virtual"):
+                continue
             if radio.get("band") == "2.4" and isinstance(channel, int):
                 radios_24.append((host, radio))
 
@@ -1738,7 +1771,12 @@ def analyse_wifi(results: list[dict]) -> None:
         clashes = [
             other_host.get("name", other_host["id"])
             for other_host, other in radios_24
-            if other is not radio and abs(other["channel"] - channel) < 5
+            # Interference is local, so only radios on the same site are
+            # compared: two access points in different buildings share a
+            # channel number and nothing else.
+            if other is not radio
+            and other_host.get("subnet") == host.get("subnet")
+            and abs(other["channel"] - channel) < 5
         ]
         if clashes:
             radio["overlaps_with"] = sorted(set(clashes))
@@ -1908,6 +1946,37 @@ def check_forwards(results: list[dict]) -> None:
                 rule["verdict"] = "no-listener"
 
 
+def link_camera_firmware(results: list[dict]) -> None:
+    """Give each camera the firmware its recorder was able to read.
+
+    The version is only available to an authenticated request, and only the
+    recorder holds those credentials — so it asks, and passes on the answer.
+    The dashboard never sees the login.
+    """
+    by_addr = {host.get("addr"): host for host in results if host.get("addr")}
+    for host in results:
+        for entry in host.get("camfws", []):
+            camera = by_addr.get(entry.get("addr"))
+            if not camera:
+                continue
+            camera["model"] = entry.get("model") or camera.get("model", "")
+            firmware = entry.get("firmware", "")
+            if firmware:
+                camera["os_name"] = firmware
+                camera["firmware_source"] = host.get("name", host.get("id", ""))
+            released = entry.get("released", "")
+            # "build 230427" — yymmdd, which is the only date the camera gives.
+            digits = re.sub(r"\D", "", released)
+            if len(digits) == 6:
+                try:
+                    built = time.mktime((2000 + int(digits[:2]), int(digits[2:4]),
+                                         int(digits[4:6]), 12, 0, 0, 0, 0, -1))
+                    camera["firmware_date"] = int(built)
+                    camera["firmware_age_days"] = round((time.time() - built) / 86400)
+                except (ValueError, OverflowError):
+                    pass
+
+
 def link_cameras(results: list[dict]) -> None:
     """Attach each camera host to whoever records it.
 
@@ -1992,6 +2061,7 @@ def probe_all(hosts: list[dict], key: str | None, workers: int = 12) -> list[dic
                     "error": f"probe crashed: {exc}",
                 }
     link_cameras(results)
+    link_camera_firmware(results)
     link_backups(results)
     annotate_web(results)
     return results

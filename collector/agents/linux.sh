@@ -428,6 +428,24 @@ if [ -d /etc/zm ] && command -v mysql >/dev/null 2>&1 && sudo -n true 2>/dev/nul
   | while IFS='	' read -r id name day last oldest; do
       row "@camevent	$id	$name	$day	$last	$oldest"
     done
+
+  # Camera firmware. The version is only given to an authenticated request, and
+  # the recorder already holds the credentials — they are in the stream path it
+  # uses every second. Asking from here means the password never leaves this
+  # host: the dashboard receives a version string, not a login.
+  sudo -n mysql zm -N -B -e \
+    'SELECT Path FROM Monitors WHERE Enabled = 1;' 2>/dev/null \
+  | while IFS= read -r path; do
+      case "$path" in *@*) ;; *) continue ;; esac
+      creds=$(printf '%s' "$path" | sed -E 's|^[a-zA-Z]+://([^@]+)@.*|\1|')
+      camaddr=$(printf '%s' "$path" | sed -E 's|^[a-zA-Z]+://[^@]+@([^:/]+).*|\1|')
+      [ -n "$camaddr" ] || continue
+      info=$(curl -s --digest -u "$creds" --max-time 5 \
+             "http://$camaddr/ISAPI/System/deviceInfo" 2>/dev/null)
+      case "$info" in *"<firmwareVersion>"*) ;; *) continue ;; esac
+      one() { printf '%s' "$info" | sed -n "s|.*<$1>\\([^<]*\\)</$1>.*|\\1|p" | head -1; }
+      row "@camfw	$camaddr	$(one model)	$(one firmwareVersion)	$(one firmwareReleasedDate)"
+    done
 fi
 
 echo "ok	1"

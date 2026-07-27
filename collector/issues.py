@@ -34,6 +34,9 @@ DEFAULT_THRESHOLDS = {
     "wifi_satisfaction_warn": 80,
     # Let's Encrypt renews at 30 days; a warning at 21 means renewal has
     # already failed twice, and 7 means it is now urgent.
+    # Three years without a firmware update on a network-facing camera is not
+    # a policy anybody chose; it is one nobody revisited.
+    "firmware_stale_days": 1095,
     "cert_warn_days": 21,
     "cert_bad_days": 7,
 }
@@ -251,6 +254,15 @@ def host_issues(host: dict, cfg: dict | None = None) -> list[dict]:
                 f"канал {radio.get('channel')} в 2.4 ГГц перекрывается с соседними; "
                 "непересекающиеся — 1, 6, 11")
 
+        # 40 MHz in 2.4 GHz doubles the occupied spectrum in a band with room
+        # for three carriers: half the neighbours counted as "foreign airtime"
+        # are only heard because the channel is twice as wide as it needs.
+        width = radio.get("width")
+        if band == "2.4" and isinstance(width, (int, float)) and width > 20:
+            add("warn", f"radiowidth:{name}",
+                f"ширина канала {int(width)} МГц в 2.4 ГГц — вдвое шире нужного; "
+                "непересекающихся каналов при такой ширине не остаётся")
+
         satisfaction = radio.get("satisfaction")
         if isinstance(satisfaction, (int, float)) and 0 < satisfaction < limits.get(
                 "wifi_satisfaction_warn", 80):
@@ -287,6 +299,15 @@ def host_issues(host: dict, cfg: dict | None = None) -> list[dict]:
         add("warn", f"open:{endpoint.get('label')}",
             f"{endpoint.get('label')}:{endpoint.get('port')} доступен без "
             f"ограничения по адресу — {why}")
+
+    # Firmware nobody has touched in years. There is no vendor feed to compare
+    # against, so age is the only honest signal — and on a camera reachable
+    # from the network it is the one that matters.
+    age = host.get("firmware_age_days")
+    if isinstance(age, (int, float)) and age > limits.get("firmware_stale_days", 1095):
+        add("warn", "firmware_age",
+            f"прошивка {host.get('os_name', '')} собрана {int(age / 365)} года назад "
+            f"({int(age)} сут) — обновлений с тех пор не ставили")
 
     # Forwards and tunnels: configuration that silently stops working. Nothing
     # complains when the service behind a forward moves away, and an IPsec
@@ -559,9 +580,16 @@ def checks_for(host: dict, cfg: dict | None = None) -> list[dict]:
         skipped="загрузка эфира не отдаётся", keys=("radioair",))
     add("network", "Выбор канала",
         "В 2.4 ГГц не перекрываются только 1, 6 и 11; соседние точки на близких "
-        "каналах глушат друг друга сильнее, чем стоя на одном",
+        "каналах глушат друг друга сильнее, чем стоя на одном. Сравниваются "
+        "только точки одной площадки",
         applies=any(r.get("band") == "2.4" for r in host.get("radios", [])),
         skipped="радио 2.4 ГГц нет", keys=("radiooverlap", "radiogrid"))
+    add("network", "Ширина канала 2.4 ГГц",
+        "В 2.4 ГГц помещаются три канала по 20 МГц; 40 МГц занимают половину "
+        "диапазона и приносят чужой трафик, которого можно было не слышать",
+        applies=any(r.get("band") == "2.4" and r.get("width")
+                    for r in host.get("radios", [])),
+        skipped="ширина канала не отдаётся", keys=("radiowidth",))
     add("network", "Качество связи по сети (SSID)",
         "Оценка контроллера для каждой Wi-Fi сети на точке: если клиенты этой "
         "сети работают плохо, видно, какой именно сети это касается.",
@@ -659,16 +687,18 @@ def checks_for(host: dict, cfg: dict | None = None) -> list[dict]:
 
     # Said out loud rather than left blank: a camera card with no firmware line
     # otherwise reads as "firmware is fine", when the truth is nobody looked.
-    add("updates", "Прошивка камеры",
-        "Версию отдаёт только сама камера, и только авторизованному запросу "
-        "(ISAPI отвечает 401 без учётных данных). Учётных данных камер этот "
-        "инструмент не хранит, поэтому версия неизвестна — а сравнивать её всё "
-        "равно не с чем: производитель не публикует машиночитаемый список "
-        "актуальных версий.",
-        applies=False,
-        skipped=("нет учётных данных камеры — версия неизвестна"
-                 if host.get("role") == "camera" else "не камера"),
-        keys=())
+    add("updates", "Возраст прошивки камеры",
+        "Версию отдаёт только сама камера и только авторизованному запросу; "
+        "спрашивает её рекордер, у которого учётные данные уже есть. "
+        "Сравнить версию не с чем — производитель не публикует список "
+        "актуальных, — поэтому проверяется возраст сборки: "
+        f"{limits.get('firmware_stale_days', 1095) // 365} года и больше это "
+        "повод обновиться.",
+        applies=bool(host.get("firmware_age_days")),
+        skipped=("версию камеры прочитать не удалось — нужен доступ, который "
+                 "есть только у рекордера" if host.get("role") == "camera"
+                 else "не камера"),
+        keys=("firmware_age",))
 
     add("network", "Доступность снаружи",
         "Порт проверяется с другого хоста в интернете — то, что видит клиент",

@@ -195,6 +195,12 @@ function hostCard(host) {
     else chips.push(chipFor(host, 'cam:', 'RTSP молчит', 'bad'));
   }
   if (host.camera_fps) chips.push(chip(Number(host.camera_fps).toFixed(1) + ' к/с', ''));
+  if (host.firmware_age_days) {
+    var years = Math.floor(host.firmware_age_days / 365);
+    chips.push(chipFor(host, 'firmware_age',
+      '⚙ прошивка ' + host.os_name + (years ? ' · ' + years + ' г.' : ''),
+      host.firmware_age_days > 1095 ? 'warn' : ''));
+  }
 
   var metrics = [];
   if (host.reachable) {
@@ -288,6 +294,14 @@ function hostCard(host) {
         title: host.update_count + ' доступных обновлений' +
           (host.security_count ? ', из них ' + host.security_count + ' security' : ''),
         text: host.update_count + ' обновл.' + (host.security_count ? ' ⚠' : '')
+      }) : null,
+      // "Up to date" is worth a word: without it a card with no update badge
+      // is indistinguishable from one where nothing was ever checked — and
+      // those are opposite answers.
+      (!host.update_count && host.updates_checked) ? h('span', {
+        class: 'head-badge ok',
+        title: 'установленная версия совпадает с последней доступной',
+        text: '✓ актуально'
       }) : null,
       host.reboot_required ? h('span', {
         class: 'head-badge warn',

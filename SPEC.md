@@ -100,7 +100,7 @@ Marked: **✓** done, **▶** in progress, **○** deliberately not done.
 | ✓ | Wi-Fi: radios on air, airtime (own and foreign), channel choice, per-SSID quality |
 | ✓ | Wireless clients (speakers): a channel the access points are saturating |
 | ✓ | Device firmware: UniFi through the controller, Sonos through its own update service, mesh nodes against the latest meshtastic/firmware release |
-| ○ | Camera firmware: the version needs an authenticated ISAPI request and there is nothing to compare it against — the vendor publishes no machine-readable list |
+| ✓ | Camera firmware: read by the recorder, which already holds the credentials; judged by build age, since the vendor publishes no list to compare against |
 | ✓ | TLS certificate expiry |
 | ✓ | Reachability from outside (measured from an external host) |
 | ✓ | Port forwards that lead nowhere; IPsec policies that never came up |
@@ -175,6 +175,10 @@ Marked: **✓** done, **▶** in progress, **○** deliberately not done.
   `libgl1-amber-dri` security update on watchcats was stuck behind
   `libglapi-mesa`, which was itself on the autoremove list. Upgrade, clean,
   ask again — and the question answers itself, with nothing forced.
+- **A camera password never leaves its recorder.** The firmware version is
+  asked for by the machine that already holds the credentials — they are in the
+  stream path it uses every second. The dashboard receives a version string,
+  never a login.
 - **History is optional by design.** If the database cannot be opened the
   dashboard runs without trends rather than failing.
 

@@ -270,6 +270,7 @@ html, body {
 .chip.info { color: var(--info); border-color: color-mix(in srgb, var(--info) 40%, var(--line)); }
 /* Accepted on the record: the fact stays on the card, the alarm does not. */
 .chip.muted { color: var(--text-faint); border-style: dashed; }
+.head-badge.ok { color: var(--ok); border-color: color-mix(in srgb, var(--ok) 40%, var(--line)); }
 
 /* The distribution's own units: available, not in the way. */
 .sys-services > summary {
