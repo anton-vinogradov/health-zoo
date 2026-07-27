@@ -56,7 +56,9 @@ LIST_FIELDS = {
     "listen": ["port", "process", "scope"],
     "udp": ["port", "process", "scope"],
     "raid": ["dev", "level", "state"],
-    "backup": ["task", "name", "last"],
+    "backup": ["task", "name", "folders"],
+    "backuprepo": ["name", "last", "size"],
+    "unbacked": ["share", "volume"],
     "iface": ["name", "status", "rx", "tx", "comment"],
     "neighbor": ["id", "name", "snr", "hops", "last_heard", "battery"],
 }
@@ -166,6 +168,11 @@ def _post_process(data: dict) -> dict:
         bad = bad or (isinstance(disk.get("realloc"), int) and disk["realloc"] > 0)
         disk["failing"] = bad
     data["failing_disks"] = [d for d in data.get("smarts", []) if d.get("failing")]
+
+    for repo in data.get("backuprepos", []):
+        repo["last"] = _num(repo.get("last", 0)) or 0
+        repo["size"] = _num(repo.get("size", 0)) or 0
+        repo["age_days"] = round((time.time() - repo["last"]) / 86400, 1) if repo["last"] else None
 
     data["degraded_raid"] = [r for r in data.get("raid", []) if "_" in r.get("state", "")]
     # RouterOS and Meshtastic probes already know their own UI; only derive

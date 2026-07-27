@@ -98,6 +98,40 @@ if [ -r /sys/block/sata1/device/syno_disk_temperature ]; then
   done
 fi
 
+# ---------- physical disk health ----------
+# DSM keeps SMART behind root. Where the operator has allowed smartctl through
+# sudoers this fills in the single biggest blind spot on a NAS: the units here
+# run single disks with no RAID, so a dying drive is data loss, not redundancy
+# wearing thin. Without the permission the section is simply absent.
+if command -v smartctl >/dev/null 2>&1 && sudo -n true 2>/dev/null; then
+  for dev in /dev/sata? /dev/sd? /dev/nvme?n?; do
+    [ -b "$dev" ] || continue
+    out=$(sudo -n smartctl -H -A -i "$dev" 2>/dev/null) || continue
+    [ -n "$out" ] || continue
+
+    model=$(printf '%s' "$out" | awk -F': *' '/Device Model|Model Number/{print $2; exit}')
+    health=$(printf '%s' "$out" | awk -F': *' '
+      /overall-health self-assessment test result/ {print $2; exit}
+      /SMART Health Status/ {print $2; exit}')
+    [ -n "$health" ] || health=unknown
+    temp=$(printf '%s' "$out" | awk '
+      /^194 |Temperature_Celsius/ {print $10; exit}
+      /^Temperature:/ {print $2; exit}')
+    hours=$(printf '%s' "$out" | awk '
+      /^  9 |Power_On_Hours/ {print $10; exit}
+      /^Power On Hours:/ {gsub(/,/, "", $4); print $4; exit}')
+    realloc=$(printf '%s' "$out" | awk '/^  5 |Reallocated_Sector_Ct/ {print $10; exit}')
+    pending=$(printf '%s' "$out" | awk '/Current_Pending_Sector/ {print $10; exit}')
+    wear=$(printf '%s' "$out" | awk -F': *' '/Percentage Used/ {gsub(/%/, "", $2); print $2; exit}')
+
+    row "@smart	$dev	$health	${temp:-}	${hours:-}	${realloc:-}	${pending:-}	${wear:-}	${model:-}"
+  done
+else
+  # Say so explicitly: a NAS card with no disk health is not a healthy NAS,
+  # it is an unmeasured one.
+  emit smart_blocked "нет прав на smartctl (нужен sudo)"
+fi
+
 # ---------- installed packages and their versions ----------
 # /var/packages/<name>/INFO is world-readable, unlike `synopkg` which is not
 # usable unprivileged.
@@ -175,15 +209,39 @@ if [ -r "$SSCONF" ]; then
     done
 fi
 
-# ---------- HyperBackup task freshness ----------
+# ---------- HyperBackup: what is protected, and what is not ----------
+# Two different questions, answered on two different machines. On the source
+# NAS: which shares the task actually covers — an untouched share is the kind
+# of gap nobody notices until it matters. On the destination: how fresh the
+# repository is, since the task's own last-run time is not readable here.
 HBCONF=/var/packages/HyperBackup/etc/synobackup.conf
 if [ -r "$HBCONF" ]; then
-  # Only the task name and its last-run marker; never the credentials next to them.
-  awk -F'=' '
-    /^\[.*\]/ { task=$0; gsub(/[][]/, "", task) }
-    /^name=/  { gsub(/"/,"",$2); n=$2 }
-    /^last_bkp_time=/ { gsub(/"/,"",$2); print "@backup\t" task "\t" n "\t" $2 }
-  ' "$HBCONF" 2>/dev/null
+  # Credentials live in this same file; only structural fields are read.
+  folders=$(awk -F'=' '/^backup_folders=/{print $2; exit}' "$HBCONF" 2>/dev/null)
+  taskname=$(awk -F'"' '/^name=/{if ($2 != "") {print $2; exit}}' "$HBCONF" 2>/dev/null)
+  [ -n "$folders" ] && row "@backup	task	${taskname:-HyperBackup}	$folders"
+
+  for vol in /volume1 /volume2; do
+    [ -d "$vol" ] || continue
+    for share in "$vol"/*/; do
+      [ -d "$share" ] || continue
+      name=$(basename "$share")
+      case "$name" in @*|.*|"#recycle"|surveillance|"docker") continue ;; esac
+      # A share is covered when the task lists it, exactly or as a parent.
+      case "$folders" in
+        *"\"/$name\""*) continue ;;
+      esac
+      row "@unbacked	$name	$vol"
+    done
+  done
 fi
+
+# Repositories stored on this NAS: their mtime is when the last backup landed.
+for repo in /volume*/*/*.hbk; do
+  [ -d "$repo" ] || continue
+  last=$(date -r "$repo" +%s 2>/dev/null)
+  size=$(awk -F'=' '/^size=/{print $2; exit}' "$repo/last_status.conf" 2>/dev/null)
+  printf '@backuprepo\t%s\t%s\t%s\n' "$(basename "$repo")" "${last:-0}" "${size:-0}"
+done | sort -u
 
 echo "ok	1"

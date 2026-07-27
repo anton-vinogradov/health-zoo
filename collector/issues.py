@@ -21,6 +21,8 @@ DEFAULT_THRESHOLDS = {
     "temp_warn": 88, "temp_bad": 96,
     "load_warn": 150, "load_bad": 300,
     "cpu_warn": 85, "cpu_bad": 96,
+    # HyperBackup here runs nightly; two days without a run means it stopped.
+    "backup_stale_days": 2,
 }
 
 # A NAS recording video is *supposed* to sit near-full: the archive grows until
@@ -116,10 +118,34 @@ def host_issues(host: dict, cfg: dict | None = None) -> list[dict]:
             why = f"{disk.get('realloc')} переназначенных секторов"
         add("bad", f"smart:{disk.get('dev')}", f"диск {disk.get('dev')}: {why}")
 
+    # An unmeasured disk is not a healthy disk. Say it once, quietly, so a NAS
+    # card cannot look green purely because nobody could look inside it.
+    if host.get("smart_blocked") and not host.get("smarts"):
+        add("warn", "smart_blocked", f"здоровье дисков не видно: {host['smart_blocked']}")
+
     for cam in host.get("cameras", []):
         status = cam.get("status") or ""
         if cam.get("enabled") == "1" and status and status not in ("Connected", "recording"):
             add("bad", f"cam:{cam.get('id')}", f"камера {cam.get('name')}: {status}")
+
+    # A backup that has not run is the failure mode nobody sees until restore
+    # day; a share outside the task is the same failure, arranged in advance.
+    stale_after = limits.get("backup_stale_days", 2)
+    for repo in host.get("backuprepos", []):
+        age = repo.get("age_days")
+        if age is None:
+            continue
+        if age > stale_after * 3:
+            add("bad", f"backup:{repo['name']}",
+                f"бэкап {repo['name']} не обновлялся {int(age)} сут")
+        elif age > stale_after:
+            add("warn", f"backup:{repo['name']}",
+                f"бэкап {repo['name']} старше {int(age)} сут")
+
+    unbacked = [u.get("share") for u in host.get("unbackeds", []) if u.get("share")]
+    if unbacked:
+        add("warn", "unbacked",
+            "не входит в бэкап: " + ", ".join(sorted(unbacked)[:6]))
 
     if host.get("reboot_required"):
         # "Needs a reboot" on its own is not actionable; say what is waiting —
