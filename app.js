@@ -5,12 +5,13 @@
 'use strict';
 
 var ROLE_ICON = {
-  router: '🛜', ap: '📶', server: '🖥️', nas: '💽', camera: '📷', mesh: '📡', other: '📦'
+  router: '🛜', ap: '📶', server: '🖥️', nas: '💽', camera: '📷', mesh: '📡',
+  media: '🔊', other: '📦'
 };
-var ROLE_ORDER = { router: 0, ap: 1, server: 2, nas: 3, camera: 4, mesh: 5, other: 6 };
+var ROLE_ORDER = { router: 0, ap: 1, server: 2, nas: 3, camera: 4, mesh: 5, media: 6, other: 7 };
 var ROLE_NAME = {
   router: 'роутер', ap: 'точка доступа', server: 'сервер', nas: 'NAS',
-  camera: 'камера', mesh: 'меш-нода', other: 'устройство'
+  camera: 'камера', mesh: 'меш-нода', media: 'колонка', other: 'устройство'
 };
 
 /* Thresholds shared by the bars and the card's overall colour.
@@ -209,6 +210,9 @@ function hostCard(host) {
   if (host.wifi_clients !== undefined && (host.radios || host.radioiws || []).length) {
     chips.push(chip('📶 клиентов: ' + host.wifi_clients, ''));
   }
+  if (host.playback) {
+    chips.push(chip(host.playback === 'PLAYING' ? '▶ играет' : '⏸ тишина', ''));
+  }
   if (host.role === 'camera' && host.ports) {
     var rtsp = host.ports['554'];
     if (rtsp) chips.push(chip('RTSP жив', 'ok'));
@@ -327,12 +331,18 @@ function hostCard(host) {
 
 var ROLE_TITLE = {
   router: 'Роутеры', ap: 'Точки доступа', server: 'Серверы', nas: 'NAS',
-  camera: 'Камеры', mesh: 'Меш-ноды', other: 'Прочее'
+  camera: 'Камеры', mesh: 'Меш-ноды', media: 'Аудио', other: 'Прочее'
 };
 
 function roleGroups(hosts) {
   /* Split a subnet's hosts into per-type buckets, in a fixed order. */
-  var order = ['router', 'server', 'nas', 'camera', 'mesh', 'other'];
+  // Derived from ROLE_ORDER, not repeated: a hard-coded list here silently
+  // dropped whole device types (access points, speakers) the moment a new
+  // role was added — they had cards built and never rendered.
+  var order = Object.keys(ROLE_ORDER).sort(function (a, b) {
+    return ROLE_ORDER[a] - ROLE_ORDER[b];
+  });
+  if (order.indexOf('other') < 0) order.push('other');
   var buckets = {};
   hosts.forEach(function (host) {
     var role = ROLE_ORDER[host.role] === undefined ? 'other' : host.role;

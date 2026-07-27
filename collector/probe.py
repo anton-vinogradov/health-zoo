@@ -644,6 +644,98 @@ def probe_routeros(host: dict, key: str | None) -> dict:
     return data
 
 
+def probe_sonos(host: dict) -> dict:
+    """Sonos speakers over their built-in HTTP interface on port 1400.
+
+    No credentials and no cloud: the device description gives room name, model
+    and firmware, and AVTransport says whether it is playing. Useful mostly to
+    know a speaker fell off the network — they are silent failures otherwise,
+    since nobody notices a speaker that is merely not playing.
+    """
+    import urllib.error
+
+    # Some devices are only usable from their own segment. These speakers sit
+    # behind a site-to-site tunnel where the TCP handshake completes but the
+    # multi-kilobyte XML response never arrives — an MTU black hole. Asking a
+    # host on their own LAN to fetch it sidesteps the whole problem, the same
+    # way camera status is taken from whichever host records it.
+    via = host.get("probe_via")
+
+    def fetch(path: str, timeout: int = 6) -> str:
+        url = f"http://{host['addr']}:1400{path}"
+        if via:
+            cmd = list(SSH_BASE)
+            if via.get("key"):
+                cmd += ["-i", os.path.expanduser(via["key"])]
+            target = via["addr"]
+            if via.get("user"):
+                target = f"{via['user']}@{target}"
+            cmd += [target, f"curl -s -m {timeout} {shlex.quote(url)}"]
+            try:
+                res = subprocess.run(cmd, capture_output=True, timeout=timeout + 10, text=True)
+                return res.stdout
+            except (subprocess.SubprocessError, OSError):
+                return ""
+        try:
+            with urllib.request.urlopen(url, timeout=timeout) as resp:
+                return resp.read().decode("utf-8", "replace")
+        except (urllib.error.URLError, OSError):
+            return ""
+
+    description = fetch("/xml/device_description.xml")
+    if not description:
+        return {"_error": "не отвечает на порту 1400"}
+
+    def tag(name: str, body: str) -> str:
+        match = re.search(rf"<{name}>([^<]*)</{name}>", body)
+        return match.group(1).strip() if match else ""
+
+    data: dict = {
+        "kind": "sonos",
+        "os_id": "sonos",
+        "hostname": tag("roomName", description),
+        "model": tag("modelName", description),
+        "os_name": f"Sonos {tag('softwareVersion', description)}".strip(),
+        "serial": tag("serialNum", description).split(":")[0],
+        "web": [{"port": 1400, "scheme": "http", "label": "Sonos", "local": False}],
+    }
+
+    status = fetch("/status/zp")
+    if status:
+        data["zone"] = tag("ZoneName", status) or data["hostname"]
+        data["hardware"] = tag("HardwareVersion", status)
+
+    # Playback state is informational: a stopped speaker is not a fault.
+    if via:
+        # Playback state needs a SOAP POST; skip it rather than shell-quote a
+        # multi-line XML body through ssh for a purely informational field.
+        return data
+
+    envelope = (
+        '<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/">'
+        '<s:Body><u:GetTransportInfo '
+        'xmlns:u="urn:schemas-upnp-org:service:AVTransport:1">'
+        "<InstanceID>0</InstanceID></u:GetTransportInfo></s:Body></s:Envelope>"
+    )
+    try:
+        request = urllib.request.Request(
+            f"http://{host['addr']}:1400/MediaRenderer/AVTransport/Control",
+            data=envelope.encode(),
+            headers={
+                "SOAPAction": '"urn:schemas-upnp-org:service:AVTransport:1#GetTransportInfo"',
+                "Content-Type": "text/xml; charset=utf-8",
+            })
+        with urllib.request.urlopen(request, timeout=6) as resp:
+            body = resp.read().decode("utf-8", "replace")
+        state = re.search(r"<CurrentTransportState>([^<]*)</CurrentTransportState>", body)
+        if state:
+            data["playback"] = state.group(1)
+    except Exception:
+        pass
+
+    return data
+
+
 def probe_meshtastic(host: dict) -> dict:
     """Meshtastic firmware serves /json/report over plain HTTP — no protobuf,
     no meshtastic python package, and it works on the nodes that refuse a full
@@ -730,8 +822,13 @@ def probe_host(host: dict, key: str | None) -> dict:
         result["ports"] = {str(p): tcp_open(host["addr"], int(p)) for p in ports}
 
     agent = host.get("agent", "linux")
-    if agent in ("routeros", "meshtastic"):
-        data = probe_routeros(host, key) if agent == "routeros" else probe_meshtastic(host)
+    if agent in ("routeros", "meshtastic", "sonos"):
+        if agent == "routeros":
+            data = probe_routeros(host, key)
+        elif agent == "sonos":
+            data = probe_sonos(host)
+        else:
+            data = probe_meshtastic(host)
         if "_error" in data:
             result["error"] = data["_error"]
             result["reachable"] = result["rtt_ms"] is not None or any(
@@ -1320,8 +1417,23 @@ def link_cameras(results: list[dict]) -> None:
             host["only_via_recorder"] = True
 
 
+def resolve_probe_via(hosts: list[dict], key: str | None) -> None:
+    """Turn "probe_via": "<host id>" into the connection details to use."""
+    by_id = {h.get("id"): h for h in hosts}
+    for host in hosts:
+        via_id = host.get("probe_via")
+        if isinstance(via_id, str):
+            source = by_id.get(via_id)
+            if source:
+                host["probe_via"] = {"addr": source["addr"], "user": source.get("user"),
+                                     "key": key, "name": source.get("name", via_id)}
+            else:
+                host.pop("probe_via", None)
+
+
 def probe_all(hosts: list[dict], key: str | None, workers: int = 12) -> list[dict]:
     """Probe every host in parallel; slow hosts never block the fast ones."""
+    resolve_probe_via(hosts, key)
     results: list[dict] = [None] * len(hosts)  # type: ignore[list-item]
     with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as pool:
         futures = {pool.submit(probe_host, h, key): i for i, h in enumerate(hosts)}
