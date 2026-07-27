@@ -191,6 +191,30 @@ function showHost(host) {
         }))));
   }
 
+  /* Every chip on the card is explained here. The SSID chips say "ferretclub
+     2.4: 60%"; this is where that 60% is broken down — which band it is on,
+     how many clients see it, and what signal they average. */
+  if ((host.ssids || []).length) {
+    body.appendChild(section('Сети Wi-Fi (SSID)',
+      table(['сеть', 'диапазон', 'канал', 'клиентов', 'сигнал', 'качество'],
+        host.ssids.map(function (net) {
+          var sat = net.satisfaction;
+          var poor = typeof sat === 'number' && sat > 0 && sat < 80;
+          return h('tr', null, [
+            h('td', null, [h('span', { class: 'dot ' + (net.up ? 'ok' : 'bad') }),
+                           h('span', { text: net.essid + (net.guest ? ' (гостевая)' : '') })]),
+            h('td', { class: 'mono right', text: net.band + ' ГГц' }),
+            h('td', { class: 'mono right', text: net.channel === null || net.channel === undefined ? '' : String(net.channel) }),
+            h('td', { class: 'mono right', text: String(net.clients || 0) }),
+            // Average client signal: -60 dBm is comfortable, -75 is the edge.
+            h('td', { class: 'mono right' + (net.signal && net.signal < -72 ? ' warn' : ''),
+                      text: net.signal ? net.signal + ' dBm' : '' }),
+            h('td', { class: 'mono right' + (poor ? ' warn' : ''),
+                      text: typeof sat === 'number' && sat > 0 ? sat + '%' : '' })
+          ]);
+        }))));
+  }
+
   if ((host.smarts || []).length) {
     body.appendChild(section('Здоровье дисков', table(
       ['', 'устройство', 'модель', 'темп.', 'наработка', 'износ', 'realloc/pending'],

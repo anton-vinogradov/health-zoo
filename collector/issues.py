@@ -249,6 +249,18 @@ def host_issues(host: dict, cfg: dict | None = None) -> list[dict]:
                 "wifi_satisfaction_warn", 80):
             add("warn", f"radiosat:{name}",
                 f"качество связи {label}: {satisfaction}%")
+    # Per-SSID quality, which is the level a complaint arrives at: nobody says
+    # "the ng radio is unhappy", they say "ferretclub is bad in the kitchen".
+    for net in host.get("ssids") or []:
+        satisfaction = net.get("satisfaction")
+        if not net.get("up") or not net.get("clients"):
+            continue
+        if isinstance(satisfaction, (int, float)) and 0 < satisfaction < limits.get(
+                "wifi_satisfaction_warn", 80):
+            add("warn", f"ssidsat:{net['essid']}/{net['band']}",
+                f"сеть {net['essid']} ({net['band']} ГГц): качество "
+                f"{satisfaction}% у {net['clients']} клиентов")
+
     # UniFi device states: 1 is connected and managed — the normal one. 0 is
     # disconnected, 2 pending adoption, 4 upgrading, 5 provisioning. Only
     # disconnected and pending are worth reporting; the rest are transient.
@@ -480,6 +492,12 @@ def checks_for(host: dict, cfg: dict | None = None) -> list[dict]:
         "каналах глушат друг друга сильнее, чем стоя на одном",
         applies=any(r.get("band") == "2.4" for r in host.get("radios", [])),
         skipped="радио 2.4 ГГц нет", keys=("radiooverlap", "radiogrid"))
+    add("network", "Качество связи по сети (SSID)",
+        "Оценка контроллера для каждой Wi-Fi сети на точке: если клиенты этой "
+        "сети работают плохо, видно, какой именно сети это касается.",
+        applies=bool(host.get("ssids")),
+        skipped="точка не отдаёт статистику по сетям", keys=("ssidsat",))
+
     add("network", "Качество связи клиентов",
         f"Оценка контроллера (satisfaction) ниже "
         f"{limits.get('wifi_satisfaction_warn', 80)}%",

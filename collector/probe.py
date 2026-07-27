@@ -1280,6 +1280,26 @@ def poll_unifi_controller(cfg: dict, results: list[dict]) -> None:
             })
         if radios:
             host["radios"] = radios
+
+        # Per-SSID quality. The radio-level number answers "is this band
+        # healthy"; this answers "is the network people actually join healthy",
+        # which is the question asked when someone says the wifi is bad.
+        ssids = []
+        for vap in device.get("vap_table", []):
+            if not vap.get("essid"):
+                continue
+            ssids.append({
+                "essid": vap.get("essid"),
+                "band": "2.4" if vap.get("radio") == "ng" else "5",
+                "channel": vap.get("channel"),
+                "clients": vap.get("num_sta", 0),
+                "satisfaction": vap.get("satisfaction"),
+                "signal": vap.get("avg_client_signal"),
+                "guest": bool(vap.get("is_guest")),
+                "up": vap.get("state", "") != "DOWN",
+            })
+        if ssids:
+            host["ssids"] = ssids
         _post_process(host)
 
 

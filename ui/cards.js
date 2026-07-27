@@ -116,7 +116,20 @@ function hostCard(host) {
     chips.push(chip('💾 ← ' + host.receives_from.join(', '), 'ok'));
   }
   if (host.backup_orphan) chips.push(chipFor(host, 'no_backup', '💾 без бэкапа', 'bad'));
-  if (host.wifi_clients !== undefined && (host.radios || host.radioiws || []).length) {
+  /* An access point is judged by the networks people join, not by its radios:
+     "ferretclub 2.4: 60%" is a complaint waiting to happen, "клиентов: 7" is
+     trivia. The controller's own satisfaction score is used as-is. */
+  (host.ssids || []).forEach(function (net) {
+    if (!net.up) { chips.push(chip('📵 ' + net.essid + ' выключена', 'warn')); return; }
+    var sat = net.satisfaction;
+    var text = '📶 ' + net.essid + ' ' + net.band + ' ГГц';
+    if (typeof sat === 'number' && sat > 0) text += ': ' + sat + '%';
+    if (net.clients) text += ' · ' + net.clients;
+    chips.push(chipFor(host, 'ssidsat:' + net.essid + '/' + net.band, text,
+      typeof sat === 'number' && sat > 0 && sat < 80 ? 'warn' : sat >= 90 ? 'ok' : ''));
+  });
+  if (!(host.ssids || []).length && host.wifi_clients !== undefined &&
+      (host.radios || host.radioiws || []).length) {
     chips.push(chip('📶 клиентов: ' + host.wifi_clients, ''));
   }
   if (host.playback) {
