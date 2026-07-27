@@ -611,6 +611,38 @@ function showHost(host) {
     fact('событий ZoneMinder', host.zm_events_count + ' (' + bytes(host.zm_events_bytes) + ')');
     fact('последнее событие', ago(host.zm_last_event));
   }
+  // Everything summarised on the card is explained here; a chip with no
+  // expansion leaves the reader guessing what it counted.
+  if ((host.roles || []).length > 1) {
+    fact('роли', host.roles.map(function (r) { return ROLE_NAME[r] || r; }).join(' + '));
+  }
+  if (host.may_be_offline) fact('выключение', 'считается нормой — алертов не будет');
+  if (host.power_recovery !== null && host.power_recovery !== undefined) {
+    fact('автостарт после сбоя питания', host.power_recovery ? 'включён' : 'ВЫКЛЮЧЕН');
+  }
+  // Only where there is actually a radio: a speaker reporting "0 Wi-Fi
+  // clients" is noise, not information.
+  if ((host.radios || host.radioiws || []).length) {
+    fact('клиентов Wi-Fi', host.wifi_clients);
+  }
+  if (host.unifi_state !== undefined) {
+    fact('в контроллере', host.unifi_state === 2 ? 'управляется' : 'не управляется (' + host.unifi_state + ')');
+  }
+  fact('зона', host.zone);
+  fact('воспроизведение', host.playback === 'PLAYING' ? 'играет' :
+                          host.playback === 'STOPPED' ? 'остановлено' : host.playback);
+  fact('версия железа', host.hardware);
+  fact('серийный номер', host.serial);
+  if (host.recorded_by) {
+    fact('пишет', host.recorded_by +
+      (host.camera_fps ? ', ' + Number(host.camera_fps).toFixed(1) + ' к/с' : ''));
+    fact('статус записи', host.camera_status);
+    if (host.only_via_recorder) {
+      fact('видимость', 'из сети дашборда недоступна — статус берётся у рекордера');
+    }
+  }
+  if ((host.backs_up_to || []).length) fact('бэкапится на', host.backs_up_to.join(', '));
+  if ((host.receives_from || []).length) fact('принимает бэкапы от', host.receives_from.join(', '));
   if (host.note) fact('заметка', host.note);
   body.appendChild(section('Общее', h('dl', { class: 'kv' }, facts)));
 
@@ -629,9 +661,25 @@ function showHost(host) {
 
   var issues = hostIssues(host).filter(function (i) { return i.level !== 'ok'; });
   if (issues.length) {
-    body.appendChild(section('Замечания', h('div', { class: 'chips' }, issues.map(function (i) {
-      return chip(i.text, i.level);
-    }))));
+    body.appendChild(section('Замечания', table(['', 'что', 'решение'],
+      issues.map(function (i) {
+        return h('tr', null, [
+          h('td', null, [h('span', { class: 'dot ' + (i.suppressed ? '' : i.level) })]),
+          h('td', null, [
+            h('div', { text: i.text }),
+            i.suppressed ? h('div', { class: 'check-rule',
+              text: 'исключено: ' + i.suppress_reason }) : null
+          ]),
+          h('td', { class: 'right' }, [
+            i.suppressed
+              ? h('button', { class: 'btn btn-sm', text: 'вернуть',
+                  onclick: function () { unsuppress(host.id + '/' + i.key); } })
+              : h('button', { class: 'btn btn-sm', text: 'исключить',
+                  title: 'принять как известное — с причиной',
+                  onclick: function () { suppressIssue(host, i); } })
+          ])
+        ]);
+      }))));
   }
 
   if ((host.disks || []).length) {
@@ -904,13 +952,20 @@ function renderChecks(host, container) {
 
   Object.keys(byCategory).forEach(function (category) {
     var rows = byCategory[category].map(function (c) {
-      var mark = { ok: '✓', bad: '✕', warn: '!', info: 'i', 'n/a': '—' }[c.status];
+      var mark = { ok: '✓', bad: '✕', warn: '!', info: 'i', muted: '⊘', 'n/a': '—' }[c.status];
+      var reasons = (c.suppressed || []).map(function (s) {
+        return h('div', { class: 'check-rule muted-reason' }, [
+          h('span', { text: 'исключено: ' + s.reason }),
+          h('button', {
+            class: 'link-btn', text: 'вернуть',
+            onclick: function () { unsuppress(host.id + '/' + s.key); }
+          })
+        ]);
+      });
       return h('tr', { class: c.status === 'n/a' ? 'check-na' : '' }, [
         h('td', { class: 'check-mark ' + c.status, text: mark }),
-        h('td', null, [
-          h('div', { class: 'check-name', text: c.name }),
-          h('div', { class: 'check-rule', text: c.rule })
-        ]),
+        h('td', null, [h('div', { class: 'check-name', text: c.name }),
+                       h('div', { class: 'check-rule', text: c.rule })].concat(reasons)),
         h('td', { class: 'check-detail' + (c.status === 'bad' ? ' bad' : c.status === 'warn' ? ' warn' : ''),
                   text: c.detail || (c.status === 'ok' ? 'в норме' : '') })
       ]);
@@ -1059,6 +1114,82 @@ function upgradeAccessPoint(host) {
     if (res.error) { if (!actionFailed(res)) alert('Не вышло: ' + res.error); return; }
     alert('Команда отправлена контроллеру — обновление идёт в фоне.');
   }).catch(function (e) { alert('Ошибка запроса: ' + e); });
+}
+
+/* ---------- suppressions ---------- */
+
+function suppressIssue(host, issue) {
+  var reason = prompt(
+    'Исключить проверку для ' + host.name + ':\n«' + issue.text + '»\n\n' +
+    'Проверка продолжит выполняться, но перестанет красить карточку и слать\n' +
+    'алерты. Причина будет показана рядом с проверкой.\n\n' +
+    'Причина (обязательно):');
+  if (reason === null) return;
+  if (reason.trim().length < 3) { alert('Без причины исключение бессмысленно.'); return; }
+
+  var days = prompt('На сколько дней? Пусто — бессрочно.\n' +
+                    'Срок помогает потом понять, нужно ли исключение ещё.', '90');
+  if (days === null) return;
+
+  fetch('/api/suppress', {
+    method: 'POST', headers: actionHeaders(),
+    body: JSON.stringify({ host: host.id, key: issue.key, reason: reason.trim(),
+                           days: days.trim() ? parseInt(days, 10) : null })
+  }).then(function (r) { return r.json(); }).then(function (res) {
+    if (res.error) { if (!actionFailed(res)) alert('Не вышло: ' + res.error); return; }
+    document.getElementById('modal').classList.add('hidden');
+    load();
+  }).catch(function (e) { alert('Ошибка запроса: ' + e); });
+}
+
+function unsuppress(id, onDone) {
+  if (!confirm('Снять исключение? Проверка снова будет влиять на статус и алерты.')) return;
+  fetch('/api/suppress/remove', {
+    method: 'POST', headers: actionHeaders(), body: JSON.stringify({ id: id })
+  }).then(function (r) { return r.json(); }).then(function (res) {
+    if (res.error) { if (!actionFailed(res)) alert('Не вышло: ' + res.error); return; }
+    load();
+    if (onDone) onDone();
+  }).catch(function (e) { alert('Ошибка запроса: ' + e); });
+}
+
+function showSuppressions() {
+  var list = (state && state.suppressions) || [];
+  document.getElementById('modal-title').textContent = 'Исключения (' + list.length + ')';
+  var root = document.getElementById('modal-body');
+  root.innerHTML = '';
+
+  if (!list.length) {
+    root.appendChild(h('p', { class: 'checks-intro', text:
+      'Исключений нет — дашборд показывает всё, что находит.' }));
+    document.getElementById('modal').classList.remove('hidden');
+    return;
+  }
+
+  var stale = list.filter(function (s) { return !s.still_firing; }).length;
+  root.appendChild(h('p', { class: 'checks-intro', text:
+    'Проверки продолжают выполняться; исключение лишь снимает влияние на статус и алерты.' +
+    (stale ? ' У ' + stale + ' исключений проблема уже не воспроизводится — их можно снять.' : '') }));
+
+  root.appendChild(table(['хост', 'проверка', 'обоснование', 'возраст', 'состояние', ''],
+    list.map(function (s) {
+      return h('tr', null, [
+        h('td', { text: s.host_name }),
+        h('td', { class: 'mono', text: s.key }),
+        h('td', { text: s.reason }),
+        h('td', { class: 'mono right', text: Math.round(s.age_days) + ' сут' +
+                  (s.days_left !== null ? ' / ещё ' + Math.round(s.days_left) : '') }),
+        h('td', null, [
+          h('span', { class: 'dot ' + (s.still_firing ? 'warn' : 'ok') }),
+          h('span', { text: s.still_firing ? 'скрывает проблему' : 'проблемы больше нет' })
+        ]),
+        h('td', { class: 'right' }, [h('button', {
+          class: 'btn btn-sm', text: 'снять',
+          onclick: function () { unsuppress(s.id, showSuppressions); }
+        })])
+      ]);
+    })));
+  document.getElementById('modal').classList.remove('hidden');
 }
 
 /* ---------- service actions ---------- */
@@ -1223,6 +1354,7 @@ document.addEventListener('DOMContentLoaded', function () {
   });
   document.getElementById('btn-refresh').addEventListener('click', refresh);
   document.getElementById('btn-sites').addEventListener('click', showSites);
+  document.getElementById('btn-suppressions').addEventListener('click', showSuppressions);
   document.getElementById('btn-upgrade-all').addEventListener('click', function () { startUpdate([]); });
 
   document.querySelectorAll('[data-close]').forEach(function (el) {

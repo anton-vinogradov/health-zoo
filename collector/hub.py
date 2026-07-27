@@ -26,6 +26,7 @@ import alerts  # noqa: E402
 import history  # noqa: E402
 import issues  # noqa: E402
 import probe  # noqa: E402
+import suppressions as suppressions_mod  # noqa: E402
 
 ROOT = Path(__file__).resolve().parent.parent
 CONFIG_PATHS = [
@@ -61,6 +62,8 @@ class Fleet:
         self.snapshot: dict = {"generated": 0, "hosts": [], "polling": False}
         self.wake = threading.Event()
         self.alerts = alerts.Alerts(cfg)
+        self.suppressions = suppressions_mod.Suppressions(
+            cfg.get("suppressions_file", "/var/lib/health-zoo/suppressions.json"))
         self.history = history.History(
             cfg.get("history_db", "/var/lib/health-zoo/history.db"),
             cfg.get("history_retention_days", 180))
@@ -83,9 +86,10 @@ class Fleet:
             probe.run_external_checks(self.cfg.get("external_checks", []),
                                       self.hosts(), self.cfg.get("ssh_key"), hosts)
             probe.poll_unifi_controller(self.cfg, hosts)
-            issues.annotate(hosts, self.cfg)
+            issues.annotate(hosts, self.cfg, self.suppressions)
             issues.annotate_checks(hosts, self.cfg)
             snap = {
+                "suppressions": self.suppressions.listing(hosts),
                 "unmanaged": probe.find_unmanaged(hosts, self.hosts()),
                 "generated": int(time.time()),
                 "duration_ms": int((time.time() - started) * 1000),
@@ -129,7 +133,7 @@ class Fleet:
         if not wanted:
             return 0
         fresh = probe.probe_all(wanted, self.cfg.get("ssh_key"))
-        issues.annotate(fresh, self.cfg)
+        issues.annotate(fresh, self.cfg, self.suppressions)
         issues.annotate_checks(fresh, self.cfg)
         by_id = {h["id"]: h for h in fresh}
         with self.lock:
@@ -140,6 +144,10 @@ class Fleet:
             # Camera links are cross-host, so recompute them over the merged set.
             probe.link_cameras(hosts)
             self.snapshot["hosts"] = hosts
+            # Suppressions are derived from the hosts, so they have to be
+            # recomputed here too: adding one and not seeing it take effect
+            # until the next full cycle looks like the button did nothing.
+            self.snapshot["suppressions"] = self.suppressions.listing(hosts)
             self.snapshot["generated"] = int(time.time())
         return len(fresh)
 
@@ -623,6 +631,11 @@ class Handler(BaseHTTPRequestHandler):
             self._json({"metrics": self.fleet.history.metrics(path.split("/")[3])})
             return
 
+        if path == "/api/suppressions":
+            self._json({"suppressions":
+                        self.fleet.suppressions.listing(self.fleet.get().get("hosts", []))})
+            return
+
         if path == "/api/job":
             job = self.jobs.latest()
             self._json(job or {"state": "idle"})
@@ -689,6 +702,45 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/alerts/test":
             ok, message = self.fleet.alerts.test()
             self._json({"ok": ok, "message": message}, 200 if ok else 400)
+            return
+
+        if path in ("/api/suppress", "/api/suppress/remove"):
+            length = int(self.headers.get("Content-Length") or 0)
+            try:
+                req = json.loads(self.rfile.read(length).decode("utf-8") or "{}")
+            except json.JSONDecodeError:
+                self._json({"error": "bad json"}, 400)
+                return
+
+            if path.endswith("/remove"):
+                suppression_id = req.get("id", "")
+                removed = self.fleet.suppressions.remove(suppression_id)
+                if removed:
+                    # Re-poll that host straight away: waiting a full cycle to
+                    # see the finding come back reads as the button failing.
+                    self.fleet.refresh_hosts([suppression_id.split("/", 1)[0]])
+                self._json({"ok": removed} if removed else {"error": "не найдено"},
+                           200 if removed else 404)
+                return
+
+            host_id, key = req.get("host"), (req.get("key") or "").strip()
+            if not any(h.get("id") == host_id for h in self.fleet.hosts()):
+                self._json({"error": "unknown host"}, 404)
+                return
+            if not key:
+                self._json({"error": "не указана проверка"}, 400)
+                return
+            days = req.get("days")
+            ok, error = self.fleet.suppressions.add(
+                host_id, key, req.get("reason", ""),
+                int(days) if days else None, req.get("note", ""))
+            if not ok:
+                self._json({"error": error}, 400)
+                return
+            # Reflect it immediately: the point of suppressing is that the
+            # dashboard stops shouting right now, not on the next cycle.
+            self.fleet.refresh_hosts([host_id])
+            self._json({"ok": True})
             return
 
         if path == "/api/reboot":

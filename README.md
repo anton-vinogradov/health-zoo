@@ -47,6 +47,22 @@ Only Debian-family hosts are updatable. NAS units and routers are reported but
 never touched: upgrading OpenWrt packages in place is a known way to brick a
 router, and DSM updates need credentials this tool deliberately does not hold.
 
+## Suppressing a finding
+
+Any monitoring system eventually shows something known, understood and not
+being fixed today. Left alone it trains the operator to ignore an amber
+dashboard; turned off, the check is forgotten entirely.
+
+A suppression is neither. The check keeps running and its verdict stays
+visible, but it stops colouring the host and stops alerting, and the reason
+sits next to it. A reason is mandatory — a suppression with no explanation is
+indistinguishable from a check nobody understood — and an optional expiry
+makes it come back for review.
+
+The **Исключения** view lists them fleet-wide, with age, remaining time, and
+whether the underlying finding still occurs at all. That last column is the
+useful one: a suppression hiding nothing can simply be dropped.
+
 ## Removing a service
 
 Each service in the host detail view has a remove button: it stops the unit,

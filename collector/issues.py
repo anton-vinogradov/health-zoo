@@ -265,10 +265,27 @@ def host_issues(host: dict, cfg: dict | None = None) -> list[dict]:
     return out
 
 
-def annotate(hosts: list[dict], cfg: dict | None = None) -> None:
-    """Attach issues and an overall level to every host in place."""
+def annotate(hosts: list[dict], cfg: dict | None = None,
+             suppressions=None) -> None:
+    """Attach issues and an overall level to every host in place.
+
+    A suppressed finding keeps its place in the list — the check still ran and
+    its verdict is still true — but it stops colouring the host and stops
+    alerting, and carries the reason it was accepted.
+    """
     for host in hosts:
         issues = host_issues(host, cfg)
+        muted = suppressions.for_host(host["id"]) if suppressions else {}
+        for issue in issues:
+            entry = muted.get(issue["key"])
+            if not entry:
+                continue
+            issue["suppressed"] = True
+            issue["suppress_reason"] = entry.get("reason", "")
+            issue["suppress_since"] = entry.get("created", 0)
+            issue["suppress_expires"] = entry.get("expires", 0)
+            issue["original_level"] = issue["level"]
+            issue["level"] = "info"
         host["issues"] = issues
         if not host.get("reachable"):
             host["level"] = "off"
@@ -316,13 +333,29 @@ def checks_for(host: dict, cfg: dict | None = None) -> list[dict]:
         if not applies:
             status, detail = "n/a", skipped
         elif hits:
-            status = "bad" if any(h["level"] == "bad" for h in hits) else (
-                "info" if all(h["level"] == "info" for h in hits) else "warn")
-            detail = "; ".join(h["text"] for h in hits[:3])
+            suppressed = [h for h in hits if h.get("suppressed")]
+            live = [h for h in hits if not h.get("suppressed")]
+            if live:
+                status = "bad" if any(h["level"] == "bad" for h in live) else "warn"
+                detail = "; ".join(h["text"] for h in live[:3])
+            else:
+                # Fires, but accepted on purpose — shown with the reason so the
+                # decision is visible where the check is, not buried elsewhere.
+                status = "muted"
+                detail = "; ".join(h["text"] for h in suppressed[:2])
         else:
             status, detail = "ok", ""
-        out.append({"category": category, "name": name, "rule": rule,
-                    "status": status, "detail": detail})
+        entry = {"category": category, "name": name, "rule": rule,
+                 "status": status, "detail": detail}
+        muted_hits = [h for h in hits if h.get("suppressed")]
+        if muted_hits:
+            entry["suppressed"] = [{
+                "key": h["key"], "reason": h.get("suppress_reason", ""),
+                "since": h.get("suppress_since", 0),
+                "expires": h.get("suppress_expires", 0),
+                "text": h["text"],
+            } for h in muted_hits]
+        out.append(entry)
 
     reachable = host.get("reachable")
 

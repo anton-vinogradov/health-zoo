@@ -706,32 +706,42 @@ def probe_sonos(host: dict) -> dict:
         data["hardware"] = tag("HardwareVersion", status)
 
     # Playback state is informational: a stopped speaker is not a fault.
-    if via:
-        # Playback state needs a SOAP POST; skip it rather than shell-quote a
-        # multi-line XML body through ssh for a purely informational field.
-        return data
-
     envelope = (
         '<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/">'
         '<s:Body><u:GetTransportInfo '
         'xmlns:u="urn:schemas-upnp-org:service:AVTransport:1">'
         "<InstanceID>0</InstanceID></u:GetTransportInfo></s:Body></s:Envelope>"
     )
+    url = f"http://{host['addr']}:1400/MediaRenderer/AVTransport/Control"
+    action = '"urn:schemas-upnp-org:service:AVTransport:1#GetTransportInfo"'
+    body = ""
     try:
-        request = urllib.request.Request(
-            f"http://{host['addr']}:1400/MediaRenderer/AVTransport/Control",
-            data=envelope.encode(),
-            headers={
-                "SOAPAction": '"urn:schemas-upnp-org:service:AVTransport:1#GetTransportInfo"',
-                "Content-Type": "text/xml; charset=utf-8",
-            })
-        with urllib.request.urlopen(request, timeout=6) as resp:
-            body = resp.read().decode("utf-8", "replace")
-        state = re.search(r"<CurrentTransportState>([^<]*)</CurrentTransportState>", body)
-        if state:
-            data["playback"] = state.group(1)
+        if via:
+            cmd = list(SSH_BASE)
+            if via.get("key"):
+                cmd += ["-i", os.path.expanduser(via["key"])]
+            target = via["addr"]
+            if via.get("user"):
+                target = f"{via['user']}@{target}"
+            cmd += [target, "curl -s -m 6 -X POST "
+                    f"-H {shlex.quote('SOAPAction: ' + action)} "
+                    "-H 'Content-Type: text/xml; charset=utf-8' "
+                    f"--data {shlex.quote(envelope)} {shlex.quote(url)}"]
+            result = subprocess.run(cmd, capture_output=True, timeout=20, text=True)
+            body = result.stdout
+        else:
+            request = urllib.request.Request(
+                url, data=envelope.encode(),
+                headers={"SOAPAction": action,
+                         "Content-Type": "text/xml; charset=utf-8"})
+            with urllib.request.urlopen(request, timeout=6) as resp:
+                body = resp.read().decode("utf-8", "replace")
     except Exception:
-        pass
+        body = ""
+
+    state = re.search(r"<CurrentTransportState>([^<]*)</CurrentTransportState>", body)
+    if state:
+        data["playback"] = state.group(1)
 
     return data
 

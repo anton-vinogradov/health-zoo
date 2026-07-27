@@ -347,3 +347,74 @@ def test_annotate_sets_overall_level():
     ]
     issues.annotate(hosts)
     assert [h["level"] for h in hosts] == ["ok", "warn", "bad", "off"]
+
+
+# --------------------------------------------------------------------------
+# suppressions
+# --------------------------------------------------------------------------
+
+def test_suppression_requires_a_reason(tmp_path):
+    import suppressions as suppressions_mod
+    store = suppressions_mod.Suppressions(str(tmp_path / "s.json"))
+
+    ok, error = store.add("box", "disk:/", "")
+    assert not ok and "причин" in error
+    ok, _ = store.add("box", "disk:/", "том расширят в следующем квартале")
+    assert ok
+
+
+def test_suppressed_finding_stops_colouring_the_host(tmp_path):
+    """The check still runs and its verdict stays visible — it just no longer
+    decides the host's status or triggers an alert."""
+    import suppressions as suppressions_mod
+    store = suppressions_mod.Suppressions(str(tmp_path / "s.json"))
+    store.add("srv", "svc:demo.service", "демо-стенд, гасим на выходных")
+
+    host = {"id": "srv", "agent": "linux", "reachable": True,
+            "services": [{"name": "demo.service", "state": "failed/failed"}]}
+    issues.annotate([host], None, store)
+
+    assert host["level"] == "ok"                 # was "bad" before suppressing
+    issue = host["issues"][0]
+    assert issue["suppressed"] is True
+    assert issue["original_level"] == "bad"
+    assert issue["suppress_reason"] == "демо-стенд, гасим на выходных"
+
+
+def test_expired_suppression_stops_applying(tmp_path):
+    import time as _time
+    import suppressions as suppressions_mod
+    store = suppressions_mod.Suppressions(str(tmp_path / "s.json"))
+    store.add("srv", "reboot", "ждём окна обслуживания")
+    store.items["srv/reboot"]["expires"] = int(_time.time()) - 1
+
+    assert store.for_host("srv") == {}
+
+
+def test_listing_flags_suppressions_that_hide_nothing(tmp_path):
+    """A suppression whose finding stopped occurring is the one to remove."""
+    import suppressions as suppressions_mod
+    store = suppressions_mod.Suppressions(str(tmp_path / "s.json"))
+    store.add("srv", "reboot", "перезагрузим в субботу")
+    store.add("srv", "security", "обновимся вместе с ядром")
+
+    hosts = [{"id": "srv", "name": "srv", "issues": [{"key": "reboot"}]}]
+    listing = {item["key"]: item for item in store.listing(hosts)}
+
+    assert listing["reboot"]["still_firing"] is True
+    assert listing["security"]["still_firing"] is False
+
+
+def test_checks_show_the_reason_next_to_the_check(tmp_path):
+    import suppressions as suppressions_mod
+    store = suppressions_mod.Suppressions(str(tmp_path / "s.json"))
+    store.add("srv", "svc:demo.service", "стенд, чинить не планируем")
+
+    host = {"id": "srv", "agent": "linux", "reachable": True,
+            "services": [{"name": "demo.service", "state": "failed/failed"}]}
+    issues.annotate([host], None, store)
+    checks = {c["name"]: c for c in issues.checks_for(host)}
+
+    entry = checks["Упавшие сервисы"]
+    assert entry["status"] == "muted"
+    assert entry["suppressed"][0]["reason"] == "стенд, чинить не планируем"

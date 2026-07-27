@@ -486,3 +486,18 @@ table.checks td { vertical-align: top; padding: 6px 10px 6px 0; }
 .check-detail.bad { color: var(--bad); }
 .check-detail.warn { color: var(--warn); }
 tr.check-na .check-name { color: var(--text-faint); }
+
+/* ---------- suppressions ---------- */
+
+.check-mark.muted { color: var(--text-faint); }
+.muted-reason { display: flex; align-items: baseline; gap: 8px; margin-top: 2px; }
+.link-btn {
+  border: 0;
+  background: none;
+  padding: 0;
+  color: var(--accent);
+  font: inherit;
+  font-size: 11px;
+  cursor: pointer;
+}
+.link-btn:hover { text-decoration: underline; }
