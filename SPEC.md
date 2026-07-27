@@ -82,7 +82,7 @@ Marked: **✓** done, **▶** in progress, **○** deliberately not done.
 | ✓ | For devices polled without an agent, report the ports the TCP check reached |
 | ✓ | Find unmanaged devices from DHCP leases |
 | ✓ | Poll hosts reachable only through another site (`probe_via`) |
-| ✓ | List every web resource of a host, linked by domain name; loopback marked, not hidden |
+| ✓ | List every web resource of a host, linked by the name from the Caddy/nginx/Apache config; loopback stays in the detail view, naming the site that serves it |
 | ✓ | Report what RouterOS has open (`/ip service` plus socks/UPnP/RoMON/bandwidth-test) |
 
 ### 4.2 Checks
@@ -160,6 +160,11 @@ Marked: **✓** done, **▶** in progress, **○** deliberately not done.
 - **Thresholds live outside the config** (`/var/lib/health-zoo/settings.json`)
   and only when they differ from the default — otherwise today's defaults are
   pinned forever.
+- **An update makes three passes.** A plain `upgrade`, then cleanup, then the
+  remainder installed by name with `--no-install-recommends`. Each pass removes
+  one reason for "kept back": a new dependency, a conflict with a package
+  nothing needs, and a recommendation that exists in no repository at all
+  (`rpi-eeprom 28.27` asks for `rpieepromab`, which was never published).
 - **Camera silence is a per-camera threshold.** One fleet-wide number is
   guaranteed to be wrong for one camera, and wrong in the quiet direction.
 - **Cleanup runs between two upgrade passes.** A package is often held back

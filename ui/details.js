@@ -467,7 +467,9 @@ function showHost(host) {
         if (link.local) {
           return h('span', {
             class: 'btn btn-sm btn-local',
-            text: '⌂ localhost:' + link.port + name + ' (только локально)'
+            text: '⌂ localhost:' + link.port + name +
+                  (link.served_by ? ' — открыт как ' + link.served_by
+                                  : ' (только локально)')
           });
         }
         return h('a', {

@@ -562,3 +562,21 @@ def test_cleanup_is_skipped_when_switched_off():
     jobs._exec = lambda job_id, host, key, remote: calls.append(remote) or 0
     jobs._update_host("job1", {"id": "srv", "user": "root"}, None, cleanup=False)
     assert "autoremove" not in calls[0]
+
+
+def test_vhost_names_replace_by_address_links():
+    """A link by IP cannot be shared and does not match the certificate."""
+    data = {
+        "listens": [{"port": "443", "process": "caddy", "scope": "any"},
+                    {"port": "8080", "process": "java", "scope": "local"}],
+        "vhosts": [{"name": "app.example.dev", "port": "443",
+                    "scheme": "https", "server": "caddy"}],
+    }
+    out = probe._post_process(data)
+    links = {link.get("host_name") or link.get("label"): link for link in out["web"]}
+
+    assert "app.example.dev" in links
+    # The backend stays visible but is described by the name that serves it,
+    # instead of offering http://<ip>:8080 that answers only on the host.
+    assert links["java"]["local"] is True
+    assert links["java"]["served_by"] == "app.example.dev"

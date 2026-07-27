@@ -69,6 +69,7 @@ LIST_FIELDS = {
     "backuprepo": ["name", "last", "size"],
     "unbacked": ["share", "volume"],
     "orphan": ["pkg"],
+    "vhost": ["name", "port", "scheme", "server"],
     "iface": ["name", "status", "rx", "tx", "comment"],
     "neighbor": ["id", "name", "snr", "hops", "last_heard", "battery"],
 }
@@ -226,6 +227,47 @@ def _post_process(data: dict) -> dict:
     # links from listening ports when nobody set them.
     if not data.get("web"):
         data["web"] = _web_links(data)
+
+    # Names beat addresses: a link by IP cannot be shared, does not match the
+    # certificate, and for anything behind a reverse proxy it is simply wrong —
+    # the backend listens on 127.0.0.1 and only the proxy knows the name. The
+    # proxy's own configuration holds those names, so a vhost replaces the
+    # by-address link on the port it serves.
+    named = []
+    for vhost in data.get("vhosts", []):
+        name = vhost.get("name")
+        if not name:
+            continue
+        try:
+            port = int(vhost.get("port") or 443)
+        except ValueError:
+            port = 443
+        named.append({
+            "port": port,
+            "scheme": vhost.get("scheme") or "https",
+            "label": name,
+            "host_name": name,
+            "local": False,
+            "via": vhost.get("server", ""),
+        })
+    if named:
+        # The proxy's own by-address links are noise once its sites are named:
+        # http://<ip>/ on a Caddy box is a redirect to a site already listed.
+        servers = {v.get("server", "") for v in data.get("vhosts", [])}
+        proxied_ports = {link["port"] for link in named}
+        kept = []
+        for link in data.get("web", []):
+            if link.get("port") in proxied_ports:
+                continue
+            if (link.get("label") or "").lower() in servers:
+                continue
+            # A backend on 127.0.0.1 is reachable only through the proxy, so
+            # say which name serves it instead of offering a dead link.
+            if link.get("local") and named:
+                link["served_by"] = named[0]["host_name"]
+            kept.append(link)
+        data["web"] = named + kept
+
     # Same rule for endpoints: a probe that knows its own open ports (RouterOS
     # lists them itself) keeps them; the rest are derived from listening
     # sockets. Recomputing unconditionally quietly emptied the router cards.
@@ -843,7 +885,9 @@ def probe_sonos(host: dict) -> dict:
         "model": tag("modelName", description),
         "os_name": f"Sonos {tag('softwareVersion', description)}".strip(),
         "serial": tag("serialNum", description).split(":")[0],
-        "web": [{"port": 1400, "scheme": "http", "label": "Sonos", "local": False}],
+        # The root answers 403 by design; /status is the page a person can read.
+        "web": [{"port": 1400, "scheme": "http", "label": "Sonos",
+                 "path": "/status", "local": False}],
     }
 
     status = fetch("/status/zp")
@@ -1039,7 +1083,10 @@ PLACEHOLDER_TITLE = re.compile(
     r"default page|it works|welcome to nginx|test page|index of /", re.I)
 
 # Where those services actually keep their UI, by the process holding the port.
+# Sonos answers 403 on / by design; its diagnostics page is one level down, so
+# a link to the root is a link to an error page.
 APP_PATHS = {
+    "sonos": ["/status", "/xml/device_description.xml"],
     "apache2": ["/zm/", "/admin/"],
     "httpd": ["/zm/", "/admin/"],
     "pihole-ftl": ["/admin/"],

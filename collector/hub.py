@@ -373,10 +373,23 @@ class Jobs:
                "-o Dpkg::Options::=--force-confdef "
                "-o Dpkg::Options::=--force-confold upgrade; "
                "[ $rc -eq 0 ] && rc=$?; " if cleanup else "")
-            + "left=$(apt list --upgradable 2>/dev/null | tail -n +2); "
+            + "left=$(apt list --upgradable 2>/dev/null | tail -n +2 | cut -d/ -f1); "
+            # Third pass, by name and without recommendations. A package is
+            # also held back when its new version recommends something that is
+            # in no repository at all — rpi-eeprom 28.27 asks for rpieepromab,
+            # which Raspberry Pi has not published. That is not a conflict and
+            # not a reason to leave a machine unpatched, so ask for those
+            # packages directly; anything needing a removal still refuses and
+            # still gets reported below.
+            "[ -n \"$left\" ] && { "
+            "  echo '--- третья попытка: без необязательных рекомендаций ---'; "
+            "  sudo -n apt-get -y --no-install-recommends "
+            "-o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold "
+            "install $left; "
+            "  left=$(apt list --upgradable 2>/dev/null | tail -n +2 | cut -d/ -f1); }; "
             "[ -n \"$left\" ] && { "
             "  echo 'ОСТАЛОСЬ (нужно удаление пакетов, вручную):'; "
-            "  echo \"$left\" | cut -d/ -f1 | tr '\\n' ' '; echo; }; "
+            "  echo \"$left\" | tr '\\n' ' '; echo; }; "
             "[ -f /var/run/reboot-required ] && echo 'REBOOT-REQUIRED'; exit $rc"
         )
         if host.get("user") == "root":

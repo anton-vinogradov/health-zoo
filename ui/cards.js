@@ -217,7 +217,12 @@ function hostCard(host) {
   // Appliances answer on several ports where all but one are redirect stubs or
   // distro default pages; if anything identified itself as a real service, show
   // only those on the card. The full list lives behind the "Сайты" button.
-  var named = (host.web || []).filter(function (l) { return (l.title || l.label) && !l.stub; });
+  /* Loopback services stay in the detail view, where there is room to say
+     "only from the host itself" — as a card button they are a link
+     that opens nothing. */
+  var named = (host.web || []).filter(function (l) {
+    return (l.title || l.label) && !l.stub && !l.local;
+  });
   // One service often answers on several ports (Pi-hole on :443 and :8080); the
   // card wants a button per service, not per port. Links are sorted 80/443
   // first, so the survivor is the address a person would type.

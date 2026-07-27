@@ -96,9 +96,12 @@ function ago(ts) {
 function webUrl(host, link) {
   var port = link.port;
   var std = (link.scheme === 'http' && port === 80) || (link.scheme === 'https' && port === 443);
-  /* Some consoles live one path down from a distro's placeholder root ("/zm/",
-     "/admin/"); the probe records where it actually found the page. */
-  return link.scheme + '://' + host.addr + (std ? '' : ':' + port) + (link.path || '');
+  /* A name where one is known: an address cannot be shared, does not match the
+     certificate, and for a proxied site it does not resolve to the site at all.
+     Some consoles also live one path down from a distro's placeholder root
+     ("/zm/", "/admin/"); the probe records where it actually found the page. */
+  var where = link.host_name || host.addr;
+  return link.scheme + '://' + where + (std ? '' : ':' + port) + (link.path || '');
 }
 
 function shortMount(path) {

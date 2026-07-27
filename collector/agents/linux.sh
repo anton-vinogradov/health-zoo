@@ -267,6 +267,70 @@ if command -v smartctl >/dev/null 2>&1 && sudo -n smartctl --version >/dev/null 
   done
 fi
 
+# ---------- names the web servers answer to ----------
+# A link by IP is a link nobody can share and a certificate nobody matches, and
+# for a service behind a reverse proxy it is simply wrong: the backend listens
+# on 127.0.0.1 and only the proxy knows the name. The names live in plain text
+# in the proxy's own configuration, so read them from there.
+emit_vhosts() {
+  # Caddy: "example.com, www.example.com {" at the start of a block. Caddy
+  # serves https by default and redirects http, so the scheme is https unless
+  # the site block says otherwise.
+  for f in /etc/caddy/Caddyfile /etc/caddy/conf.d/*.caddy /etc/caddy/sites/*; do
+    [ -r "$f" ] || continue
+    awk '/^[a-zA-Z0-9*][^ \t]*(,[^ \t]*)* *\{/ {
+      line = $0
+      sub(/ *\{.*/, "", line)
+      n = split(line, names, /, */)
+      for (i = 1; i <= n; i++) {
+        name = names[i]
+        gsub(/^[ \t]+|[ \t]+$/, "", name)
+        if (name ~ /^https?:\/\//) { sub(/^https?:\/\//, "", name) }
+        if (name == "" || name ~ /^:/ || name ~ /^#/) continue
+        scheme = (name ~ /^http:/) ? "http" : "https"
+        print "@vhost\t" name "\t443\thttps\tcaddy"
+      }
+    }' "$f" 2>/dev/null
+  done
+
+  # nginx: server_name inside a server block, with the listen port of that
+  # block. A wildcard or "_" is a catch-all, not a name anybody can type.
+  for f in /etc/nginx/sites-enabled/* /etc/nginx/conf.d/*.conf; do
+    [ -r "$f" ] || continue
+    awk '
+      /listen[ \t]/ {
+        p = $2; gsub(/[;#].*/, "", p); sub(/.*:/, "", p)
+        if (p ~ /^[0-9]+$/) port = p
+        if ($0 ~ /ssl/) tls = 1
+      }
+      /server_name[ \t]/ {
+        line = $0; sub(/.*server_name[ \t]+/, "", line); gsub(/[;#].*/, "", line)
+        n = split(line, names, /[ \t]+/)
+        for (i = 1; i <= n; i++) {
+          if (names[i] == "" || names[i] == "_" || names[i] ~ /\*/) continue
+          scheme = (tls || port == 443) ? "https" : "http"
+          print "@vhost\t" names[i] "\t" (port ? port : 80) "\t" scheme "\tnginx"
+        }
+      }' "$f" 2>/dev/null
+  done
+
+  # Apache: ServerName / ServerAlias, port from the VirtualHost header.
+  for f in /etc/apache2/sites-enabled/* /etc/httpd/conf.d/*.conf; do
+    [ -r "$f" ] || continue
+    awk '
+      /<VirtualHost/ { p = $2; sub(/.*:/, "", p); sub(/>.*/, "", p)
+                       if (p ~ /^[0-9]+$/) port = p }
+      /^[ \t]*Server(Name|Alias)[ \t]/ {
+        for (i = 2; i <= NF; i++) {
+          if ($i ~ /^#/) break
+          scheme = (port == 443) ? "https" : "http"
+          print "@vhost\t" $i "\t" (port ? port : 80) "\t" scheme "\tapache"
+        }
+      }' "$f" 2>/dev/null
+  done
+}
+emit_vhosts | sort -u | head -40
+
 # ---------- listening ports ----------
 common_listeners
 if command -v ss >/dev/null 2>&1; then
