@@ -486,3 +486,50 @@ def test_clearing_a_camera_threshold_follows_the_fleet_again(tmp_path):
     store.set_cameras({"rec/3": {"warn": 36, "bad": 72}})
     store.set_cameras({"rec/3": {"warn": None, "bad": None}})
     assert store.camera_limits("rec", "3") == {}
+
+
+def test_reboot_job_follows_the_host_down_and_back(monkeypatch):
+    """The log used to go silent for exactly the stretch being watched."""
+    import hub
+    import probe as probe_mod
+
+    answers = [True, True, False, False, True]
+
+    def fake_ping(addr):
+        return 1.0 if answers.pop(0) else None
+
+    monkeypatch.setattr(probe_mod, "ping", fake_ping)
+
+    jobs = hub.Jobs({"reboot_poll_seconds": 0})
+    jobs.jobs["job1"] = {"id": "job1", "log": [], "hosts": {}, "results": {}}
+
+    class FakeFleet:
+        refreshed = []
+
+        def refresh_hosts(self, ids):
+            FakeFleet.refreshed.extend(ids)
+            return len(ids)
+
+    code = jobs._await_return("job1", {"id": "rt", "addr": "10.0.0.1"}, FakeFleet())
+    log = " | ".join(jobs.jobs["job1"]["log"])
+
+    assert code == 0
+    assert "ушёл в перезагрузку" in log
+    assert "снова отвечает" in log
+    assert FakeFleet.refreshed == ["rt"]
+
+
+def test_reboot_job_reports_a_host_that_never_returns(monkeypatch):
+    """Not confirming a reboot is a different outcome from failing to send it."""
+    import hub
+    import probe as probe_mod
+
+    states = iter([True] + [False] * 50)
+    monkeypatch.setattr(probe_mod, "ping", lambda addr: 1.0 if next(states) else None)
+
+    jobs = hub.Jobs({"reboot_poll_seconds": 0, "reboot_wait_seconds": 0.05})
+    jobs.jobs["job1"] = {"id": "job1", "log": [], "hosts": {}, "results": {}}
+
+    code = jobs._await_return("job1", {"id": "rt", "addr": "10.0.0.1"}, None)
+    assert code == 2
+    assert "не ответил" in " ".join(jobs.jobs["job1"]["log"])

@@ -12,18 +12,37 @@ function load() {
 }
 
 function refresh() {
+  /* Wait for the snapshot to actually change, not for a fixed number of
+     seconds. A timer either lies (the button frees up while the old data is
+     still on screen) or wastes time; the generated timestamp says exactly when
+     the new poll landed. */
   var btn = document.getElementById('btn-refresh');
+  var was = (state && state.generated) || 0;
+  var deadline = Date.now() + 120000;
   btn.disabled = true;
   btn.textContent = 'опрашиваю…';
-  fetch('/api/refresh', { method: 'POST', headers: actionHeaders() }).then(function () {
-    // The hub polls asynchronously; give it a moment before re-reading.
-    setTimeout(function () {
-      load().then(function () {
-        btn.disabled = false;
-        btn.textContent = 'Обновить данные';
-      });
-    }, 4000);
-  });
+
+  function done() {
+    btn.disabled = false;
+    btn.textContent = 'Обновить данные';
+  }
+
+  function poll() {
+    load().then(function () {
+      if (state && state.generated > was) { done(); return; }
+      if (Date.now() > deadline) {
+        // The poll outlived any sane cycle; stop pretending it is still coming.
+        btn.textContent = 'опрос не ответил';
+        setTimeout(done, 3000);
+        return;
+      }
+      setTimeout(poll, 1500);
+    });
+  }
+
+  fetch('/api/refresh', { method: 'POST', headers: actionHeaders() })
+    .then(function () { setTimeout(poll, 1200); })
+    .catch(function () { done(); });
 }
 
 document.addEventListener('DOMContentLoaded', function () {

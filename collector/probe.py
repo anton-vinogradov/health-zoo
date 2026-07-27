@@ -223,7 +223,11 @@ def _post_process(data: dict) -> dict:
     # links from listening ports when nobody set them.
     if not data.get("web"):
         data["web"] = _web_links(data)
-    data["endpoints"] = _endpoints(data)
+    # Same rule for endpoints: a probe that knows its own open ports (RouterOS
+    # lists them itself) keeps them; the rest are derived from listening
+    # sockets. Recomputing unconditionally quietly emptied the router cards.
+    if not data.get("endpoints"):
+        data["endpoints"] = _endpoints(data)
     return data
 
 
@@ -408,9 +412,22 @@ ROUTEROS_CMD = (
     ':put "@@package"; :foreach i in=[/system package find] do={'
     ':put ([:tostr [/system package get $i name]]."|".[:tostr [/system package get $i version]]'
     '."|".[:tostr [/system package get $i disabled]])}; '
+    # RouterOS 7 lists every listener here, not just the management ones:
+    # resolver, dhcp, ntp, ipsec, l2tp-server and the reverse proxy show up
+    # alongside ssh and winbox. "address" is the access restriction, and its
+    # absence is the difference between a service offered to one subnet and one
+    # offered to whoever can reach the box.
     ':put "@@service"; :foreach i in=[/ip service find] do={'
     ':put ([:tostr [/ip service get $i name]]."|".[:tostr [/ip service get $i port]]'
-    '."|".[:tostr [/ip service get $i disabled]])}; '
+    '."|".[:tostr [/ip service get $i disabled]]."|"'
+    '.[:tostr [/ip service get $i address]])}; '
+    # Tools that open a port without appearing in /ip service.
+    ':put "@@extra"; '
+    ':do {:put ("socks|".[:tostr [/ip socks get enabled]]."|1080")} on-error={}; '
+    ':do {:put ("upnp|".[:tostr [/ip upnp get enabled]]."|1900")} on-error={}; '
+    ':do {:put ("romon|".[:tostr [/tool romon get enabled]]."|")} on-error={}; '
+    ':do {:put ("bandwidth-test|".[:tostr [/tool bandwidth-server get enabled]]."|2000")} on-error={}; '
+    ':do {:put ("dns-resolver|".[:tostr [/ip dns get allow-remote-requests]]."|53")} on-error={}; '
     ':put "@@interface"; :foreach i in=[/interface find] do={'
     ':put ([:tostr [/interface get $i name]]."|".[:tostr [/interface get $i running]]'
     '."|".[:tostr [/interface get $i type]]."|".[:tostr [/interface get $i disabled]])}; '
@@ -573,9 +590,14 @@ def probe_routeros(host: dict, key: str | None) -> dict:
     # services (/ip service) and the installed feature packages, which are what
     # actually decide whether the box does DHCP, wireless, routing and so on.
     services = []
+    # What the router actually has open. The card showed nothing here, so a
+    # box with telnet and an unrestricted API looked exactly like a locked-down
+    # one — while every Linux host in the fleet listed its listeners.
+    endpoints: dict[tuple, dict] = {}
     for cells in _routeros_rows(sections.get("service", [])):
         name, port = cells[0], (cells[1] if len(cells) > 1 else "")
         disabled = (cells[2] if len(cells) > 2 else "false") == "true"
+        restriction = cells[3] if len(cells) > 3 else ""
         if not name:
             continue
         services.append({
@@ -584,8 +606,38 @@ def probe_routeros(host: dict, key: str | None) -> dict:
             "enabled": "disabled" if disabled else "enabled",
             "restarts": 0,
             "path": "/ip service",
-            "desc": f"management service, port {port}" if port else "management service",
+            "desc": (f"port {port}" if port else "служба роутера")
+                    + (f", доступ с {restriction}" if restriction else ""),
         })
+        if disabled or not port:
+            continue
+        # The same service appears once per address family; one chip is enough.
+        entry = endpoints.setdefault((name, port), {
+            "port": int(port) if port.isdigit() else port,
+            "process": name, "label": name, "proto": "tcp",
+            "scope": "lan" if restriction else "any",
+            "restricted_to": restriction,
+        })
+        if restriction and not entry.get("restricted_to"):
+            entry["restricted_to"] = restriction
+
+    taken_ports = {e["port"] for e in endpoints.values()}
+    for cells in _routeros_rows(sections.get("extra", [])):
+        name = cells[0]
+        on = (cells[1] if len(cells) > 1 else "false") == "true"
+        port = cells[2] if len(cells) > 2 else ""
+        number = int(port) if port.isdigit() else 0
+        # /ip service already covers most of these under its own name (the DNS
+        # resolver is "resolver" there); only report what it does not list.
+        if not on or (number and number in taken_ports):
+            continue
+        endpoints.setdefault((name, port or name), {
+            "port": number, "process": name, "label": name, "proto": "tcp",
+            "scope": "any", "restricted_to": "",
+        })
+    data["endpoints"] = sorted(
+        endpoints.values(),
+        key=lambda e: (e["port"] if isinstance(e["port"], int) else 0, e.get("label", "")))
     for cells in _routeros_rows(sections.get("package", [])):
         name, version = cells[0], (cells[1] if len(cells) > 1 else "")
         disabled = (cells[2] if len(cells) > 2 else "false") == "true"

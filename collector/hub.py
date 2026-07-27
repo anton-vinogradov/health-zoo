@@ -527,11 +527,55 @@ class Jobs:
 
         if code == 0:
             self._log(job_id, "команда отправлена")
+            # Then the log went silent for as long as the machine took to come
+            # back, which is exactly the stretch the operator is watching. Wait
+            # for it here: first for it to actually go down (proof the command
+            # took), then for it to answer again.
+            code = self._await_return(job_id, host, fleet)
         with self.lock:
             self.jobs[job_id]["results"][host["id"]] = "ok" if code == 0 else f"failed ({code})"
             self.jobs[job_id]["state"] = "done"
             self.jobs[job_id]["finished"] = int(time.time())
             self.jobs[job_id]["current"] = ""
+
+    def _await_return(self, job_id: str, host: dict, fleet: Fleet) -> int:
+        """Follow the machine down and back up, reporting as it goes."""
+        addr = host.get("addr")
+        if not addr or host.get("local"):
+            # The dashboard's own host cannot narrate its own reboot.
+            return 0
+        started = time.time()
+        down_by = 0.0
+        limit = int(self.cfg.get("reboot_wait_seconds", 600))
+        step = float(self.cfg.get("reboot_poll_seconds", 5))
+
+        while time.time() - started < limit:
+            time.sleep(step)
+            alive = probe.ping(addr) is not None
+            waited = int(time.time() - started)
+            if not down_by:
+                if not alive:
+                    down_by = time.time()
+                    self._log(job_id, f"хост ушёл в перезагрузку через {waited} с")
+                elif waited and waited % 30 < step:
+                    self._log(job_id, f"ещё отвечает ({waited} с) — команда могла не пройти")
+                continue
+            if alive:
+                back = int(time.time() - down_by)
+                self._log(job_id, f"хост снова отвечает, недоступен был {back} с")
+                try:
+                    fleet.refresh_hosts([host["id"]])
+                    self._log(job_id, "данные хоста переопрошены")
+                except Exception as exc:
+                    self._log(job_id, f"(переопрос не удался: {exc})")
+                return 0
+            if waited % 30 < step:
+                self._log(job_id, f"жду возвращения… {waited} с")
+
+        # Not a failure of the command — a failure to confirm it, which is a
+        # different thing and has to read differently.
+        self._log(job_id, f"! хост не ответил за {limit // 60} мин — проверьте вручную")
+        return 2
 
     def start_service_action(self, host: dict, unit: str, action: str,
                              fleet: Fleet) -> tuple[str | None, str]:

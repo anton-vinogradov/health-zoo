@@ -268,6 +268,26 @@ def host_issues(host: dict, cfg: dict | None = None) -> list[dict]:
                 f"сеть {net['essid']} ({net['band']} ГГц): качество "
                 f"{satisfaction}% у {net['clients']} клиентов")
 
+    # A router publishes by definition, so listing open ports as findings would
+    # be noise. These are the ones that are a decision rather than a default:
+    # clear-text management, an unauthenticated tool port, or a service that
+    # turns the box into someone else's infrastructure.
+    RISKY = {
+        "telnet": "management в открытом виде",
+        "ftp": "передача паролей в открытом виде",
+        "api": "API без TLS",
+        "bandwidth-test": "сервер нагрузочного теста",
+        "socks": "SOCKS-прокси",
+        "upnp": "UPnP: клиенты сами открывают порты наружу",
+    }
+    for endpoint in host.get("endpoints") or []:
+        why = RISKY.get(str(endpoint.get("label", "")).lower())
+        if not why or endpoint.get("restricted_to"):
+            continue
+        add("warn", f"open:{endpoint.get('label')}",
+            f"{endpoint.get('label')}:{endpoint.get('port')} доступен без "
+            f"ограничения по адресу — {why}")
+
     # UniFi device states: 1 is connected and managed — the normal one. 0 is
     # disconnected, 2 pending adoption, 4 upgrading, 5 provisioning. Only
     # disconnected and pending are worth reporting; the rest are transient.
@@ -322,7 +342,12 @@ def host_issues(host: dict, cfg: dict | None = None) -> list[dict]:
 
     security = host.get("security_count") or 0
     if security:
-        add("warn", "security", f"{security} security-обновлений")
+        # A security update is a known, published hole in a machine that is
+        # running right now. That is a problem, not a note to get to later.
+        word = "обновление" if security % 10 == 1 and security % 100 != 11 else (
+            "обновления" if 2 <= security % 10 <= 4 and not 12 <= security % 100 <= 14
+            else "обновлений")
+        add("bad", "security", f"{security} security-{word}")
 
     order = {"bad": 0, "warn": 1, "info": 2}
     out.sort(key=lambda issue: order.get(issue["level"], 2))
@@ -548,6 +573,13 @@ def checks_for(host: dict, cfg: dict | None = None) -> list[dict]:
         skipped="событийная статистика недоступна", keys=("camquiet",))
 
     # ---------- network ----------
+    add("network", "Открытые службы роутера",
+        "Службы, включённые без ограничения по адресу: telnet, ftp, API без "
+        "TLS, нагрузочный тест, SOCKS, UPnP. Остальное роутер публикует по "
+        "своей природе и замечанием не считается.",
+        applies=bool(host.get("endpoints")) and host.get("agent") == "routeros",
+        skipped="не роутер RouterOS", keys=("open",))
+
     add("network", "Доступность снаружи",
         "Порт проверяется с другого хоста в интернете — то, что видит клиент",
         applies=bool(host.get("external")), skipped="внешние проверки не заданы",
