@@ -103,10 +103,19 @@ fi
 # sudoers this fills in the single biggest blind spot on a NAS: the units here
 # run single disks with no RAID, so a dying drive is data loss, not redundancy
 # wearing thin. Without the permission the section is simply absent.
-if command -v smartctl >/dev/null 2>&1 && sudo -n true 2>/dev/null; then
+# Probe the exact command, not sudo in general: a careful sudoers grants
+# smartctl alone, and `sudo -n true` would fail on such a host.
+if command -v smartctl >/dev/null 2>&1 && sudo -n smartctl --version >/dev/null 2>&1; then
   for dev in /dev/sata? /dev/sd? /dev/nvme?n?; do
     [ -b "$dev" ] || continue
-    out=$(sudo -n smartctl -H -A -i "$dev" 2>/dev/null) || continue
+    # DSM presents SATA drives through a SCSI layer, where plain smartctl
+    # reports "device lacks SMART capability". -d sat translates the ATA
+    # commands through it and returns the real attribute table; fall back to
+    # autodetection for anything genuinely SCSI or NVMe.
+    out=$(sudo -n smartctl -d sat -H -A -i "$dev" 2>/dev/null)
+    case "$out" in
+      *"lacks SMART"*|"") out=$(sudo -n smartctl -H -A -i "$dev" 2>/dev/null) ;;
+    esac
     [ -n "$out" ] || continue
 
     model=$(printf '%s' "$out" | awk -F': *' '/Device Model|Model Number/{print $2; exit}')
@@ -116,10 +125,12 @@ if command -v smartctl >/dev/null 2>&1 && sudo -n true 2>/dev/null; then
     [ -n "$health" ] || health=unknown
     temp=$(printf '%s' "$out" | awk '
       /^194 |Temperature_Celsius/ {print $10; exit}
-      /^Temperature:/ {print $2; exit}')
+      /^Temperature:/ {print $2; exit}
+      /Current Drive Temperature:/ {print $4; exit}')
     hours=$(printf '%s' "$out" | awk '
       /^  9 |Power_On_Hours/ {print $10; exit}
-      /^Power On Hours:/ {gsub(/,/, "", $4); print $4; exit}')
+      /^Power On Hours:/ {gsub(/,/, "", $4); print $4; exit}
+      /Accumulated power on time/ {split($0, a, ":"); split(a[2], b, "."); gsub(/ /, "", b[1]); print b[1]; exit}')
     realloc=$(printf '%s' "$out" | awk '/^  5 |Reallocated_Sector_Ct/ {print $10; exit}')
     pending=$(printf '%s' "$out" | awk '/Current_Pending_Sector/ {print $10; exit}')
     wear=$(printf '%s' "$out" | awk -F': *' '/Percentage Used/ {gsub(/%/, "", $2); print $2; exit}')

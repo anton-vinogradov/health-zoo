@@ -299,14 +299,27 @@ def test_nas_volumes_are_allowed_to_run_full():
 
 
 def test_enabled_but_stopped_unit_is_reported_on_systemd_only():
+    """A unit set to start at boot and now not running has stopped working,
+    whether it crashed or someone stopped it and forgot — same urgency."""
     stopped = [{"name": "x.service", "state": "inactive/dead", "enabled": "enabled"}]
     linux = {"id": "a", "agent": "linux", "reachable": True, "services": stopped}
     openwrt = {"id": "b", "agent": "openwrt", "reachable": True,
                "services": [{"name": "x", "state": "stopped", "enabled": "enabled"}]}
 
-    assert [i["level"] for i in issues.host_issues(linux)] == ["warn"]
+    assert [i["level"] for i in issues.host_issues(linux)] == ["bad"]
     # OpenWrt one-shot boot scripts sit at "stopped" forever — not a problem.
     assert issues.host_issues(openwrt) == []
+
+
+def test_stopped_container_is_a_problem():
+    host = {"id": "a", "agent": "linux", "reachable": True,
+            "containers": [{"name": "amnezia-awg2", "state": "exited",
+                            "status": "Exited (0) 2 hours ago"},
+                           {"name": "amnezia-dns", "state": "running"}]}
+    found = issues.host_issues(host)
+    assert len(found) == 1
+    assert found[0]["level"] == "bad"
+    assert "amnezia-awg2" in found[0]["text"]
 
 
 def test_unreachable_host_reports_only_that():

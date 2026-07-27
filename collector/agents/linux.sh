@@ -214,7 +214,9 @@ fi
 # Disk usage says nothing about a drive that is about to die. Needs smartctl
 # and root; where either is missing the section is simply absent rather than
 # guessed at.
-if command -v smartctl >/dev/null 2>&1 && sudo -n true 2>/dev/null; then
+# Probe the exact command, not sudo in general: a careful sudoers grants
+# smartctl alone, and `sudo -n true` would fail on such a host.
+if command -v smartctl >/dev/null 2>&1 && sudo -n smartctl --version >/dev/null 2>&1; then
   for dev in /dev/sd? /dev/nvme?n? /dev/hd?; do
     [ -b "$dev" ] || continue
     out=$(sudo -n smartctl -H -A -i "$dev" 2>/dev/null) || continue
@@ -338,11 +340,27 @@ if [ -d /etc/zm ] && command -v mysql >/dev/null 2>&1 && sudo -n true 2>/dev/nul
   # multi-gigabyte events tree took ~40s on the N5105 and stalled every cycle.
   sudo -n mysql zm -N -B -e \
     'SELECT COUNT(*), COALESCE(MAX(UNIX_TIMESTAMP(StartDateTime)),0),
-            COALESCE(ROUND(SUM(DiskSpace)),0) FROM Events;' 2>/dev/null \
-  | while IFS='	' read -r cnt last used; do
+            COALESCE(ROUND(SUM(DiskSpace)),0),
+            COALESCE(MIN(UNIX_TIMESTAMP(StartDateTime)),0) FROM Events;' 2>/dev/null \
+  | while IFS='	' read -r cnt last used oldest; do
       emit zm_events_count "$cnt"
       emit zm_last_event "$last"
       emit zm_events_bytes "$used"
+      emit zm_oldest_event "$oldest"
+    done
+
+  # Per-monitor recording activity. A camera can be Connected and still record
+  # nothing — a broken zone, a stuck analysis thread — and that silence is
+  # invisible unless the events are counted per camera.
+  sudo -n mysql zm -N -B -e \
+    'SELECT m.Id, m.Name,
+            COALESCE(SUM(e.StartDateTime > NOW() - INTERVAL 24 HOUR), 0),
+            COALESCE(MAX(UNIX_TIMESTAMP(e.StartDateTime)), 0),
+            COALESCE(MIN(UNIX_TIMESTAMP(e.StartDateTime)), 0)
+     FROM Monitors m LEFT JOIN Events e ON e.MonitorId = m.Id
+     WHERE m.Enabled = 1 GROUP BY m.Id, m.Name;' 2>/dev/null \
+  | while IFS='	' read -r id name day last oldest; do
+      row "@camevent	$id	$name	$day	$last	$oldest"
     done
 fi
 

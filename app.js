@@ -284,11 +284,11 @@ function hostCard(host) {
         title: 'после обновлений нужна перезагрузка',
         text: 'нужен ребут'
       }) : null,
+      h('span', { class: 'card-addr', text: host.addr }),
       host.reachable ? h('button', {
-        class: 'head-action', title: 'перезагрузить ' + host.name, text: '⏻',
+        class: 'head-action', title: 'перезагрузить ' + host.name, text: '↻',
         onclick: function (e) { e.stopPropagation(); rebootHost(host); }
-      }) : null,
-      h('span', { class: 'card-addr', text: host.addr })
+      }) : null
     ]),
     h('div', { class: 'card-os', text: subtitle }),
     h('div', { class: 'metrics' }, metrics),
@@ -630,14 +630,20 @@ function showHost(host) {
   }
 
   if ((host.cameras || []).length) {
-    body.appendChild(section('Камеры', table(['камера', 'адрес', 'состояние', 'fps'],
+    body.appendChild(section('Камеры', table(
+      ['камера', 'адрес', 'состояние', 'fps', 'событий/сут', 'молчит', 'архив'],
       host.cameras.map(function (c) {
         var live = c.status === 'Connected' || c.status === 'recording';
+        var quiet = c.quiet_hours;
         return h('tr', null, [
           h('td', null, [h('span', { class: 'dot ' + (live ? 'ok' : 'bad') }), h('span', { text: c.name })]),
           h('td', { class: 'mono', text: c.addr || '' }),
           h('td', { class: 'mono', text: c.status || '' }),
-          h('td', { class: 'mono right', text: c.fps ? Number(c.fps).toFixed(1) : '' })
+          h('td', { class: 'mono right', text: c.fps ? Number(c.fps).toFixed(1) : '' }),
+          h('td', { class: 'mono right', text: c.day_count === undefined ? '' : String(c.day_count) }),
+          h('td', { class: 'mono right' + (quiet >= 12 ? ' warn' : ''),
+                    text: quiet === undefined || quiet === null ? '' : quiet + ' ч' }),
+          h('td', { class: 'mono right', text: c.archive_days ? Math.round(c.archive_days) + ' сут' : '' })
         ]);
       }))));
   }

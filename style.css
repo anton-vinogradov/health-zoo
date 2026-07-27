@@ -446,3 +446,5 @@ table.list td.right { text-align: right; }
 }
 .head-action:hover { color: var(--bad); border-color: var(--bad); }
 .card-head .card-addr { margin-left: auto; }
+.card-head .head-action { margin-left: 0; }
+table.list td.warn { color: var(--warn); }

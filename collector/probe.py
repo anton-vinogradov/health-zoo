@@ -52,6 +52,7 @@ LIST_FIELDS = {
     "camera": ["id", "name", "enabled", "addr", "resolution", "status",
                "fps", "afps", "bandwidth", "last_event", "retention_days"],
     "camlink": ["addr", "proto"],
+    "camevent": ["id", "name", "day_count", "last", "oldest"],
     "smart": ["dev", "health", "temp", "hours", "realloc", "pending", "wear", "model"],
     "listen": ["port", "process", "scope"],
     "udp": ["port", "process", "scope"],
@@ -67,7 +68,7 @@ NUMERIC = {
     "uptime", "load1", "load5", "load15", "cpus",
     "mem_total", "mem_available", "mem_free", "swap_total", "swap_free",
     "pkg_list_mtime", "reboot_required", "zoneminder", "surveillance",
-    "zm_events_count", "zm_last_event", "zm_events_bytes", "ok",
+    "zm_events_count", "zm_last_event", "zm_events_bytes", "zm_oldest_event", "ok",
     "cpu_load_pct", "free_flash", "total_flash",
 }
 
@@ -156,6 +157,24 @@ def _post_process(data: dict) -> dict:
         for field in ("fps", "afps", "bandwidth", "last_event", "retention_days"):
             if field in cam:
                 cam[field] = _num(cam[field])
+
+    # Recording activity per camera, merged onto the camera it belongs to.
+    activity = {}
+    for entry in data.get("camevents", []):
+        for field in ("day_count", "last", "oldest"):
+            entry[field] = _num(entry.get(field, 0)) or 0
+        entry["quiet_hours"] = round((time.time() - entry["last"]) / 3600, 1) if entry["last"] else None
+        entry["archive_days"] = round((time.time() - entry["oldest"]) / 86400, 1) if entry["oldest"] else None
+        activity[entry.get("id")] = entry
+    for cam in data.get("cameras", []):
+        hit = activity.get(cam.get("id"))
+        if hit:
+            cam.update({k: hit[k] for k in
+                        ("day_count", "quiet_hours", "archive_days")})
+
+    if data.get("zm_oldest_event"):
+        data["zm_archive_days"] = round(
+            (time.time() - data["zm_oldest_event"]) / 86400, 1)
 
     for disk in data.get("smarts", []):
         for field in ("temp", "hours", "realloc", "pending", "wear"):
@@ -629,6 +648,8 @@ def probe_host(host: dict, key: str | None) -> dict:
         "subnet": host.get("subnet", ""),
         "note": host.get("note", ""),
         "updatable": bool(host.get("updatable")),
+        # Declared in the config: see issues.py for why it cannot be probed.
+        "power_recovery": host.get("power_recovery"),
         "reachable": False,
         "error": "",
     }

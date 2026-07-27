@@ -23,6 +23,10 @@ DEFAULT_THRESHOLDS = {
     "cpu_warn": 85, "cpu_bad": 96,
     # HyperBackup here runs nightly; two days without a run means it stopped.
     "backup_stale_days": 2,
+    # Motion detection that has produced nothing all night is suspicious;
+    # a full day of silence on a street camera is broken, not quiet.
+    "camera_quiet_warn_hours": 12,
+    "camera_quiet_bad_hours": 24,
 }
 
 # A NAS recording video is *supposed* to sit near-full: the archive grows until
@@ -102,7 +106,15 @@ def host_issues(host: dict, cfg: dict | None = None) -> list[dict]:
               and "running" not in state and "exited" not in state):
             # systemd only: OpenWrt reports a coarse running/stopped where
             # one-shot boot scripts legitimately sit at "stopped" forever.
-            add("warn", f"svc:{svc.get('name')}", f"{name} включён, но не запущен")
+            # Treated as breakage, not a note: a service set to start at boot
+            # and now not running has stopped doing its job, whether it
+            # crashed or was stopped and forgotten.
+            add("bad", f"svc:{svc.get('name')}", f"{name} не работает (включён в автозапуск)")
+
+    for container in host.get("containers", []):
+        if container.get("state") != "running":
+            add("bad", f"container:{container.get('name')}",
+                f"контейнер {container.get('name')} не работает: {container.get('status', '')}")
 
     for raid in host.get("degraded_raid", []):
         add("bad", f"raid:{raid.get('dev')}",
@@ -125,8 +137,22 @@ def host_issues(host: dict, cfg: dict | None = None) -> list[dict]:
 
     for cam in host.get("cameras", []):
         status = cam.get("status") or ""
-        if cam.get("enabled") == "1" and status and status not in ("Connected", "recording"):
-            add("bad", f"cam:{cam.get('id')}", f"камера {cam.get('name')}: {status}")
+        name = cam.get("name")
+        if cam.get("enabled") != "1":
+            continue
+        if status and status not in ("Connected", "recording"):
+            add("bad", f"cam:{cam.get('id')}", f"камера {name}: {status}")
+            continue
+        # Connected but recording nothing: a broken zone or a stuck analysis
+        # thread looks identical to a quiet night, except it never ends. This
+        # is the failure the whole fleet exists to avoid.
+        quiet = cam.get("quiet_hours")
+        if quiet is not None and quiet >= limits.get("camera_quiet_bad_hours", 24):
+            add("bad", f"camquiet:{cam.get('id')}",
+                f"камера {name}: нет событий {int(quiet)} ч — детекция молчит")
+        elif quiet is not None and quiet >= limits.get("camera_quiet_warn_hours", 12):
+            add("warn", f"camquiet:{cam.get('id')}",
+                f"камера {name}: нет событий {int(quiet)} ч")
 
     # A backup that has not run is the failure mode nobody sees until restore
     # day; a share outside the task is the same failure, arranged in advance.
@@ -146,6 +172,14 @@ def host_issues(host: dict, cfg: dict | None = None) -> list[dict]:
     if unbacked:
         add("warn", "unbacked",
             "не входит в бэкап: " + ", ".join(sorted(unbacked)[:6]))
+
+    # Auto power-on cannot be read from the OS: on x86 it is a BIOS setting
+    # with no SMBIOS field, and DSM keeps its state behind root. So it is an
+    # operator-declared fact — recorded once in the config, then watched here
+    # instead of being forgotten until the next outage.
+    if host.get("power_recovery") is False:
+        add("warn", "power_recovery",
+            "не включится сам после пропадания электричества")
 
     if host.get("reboot_required"):
         # "Needs a reboot" on its own is not actionable; say what is waiting —

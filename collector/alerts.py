@@ -53,6 +53,8 @@ class Alerts:
         self.clearing: dict[str, int] = {}  # problems that look resolved
         self.muted: dict[str, float] = {}   # host -> ignore alerts until
         self.seeded = False
+        self.last_startup = 0
+        self.last_digest = 0
         self._load_state()
 
     # ---------- persistence ----------
@@ -67,6 +69,11 @@ class Alerts:
         except (OSError, ValueError):
             saved = {}
         self.active = saved.get("active", {})
+        # Debounce counters persist too. Without this a restart resets them,
+        # and a hub restarted more often than the debounce window would never
+        # finish counting — so a real problem was never announced.
+        self.pending = saved.get("pending", {})
+        self.clearing = saved.get("clearing", {})
         self.last_startup = saved.get("last_startup", 0)
         self.last_digest = saved.get("last_digest", 0)
         self.seeded = bool(self.active) or bool(self.last_startup)
@@ -76,6 +83,8 @@ class Alerts:
             os.makedirs(os.path.dirname(self.state_path), exist_ok=True)
             with open(self.state_path, "w", encoding="utf-8") as fh:
                 json.dump({"active": self.active,
+                           "pending": self.pending,
+                           "clearing": self.clearing,
                            "last_startup": self.last_startup,
                            "last_digest": self.last_digest}, fh, ensure_ascii=False)
         except OSError:
@@ -168,12 +177,11 @@ class Alerts:
                 self.last_digest = now
             self._save_state()
 
-        if first_run:
-            # A restart is not an incident. Report the standing state at most
-            # once every few hours, not on every service restart.
-            if self.startup_summary and startup_due:
-                self._send(self._startup_text(hosts, current))
-            return
+        # A restart is not an incident: the standing state is reported at most
+        # once every few hours. But the diff still runs — a problem that
+        # appeared while the hub was down must not be swallowed by the restart.
+        if first_run and self.startup_summary and startup_due:
+            self._send(self._startup_text(hosts, current))
 
         if appeared:
             self._send(self._change_text("Появилось", appeared, "🔴"))
@@ -273,7 +281,10 @@ class Alerts:
             # telegram.sh's own store-and-forward queue: a message survives the
             # proxy being down, which for Telegram here is a routine event.
             cmd += ["-q", self.spool]
-        cmd += ["-M", text]
+        # Plain text on purpose: -M would turn "SanSd_1.hbk" into an unclosed
+        # Markdown entity and Telegram rejects the whole message. Host names,
+        # unit names and file names are exactly the strings that break it.
+        cmd += [text]
 
         try:
             subprocess.run(cmd, capture_output=True, timeout=120, text=True)
