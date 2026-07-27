@@ -28,6 +28,10 @@ DEFAULT_THRESHOLDS = {
     "camera_quiet_warn_hours": 12,
     "camera_quiet_bad_hours": 24,
     "airtime_bad": 85,
+    # Let's Encrypt renews at 30 days; a warning at 21 means renewal has
+    # already failed twice, and 7 means it is now urgent.
+    "cert_warn_days": 21,
+    "cert_bad_days": 7,
 }
 
 # A NAS recording video is *supposed* to sit near-full: the archive grows until
@@ -169,6 +173,9 @@ def host_issues(host: dict, cfg: dict | None = None) -> list[dict]:
             add("warn", f"backup:{repo['name']}",
                 f"бэкап {repo['name']} старше {int(age)} сут")
 
+    if host.get("backup_orphan"):
+        add("bad", "no_backup", "не бэкапится никуда и не принимает бэкапы")
+
     unbacked = [u.get("share") for u in host.get("unbackeds", []) if u.get("share")]
     if unbacked:
         add("warn", "unbacked",
@@ -201,6 +208,29 @@ def host_issues(host: dict, cfg: dict | None = None) -> list[dict]:
         # UniFi state 2 is "adopted and managed"; anything else means the
         # controller is not driving this AP.
         add("warn", "unifi_state", "точка не управляется контроллером")
+
+    # A certificate is a scheduled outage with a known date; the only question
+    # is whether anyone notices before the date arrives.
+    for link in host.get("web", []):
+        cert = link.get("cert") or {}
+        days = cert.get("days_left")
+        if days is None:
+            continue
+        where = f"{link['scheme']}://{host['addr']}:{link['port']}"
+        if days < 0:
+            add("bad", f"cert:{link['port']}", f"сертификат {where} истёк {int(-days)} сут назад")
+        elif days < limits.get("cert_bad_days", 7):
+            add("bad", f"cert:{link['port']}", f"сертификат {where} истекает через {int(days)} сут")
+        elif days < limits.get("cert_warn_days", 21):
+            add("warn", f"cert:{link['port']}", f"сертификат {where} истекает через {int(days)} сут")
+
+    # Measured from another machine on the internet: this is the only check
+    # that reflects what a user outside the perimeter actually gets.
+    for check in host.get("external", []):
+        if not check.get("open"):
+            label = check.get("label") or f"порт {check['port']}"
+            add("bad", f"external:{check['port']}",
+                f"{label} недоступен снаружи (проверено с {check['from']})")
 
     if host.get("reboot_required"):
         # "Needs a reboot" on its own is not actionable; say what is waiting —

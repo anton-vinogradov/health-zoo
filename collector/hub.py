@@ -80,6 +80,8 @@ class Fleet:
             self.snapshot["polling"] = True
         try:
             hosts = probe.probe_all(self.hosts(), self.cfg.get("ssh_key"))
+            probe.run_external_checks(self.cfg.get("external_checks", []),
+                                      self.hosts(), self.cfg.get("ssh_key"), hosts)
             issues.annotate(hosts, self.cfg)
             snap = {
                 "generated": int(time.time()),

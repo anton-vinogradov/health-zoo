@@ -14,6 +14,7 @@ import concurrent.futures
 import html
 import os
 import re
+import shlex
 import shutil
 import socket
 import ssl
@@ -59,7 +60,7 @@ LIST_FIELDS = {
     "listen": ["port", "process", "scope"],
     "udp": ["port", "process", "scope"],
     "raid": ["dev", "level", "state"],
-    "backup": ["task", "name", "folders"],
+    "backup": ["task", "name", "folders", "dest", "share"],
     "backuprepo": ["name", "last", "size"],
     "unbacked": ["share", "volume"],
     "iface": ["name", "status", "rx", "tx", "comment"],
@@ -689,6 +690,7 @@ def probe_host(host: dict, key: str | None) -> dict:
         "updatable": bool(host.get("updatable")),
         # Declared in the config: see issues.py for why it cannot be probed.
         "power_recovery": host.get("power_recovery"),
+        "backup_exempt": bool(host.get("backup_exempt")),
         "reachable": False,
         "error": "",
     }
@@ -816,6 +818,56 @@ def fetch_title(url: str, addr: str, port: int, label: str = "") -> tuple[str, s
     return title, path
 
 
+_CERT_CACHE: dict[tuple[str, int], tuple[dict, float]] = {}
+_CERT_TTL = 6 * 3600
+
+
+def fetch_cert(addr: str, port: int, servername: str = "") -> dict:
+    """Expiry and subject of a TLS certificate.
+
+    Shelled out to openssl rather than parsed in Python: with verification
+    disabled — which it must be, these are self-signed appliance certs —
+    ssl.getpeercert() returns an empty dict, and decoding DER by hand to read
+    two dates is not worth it.
+    """
+    key = (addr, port)
+    now = time.time()
+    hit = _CERT_CACHE.get(key)
+    if hit and now - hit[1] < _CERT_TTL:
+        return hit[0]
+
+    info: dict = {}
+    sni = servername or addr
+    try:
+        result = subprocess.run(
+            # No -verify_return_error: appliance certificates are self-signed
+            # by design, and with the flag openssl aborts before printing the
+            # certificate we came for.
+            ["openssl", "s_client", "-connect", f"{addr}:{port}",
+             "-servername", sni],
+            input="", capture_output=True, timeout=12, text=True)
+        pem = result.stdout
+        if "BEGIN CERTIFICATE" in pem:
+            parsed = subprocess.run(
+                ["openssl", "x509", "-noout", "-enddate", "-subject", "-issuer"],
+                input=pem, capture_output=True, timeout=8, text=True).stdout
+            for line in parsed.splitlines():
+                if line.startswith("notAfter="):
+                    stamp = line.split("=", 1)[1].strip()
+                    expires = time.mktime(time.strptime(stamp, "%b %d %H:%M:%S %Y %Z"))
+                    info["expires"] = int(expires)
+                    info["days_left"] = round((expires - now) / 86400, 1)
+                elif line.startswith("subject="):
+                    info["subject"] = line.split("=", 1)[1].strip()[:80]
+                elif line.startswith("issuer="):
+                    info["issuer"] = line.split("=", 1)[1].strip()[:80]
+    except (subprocess.SubprocessError, OSError, ValueError):
+        info = {}
+
+    _CERT_CACHE[key] = (info, now)
+    return info
+
+
 def annotate_web(results: list[dict], workers: int = 12) -> None:
     """Fill in a human-readable name for every discovered web UI."""
     jobs = []
@@ -831,6 +883,28 @@ def annotate_web(results: list[dict], workers: int = 12) -> None:
 
     if not jobs:
         return
+
+    # Certificates ride along on the same pass: these ports are being opened
+    # anyway, and an expiring certificate is an outage with a known date.
+    # Walk the hosts directly — matching link dicts by equality would pair the
+    # wrong host with the wrong link whenever two hosts publish the same port.
+    tls_jobs = [(link, host) for host in results
+                for link in host.get("web", [])
+                if link.get("scheme") == "https" and not link.get("local")]
+    if tls_jobs:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as pool:
+            cert_futures = {
+                pool.submit(fetch_cert, host["addr"], link["port"],
+                            host.get("web_host") or ""): link
+                for link, host in tls_jobs}
+            for future in concurrent.futures.as_completed(cert_futures):
+                try:
+                    info = future.result()
+                except Exception:
+                    info = {}
+                if info:
+                    cert_futures[future]["cert"] = info
+
     with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as pool:
         futures = {pool.submit(fetch_title, url, addr, port, label): link
                    for link, url, addr, port, label in jobs}
@@ -887,6 +961,111 @@ def reverse_name(addr: str) -> str:
         socket.setdefaulttimeout(None)
     _PTR_CACHE[addr] = (name, now)
     return name
+
+
+def run_external_checks(checks: list[dict], hosts: list[dict], key: str | None,
+                        results: list[dict]) -> None:
+    """Test reachability from somewhere else on the internet.
+
+    Everything else here is measured from inside the perimeter, where a service
+    always looks fine. What the users of a VPN or a proxy actually experience is
+    whether the port answers from outside — that is where blocking shows up, and
+    it is invisible from the machine running the service.
+    """
+    by_id = {h.get("id"): h for h in hosts}
+    per_target: dict[str, list] = {}
+
+    def probe_one(check: dict) -> tuple[str, dict]:
+        source = by_id.get(check.get("from"))
+        target = by_id.get(check.get("to"))
+        if not source or not target:
+            return "", {}
+        port = int(check.get("port", 443))
+        proto = check.get("proto", "tcp")
+        addr = check.get("addr") or target["addr"]
+        # /dev/tcp is a bash feature and must not be nested inside sh -c,
+        # which is dash on these hosts and silently fails every time.
+        if proto == "udp":
+            # A UDP probe cannot prove "open"; it only catches a dead route.
+            remote = f"timeout 6 nc -u -z -w 3 {addr} {port} >/dev/null 2>&1 && echo 0 || echo 1"
+        else:
+            remote = (f"timeout 8 bash -c '</dev/tcp/{addr}/{port}' >/dev/null 2>&1 "
+                      f"&& echo 0 || echo 1")
+
+        cmd = list(SSH_BASE)
+        if key:
+            cmd += ["-i", os.path.expanduser(key)]
+        if source.get("port"):
+            cmd += ["-p", str(source["port"])]
+        target_ssh = source["addr"]
+        if source.get("user"):
+            target_ssh = f"{source['user']}@{target_ssh}"
+        cmd += [target_ssh, remote]
+
+        try:
+            res = subprocess.run(cmd, capture_output=True, timeout=25, text=True)
+            ok = res.stdout.strip().endswith("0")
+        except (subprocess.SubprocessError, OSError):
+            ok = False
+        return check["to"], {
+            "from": source.get("name", check["from"]),
+            "port": port, "proto": proto, "open": ok,
+            "label": check.get("label", ""),
+        }
+
+    if not checks:
+        return
+    with concurrent.futures.ThreadPoolExecutor(max_workers=6) as pool:
+        for target_id, outcome in pool.map(probe_one, checks):
+            if target_id:
+                per_target.setdefault(target_id, []).append(outcome)
+
+    for host in results:
+        found = per_target.get(host.get("id"))
+        if found:
+            host["external"] = found
+
+
+def link_backups(results: list[dict]) -> None:
+    """Draw the backup graph: who copies what, and to whom.
+
+    Each side knows half the story — the source knows the destination address,
+    the destination only sees repositories appear. Joining them means a NAS
+    card can say "backs up to Backup" and "receives from Photo", and a NAS
+    that does neither becomes visible as exactly that.
+    """
+    by_addr = {h.get("addr"): h for h in results}
+
+    for host in results:
+        for task in host.get("backups", []):
+            dest_addr = task.get("dest")
+            if not dest_addr:
+                continue
+            target = by_addr.get(dest_addr)
+            target_name = target.get("name") if target else dest_addr
+            task["dest_name"] = target_name
+            host.setdefault("backs_up_to", [])
+            if target_name not in host["backs_up_to"]:
+                host["backs_up_to"].append(target_name)
+            if target is not None:
+                target.setdefault("receives_from", [])
+                if host.get("name") not in target["receives_from"]:
+                    target["receives_from"].append(host.get("name"))
+
+    for host in results:
+        if host.get("role") != "nas":
+            continue
+        # "Nothing to back up" is a real answer for a pure backup target or a
+        # camera recorder, so only say it when the NAS carries data of its own
+        # and neither sends it anywhere nor is itself a destination.
+        has_data = any(d.get("mount", "").startswith("/volume") for d in host.get("disks", []))
+        # Surveillance footage is expendable, but the configuration around it
+        # is not — a NAS that neither sends nor receives a backup is
+        # unprotected regardless of what it stores. Hosts that genuinely need
+        # no backup can say so with "backup_exempt" in the config.
+        host["backup_orphan"] = bool(
+            has_data and not host.get("backs_up_to")
+            and not host.get("receives_from") and not host.get("backup_exempt"))
 
 
 def link_cameras(results: list[dict]) -> None:
@@ -958,5 +1137,6 @@ def probe_all(hosts: list[dict], key: str | None, workers: int = 12) -> list[dic
                     "error": f"probe crashed: {exc}",
                 }
     link_cameras(results)
+    link_backups(results)
     annotate_web(results)
     return results

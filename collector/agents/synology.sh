@@ -230,7 +230,11 @@ if [ -r "$HBCONF" ]; then
   # Credentials live in this same file; only structural fields are read.
   folders=$(awk -F'=' '/^backup_folders=/{print $2; exit}' "$HBCONF" 2>/dev/null)
   taskname=$(awk -F'"' '/^name=/{if ($2 != "") {print $2; exit}}' "$HBCONF" 2>/dev/null)
-  [ -n "$folders" ] && row "@backup	task	${taskname:-HyperBackup}	$folders"
+  # Where the data goes. remote_user sits two lines away in the same file and
+  # is deliberately not read: the destination is the useful fact, not the login.
+  dest=$(awk -F'"' '/^remote_addr=/{print $2; exit}' "$HBCONF" 2>/dev/null)
+  share=$(awk -F'"' '/^remote_share=/{print $2; exit}' "$HBCONF" 2>/dev/null)
+  [ -n "$folders" ] && row "@backup	task	${taskname:-HyperBackup}	$folders	${dest:-}	${share:-}"
 
   for vol in /volume1 /volume2; do
     [ -d "$vol" ] || continue

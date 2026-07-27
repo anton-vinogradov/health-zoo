@@ -198,6 +198,13 @@ function hostCard(host) {
   if ((host.roles || []).length > 1) {
     chips.push(chip(host.roles.map(function (r) { return ROLE_NAME[r] || r; }).join(' + '), ''));
   }
+  (host.backs_up_to || []).forEach(function (dest) {
+    chips.push(chip('💾 → ' + dest, 'ok'));
+  });
+  if ((host.receives_from || []).length) {
+    chips.push(chip('💾 ← ' + host.receives_from.join(', '), 'ok'));
+  }
+  if (host.backup_orphan) chips.push(chip('💾 без бэкапа', 'bad'));
   if (host.wifi_clients !== undefined && (host.radios || host.radioiws || []).length) {
     chips.push(chip('📶 клиентов: ' + host.wifi_clients, ''));
   }
@@ -671,14 +678,26 @@ function showHost(host) {
       }))));
   }
 
-  if ((host.backups || []).length) {
-    body.appendChild(section('Бэкапы', table(['задача', 'последний запуск'],
-      host.backups.map(function (b) {
-        return h('tr', null, [
-          h('td', { text: b.name || b.task }),
-          h('td', { class: 'mono', text: b.last })
-        ]);
-      }))));
+  if ((host.backups || []).length || (host.backuprepos || []).length ||
+      (host.receives_from || []).length) {
+    var rows = (host.backups || []).map(function (b) {
+      return h('tr', null, [
+        h('td', { text: b.name || b.task }),
+        h('td', { text: '→ ' + (b.dest_name || b.dest || '?') + (b.share ? ' / ' + b.share : '') }),
+        h('td', { class: 'mono', text: b.folders || '' })
+      ]);
+    });
+    (host.backuprepos || []).forEach(function (r) {
+      var stale = r.age_days !== null && r.age_days > 2;
+      rows.push(h('tr', null, [
+        h('td', null, [h('span', { class: 'dot ' + (stale ? 'bad' : 'ok') }), h('span', { text: r.name })]),
+        h('td', { text: '← принимает' }),
+        h('td', { class: 'mono' + (stale ? ' warn' : ''),
+                  text: (r.age_days === null ? '' : r.age_days + ' сут назад') +
+                        (r.size ? ' · ' + bytes(r.size * 1024) : '') })
+      ]));
+    });
+    body.appendChild(section('Бэкапы', table(['что', 'направление', 'детали'], rows)));
   }
 
   if ((host.updates || []).length) {
