@@ -18,6 +18,8 @@
     </div>
   </div>
   <div class="actions">
+    <input id="search" class="search" type="search" placeholder="поиск" autocomplete="off">
+    <button id="btn-problems" class="btn" title="Показывать только хосты с проблемами">Только проблемы</button>
     <button id="btn-sites" class="btn" title="Все веб-интерфейсы парка">Сайты</button>
     <button id="btn-suppressions" class="btn" title="Исключённые проверки по всем хостам">Исключения</button>
     <button id="btn-refresh" class="btn" title="Переопросить все хосты">Обновить данные</button>
@@ -52,11 +54,16 @@
       <h2 id="job-title">Обновление</h2>
       <button class="btn btn-icon" data-close>✕</button>
     </header>
+    <div class="job-tabs" id="job-tabs"></div>
     <div class="job-status" id="job-status"></div>
     <pre id="job-output" class="job-output"></pre>
   </div>
 </div>
 
-<script src="app.js"></script>
+<script src="ui/core.js"></script>
+<script src="ui/cards.js"></script>
+<script src="ui/details.js"></script>
+<script src="ui/actions.js"></script>
+<script src="ui/wiring.js"></script>
 </body>
 </html>

@@ -9,6 +9,7 @@ page hang.
 
 from __future__ import annotations
 
+import concurrent.futures
 import hmac
 import json
 import os
@@ -38,7 +39,12 @@ CONFIG_PATHS = [
 STATIC_FILES = {
     "/": ("index.html", "text/html; charset=utf-8"),
     "/index.html": ("index.html", "text/html; charset=utf-8"),
-    "/app.js": ("app.js", "application/javascript; charset=utf-8"),
+    # The UI is split by responsibility; one file had grown past readability.
+    "/ui/core.js": ("ui/core.js", "application/javascript; charset=utf-8"),
+    "/ui/cards.js": ("ui/cards.js", "application/javascript; charset=utf-8"),
+    "/ui/details.js": ("ui/details.js", "application/javascript; charset=utf-8"),
+    "/ui/actions.js": ("ui/actions.js", "application/javascript; charset=utf-8"),
+    "/ui/wiring.js": ("ui/wiring.js", "application/javascript; charset=utf-8"),
     "/style.css": ("style.css", "text/css; charset=utf-8"),
 }
 
@@ -178,10 +184,17 @@ class Jobs:
             job_id = self._new_id()
             self.jobs[job_id] = {
                 "id": job_id,
+                "kind": "update",
                 "state": "running",
                 "started": int(time.time()),
                 "targets": [t["id"] for t in targets],
                 "current": "",
+                # Per-host logs: updates run in parallel, so a single stream
+                # would interleave four apt runs into something unreadable.
+                "hosts": {t["id"]: {"name": t.get("name", t["id"]),
+                                    "state": "pending", "log": [],
+                                    "started": 0, "finished": 0}
+                          for t in targets},
                 "log": [],
                 "results": {},
             }
@@ -190,30 +203,62 @@ class Jobs:
         thread.start()
         return job_id, ""
 
-    def _log(self, job_id: str, line: str) -> None:
+    def _log(self, job_id: str, line: str, host_id: str = "") -> None:
         with self.lock:
             job = self.jobs[job_id]
-            job["log"].append(line)
+            stream = job["hosts"][host_id]["log"] if host_id in job.get("hosts", {}) \
+                else job["log"]
+            stream.append(line)
             # A full dist-upgrade log is long; keep the tail bounded.
-            if len(job["log"]) > 4000:
-                del job["log"][:1000]
+            if len(stream) > 4000:
+                del stream[:1000]
 
     def _run(self, job_id: str, targets: list[dict], fleet: Fleet) -> None:
+        """Update everything at once, except the box we are running on.
+
+        Hosts are independent, so waiting for one apt run before starting the
+        next only makes the operator wait. The dashboard's own host is the
+        exception and goes last: it restarts its own service mid-run, and
+        doing that while other hosts are still reporting would lose their logs.
+        """
         key = self.cfg.get("ssh_key")
-        for host in targets:
+        parallel = [t for t in targets if not t.get("update_last")]
+        afterwards = [t for t in targets if t.get("update_last")]
+
+        def run_one(host: dict) -> None:
             with self.lock:
-                self.jobs[job_id]["current"] = host["id"]
-            self._log(job_id, f"=== {host['name']} ({host['addr']}) ===")
+                entry = self.jobs[job_id]["hosts"][host["id"]]
+                entry["state"] = "running"
+                entry["started"] = int(time.time())
+            self._log(job_id, f"=== {host['name']} ({host['addr']}) ===", host["id"])
             code = self._update_host(job_id, host, key)
-            with self.lock:
-                self.jobs[job_id]["results"][host["id"]] = "ok" if code == 0 else f"failed ({code})"
-            # Refresh this host before moving on: its update count and
-            # reboot-required flag have just changed.
             try:
                 fleet.refresh_hosts([host["id"]])
             except Exception as exc:
-                self._log(job_id, f"(переопрос не удался: {exc})")
-            self._log(job_id, "")
+                self._log(job_id, f"(переопрос не удался: {exc})", host["id"])
+            with self.lock:
+                entry = self.jobs[job_id]["hosts"][host["id"]]
+                entry["state"] = "ok" if code == 0 else "failed"
+                entry["finished"] = int(time.time())
+                if code != 0:
+                    # Surface why it failed without making the operator read a
+                    # thousand lines of apt output. A failed mirror and a
+                    # broken package need very different responses.
+                    errors = [line for line in entry["log"]
+                              if line.startswith("E:") or "Sub-process" in line]
+                    entry["reason"] = errors[-1] if errors else f"код возврата {code}"
+                self.jobs[job_id]["results"][host["id"]] = (
+                    "ok" if code == 0 else f"failed ({code})")
+
+        if parallel:
+            with concurrent.futures.ThreadPoolExecutor(
+                    max_workers=min(8, len(parallel))) as pool:
+                list(pool.map(run_one, parallel))
+        for host in afterwards:
+            with self.lock:
+                self.jobs[job_id]["current"] = host["id"]
+            run_one(host)
+
         with self.lock:
             self.jobs[job_id]["state"] = "done"
             self.jobs[job_id]["finished"] = int(time.time())
@@ -256,14 +301,14 @@ class Jobs:
             proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                                     text=True, bufsize=1)
         except OSError as exc:
-            self._log(job_id, f"! cannot start: {exc}")
+            self._log(job_id, f"! cannot start: {exc}", host.get("id", ""))
             return 255
 
         assert proc.stdout is not None
         for line in proc.stdout:
             line = line.rstrip()
             if line:
-                self._log(job_id, line)
+                self._log(job_id, line, host.get("id", ""))
         return proc.wait()
 
     # Removing one of these would either cut off our own way back in or take

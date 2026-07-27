@@ -36,7 +36,7 @@ command -v python3 >/dev/null || { echo "✗ need python3"; exit 1; }
 if [ "$SRC" != "$DIR" ]; then
   echo "→ installing to $DIR"
   $SUDO mkdir -p "$DIR"
-  $SUDO cp -r "$SRC/collector" "$SRC/index.html" "$SRC/app.js" "$SRC/style.css" "$DIR/"
+  $SUDO cp -r "$SRC/collector" "$SRC/ui" "$SRC/index.html" "$SRC/style.css" "$DIR/"
 fi
 $SUDO chown -R "$RUN_USER": "$DIR"
 
