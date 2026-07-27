@@ -113,6 +113,8 @@ class Alerts:
             self.muted[host_id] = time.time() + seconds
 
     def _current(self, hosts: list[dict]) -> dict[str, dict]:
+        # "info" never alerts: it exists precisely for states that are normal
+        # for a given device and only belong on the screen.
         wanted = ("bad",) if self.min_level == "bad" else ("bad", "warn")
         now = time.time()
         with self.lock:

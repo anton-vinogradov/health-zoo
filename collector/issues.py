@@ -71,7 +71,11 @@ def host_issues(host: dict, cfg: dict | None = None) -> list[dict]:
         out.append({"level": level, "key": key, "text": text})
 
     if not host.get("reachable"):
-        add("bad", "down", host.get("error") or "не отвечает")
+        if host.get("may_be_offline"):
+            # Declared as usually-off: report the state, do not call it a fault.
+            add("info", "offline", "выключен (для этого хоста это норма)")
+        else:
+            add("bad", "down", host.get("error") or "не отвечает")
         return out
 
     # Reachable over the network but the agent could not run: half-known is not
@@ -256,7 +260,7 @@ def host_issues(host: dict, cfg: dict | None = None) -> list[dict]:
     if security:
         add("warn", "security", f"{security} security-обновлений")
 
-    order = {"bad": 0, "warn": 1}
+    order = {"bad": 0, "warn": 1, "info": 2}
     out.sort(key=lambda issue: order.get(issue["level"], 2))
     return out
 

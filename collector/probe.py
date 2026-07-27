@@ -714,6 +714,10 @@ def probe_host(host: dict, key: str | None) -> dict:
         # Declared in the config: see issues.py for why it cannot be probed.
         "power_recovery": host.get("power_recovery"),
         "backup_exempt": bool(host.get("backup_exempt")),
+        # Some devices are off more often than on — a 3D printer, a lab box.
+        # Being down is their normal state, so it must not page anyone; a
+        # problem *while running* still counts.
+        "may_be_offline": bool(host.get("may_be_offline")),
         "reachable": False,
         "error": "",
     }

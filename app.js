@@ -153,6 +153,7 @@ function hostCard(host) {
   var chips = [];
 
   if (host.reachable && host.error) chips.push(chip('нет доступа', 'warn'));
+  if (!host.reachable && host.may_be_offline) chips.push(chip('выключен — это норма', ''));
   if (host.recorded_by) {
     chips.push(chip(host.camera_live ? 'пишется: ' + host.recorded_by : 'запись стоит: ' + host.recorded_by,
       host.camera_live ? 'ok' : 'bad'));
