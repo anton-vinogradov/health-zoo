@@ -962,6 +962,14 @@ class Handler(BaseHTTPRequestHandler):
             targets = order_targets(self.fleet.hosts())
             if wanted:
                 targets = [h for h in targets if h.get("id") in wanted]
+            else:
+                # "updatable" is config-level permission, not a pending count:
+                # without this the "everything" button would run apt on the
+                # whole fleet while the badge promised only the hosts that
+                # actually have packages waiting.
+                pending = {h.get("id") for h in self.fleet.get().get("hosts", [])
+                           if h.get("update_count")}
+                targets = [h for h in targets if h.get("id") in pending]
             if not targets:
                 self._json({"error": "no updatable hosts matched"}, 400)
                 return
