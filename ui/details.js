@@ -91,8 +91,11 @@ function showHost(host) {
     fact('в контроллере', host.unifi_state === 2 ? 'управляется' : 'не управляется (' + host.unifi_state + ')');
   }
   fact('зона', host.zone);
-  fact('воспроизведение', host.playback === 'PLAYING' ? 'играет' :
-                          host.playback === 'STOPPED' ? 'остановлено' : host.playback);
+  fact('воспроизведение', host.playback === 'PLAYING' ? 'играет'
+       : host.playback === 'STOPPED' ? 'ничего не играет — колонка на связи и свободна'
+       : host.playback === 'PAUSED_PLAYBACK' ? 'на паузе'
+       : host.playback === 'TRANSITIONING' ? 'переключает дорожку'
+       : host.playback);
   fact('версия железа', host.hardware);
   fact('серийный номер', host.serial);
   if (host.recorded_by) {

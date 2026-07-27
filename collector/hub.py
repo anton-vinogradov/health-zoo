@@ -101,6 +101,8 @@ class Fleet:
             probe.poll_unifi_controller(self.cfg, hosts)
             probe.analyse_wifi(hosts)
             probe.check_forwards(hosts)
+            for host in hosts:
+                probe.endpoints_from_probed_ports(host)
             self.apply_camera_limits(hosts)
             issues.annotate(hosts, self.cfg, self.suppressions)
             issues.annotate_checks(hosts, self.cfg)

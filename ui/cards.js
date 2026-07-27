@@ -63,13 +63,26 @@ function hostCard(host) {
       ? chip('✕ ' + stillLoud.length + ' упало', 'bad')
       : chip('✕ ' + failed.length + ' упало · принято', 'muted'));
   }
-  /* The card counts the operator's own services. Counting systemd's too made
-     every host look alike — "⚙ 41" on a box running one application. */
+  /* The card names the operator's own services. A count said nothing — "⚙ 41"
+     looked identical on every host — and counting systemd's units made it
+     worse. Names answer "what does this machine do" at a glance; the full
+     list, base system included, is in the detail view. */
   var running = (host.services || []).filter(function (s) {
     return s.scope !== 'system' &&
       ((s.state || '').indexOf('running') >= 0 || s.state === 'active/exited');
   });
-  if (running.length) chips.push(chip('⚙ ' + running.length, ''));
+  if (running.length) {
+    var names = running.map(function (s) {
+      return s.name.replace(/\.service$/, '');
+    }).sort();
+    var shown = [], budget = 42;
+    for (var i = 0; i < names.length && budget > 0; i++) {
+      shown.push(names[i]);
+      budget -= names[i].length + 2;
+    }
+    var rest = names.length - shown.length;
+    chips.push(chip('⚙ ' + shown.join(', ') + (rest ? ' + ещё ' + rest : ''), ''));
+  }
   var containers = host.containers || [];
   if (containers.length) {
     var stopped = containers.filter(function (c) { return c.state !== 'running'; });
@@ -150,7 +163,15 @@ function hostCard(host) {
     chips.push(chip('📶 клиентов: ' + host.wifi_clients, ''));
   }
   if (host.playback) {
-    chips.push(chip(host.playback === 'PLAYING' ? '▶ играет' : '⏸ тишина', ''));
+    // "тишина" was a riddle: it read as a fault rather than as "the speaker is
+    // idle, which is what a speaker is most of the time".
+    var PLAYBACK = {
+      'PLAYING': '▶ играет',
+      'PAUSED_PLAYBACK': '⏸ на паузе',
+      'TRANSITIONING': '⏵ переключается',
+      'STOPPED': '⏹ ничего не играет'
+    };
+    chips.push(chip(PLAYBACK[host.playback] || '⏹ ' + host.playback, ''));
   }
   if (host.role === 'camera' && host.ports) {
     var rtsp = host.ports['554'];

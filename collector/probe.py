@@ -234,6 +234,32 @@ def _post_process(data: dict) -> dict:
     return data
 
 
+def endpoints_from_probed_ports(host: dict) -> None:
+    """For devices we never log into, report the ports we actually reached.
+
+    An access point is polled through the UniFi controller, so it has no
+    listening-socket list and its card showed nothing at all — which reads as
+    "nothing is running here". Something is: the TCP check already knocked on
+    its ports. Show that, and let the detail view say where it came from.
+    """
+    if host.get("endpoints") or host.get("listens"):
+        return
+    found = []
+    for port, open_ in (host.get("ports") or {}).items():
+        if not open_ or not str(port).isdigit():
+            continue
+        number = int(port)
+        found.append({
+            "port": number,
+            "process": KNOWN_SERVICES.get(number, ""),
+            "label": KNOWN_SERVICES.get(number, f"порт {number}"),
+            "proto": "tcp", "scope": "any", "probed": True,
+        })
+    if found:
+        host["endpoints"] = sorted(found, key=lambda e: e["port"])
+        host["endpoints_probed"] = True
+
+
 # Ports whose service is worth naming even though it serves no web page.
 KNOWN_SERVICES = {
     22: "SSH", 21: "FTP", 23: "telnet", 25: "SMTP", 53: "DNS", 123: "NTP",
@@ -622,6 +648,10 @@ def probe_routeros(host: dict, key: str | None) -> dict:
             "path": "/ip service",
             "desc": (f"port {port}" if port else "служба роутера")
                     + (f", доступ с {restriction}" if restriction else ""),
+            # Everything in /ip service is RouterOS itself — as is every
+            # feature package. A router has no applications of its own here, so
+            # the card shows its open ports instead, which is the useful view.
+            "scope": "system",
         })
         if disabled or not port:
             continue
@@ -701,6 +731,7 @@ def probe_routeros(host: dict, key: str | None) -> dict:
             "path": "/system package",
             "desc": "RouterOS package",
             "version": version,
+            "scope": "system",
         })
     if services:
         data["services"] = services

@@ -78,7 +78,8 @@ Marked: **✓** done, **▶** in progress, **○** deliberately not done.
 | ✓ | Draw the topology by subnet, mirroring the real uplinks |
 | ✓ | Group devices by type within a subnet |
 | ✓ | Discover services automatically, with nothing declared in the config |
-| ✓ | Separate the operator's services from the distribution's; the card counts only the former |
+| ✓ | Separate the operator's services from the distribution's on every agent; the card names the former |
+| ✓ | For devices polled without an agent, report the ports the TCP check reached |
 | ✓ | Find unmanaged devices from DHCP leases |
 | ✓ | Poll hosts reachable only through another site (`probe_via`) |
 | ✓ | List every web resource of a host, linked by domain name; loopback marked, not hidden |
@@ -148,6 +149,11 @@ Marked: **✓** done, **▶** in progress, **○** deliberately not done.
   `optional` for almost everything now, the base system is flagged manual on VPS
   images and Raspberry Pi OS, and a provider ships `serial-getty@ttyS0`
   hand-written under `/etc`.
+- **Every platform has its own notion of "base system".** Linux needs three
+  signals; DSM states it outright (`install_type=system`); RouterOS has no
+  applications at all — everything in `/ip service` is the OS — so the router
+  card shows open ports instead; OpenWrt goes by a named list of base init
+  scripts, because there is no package metadata to ask.
 - **RouterOS is queried with scripted `:put a."|".b`, not by parsing tables.**
   `print` columns cannot be parsed reliably: flags are optional and values
   contain spaces.

@@ -79,7 +79,17 @@ for init in /etc/init.d/*; do
     state=running
   fi
   [ "$enabled" = disabled ] && [ "$state" = stopped ] && continue
-  row "@service	$name	$state	$enabled	0	0	$init	OpenWrt init script"
+  # What ships with OpenWrt and makes it a router, versus what somebody added.
+  # There is no package metadata to ask here — opkg does not record which files
+  # an init script came from in a form worth parsing on a 32 MB device — so the
+  # base set is named. It only classifies; nothing is hidden by it.
+  case "$name" in
+    network|firewall|dnsmasq|odhcpd|dropbear|uhttpd|rpcd|ubus|log|system|\
+    sysntpd|cron|led|dnsmasq6|urngd|ntpd|odhcp6c|wpad|hostapd|umdns|\
+    dhcpd|dhcp6c|boot|sysctl|gpio_switch) scope=system ;;
+    *) scope=user ;;
+  esac
+  row "@service	$name	$state	$enabled	0	0	$init	OpenWrt init script	$scope"
 done
 
 # ---------- listening ports ----------

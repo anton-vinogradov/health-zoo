@@ -135,7 +135,13 @@ for p in /var/packages/*/; do
   # enabled/ and target/ presence marks a running package on DSM 7.
   if [ -f "$p/enabled" ]; then state=running; else state=stopped; fi
   [ -e "$p/target" ] || state=notinstalled
-  row "@service	$name	$state	installed	0	0	$info	Synology package"
+  # DSM says so itself: install_type=system (or system_hidden) marks the parts
+  # of the OS that arrive with it — FileStation, OAuthService, StorageManager.
+  # Anything without it was installed on purpose: Surveillance Station,
+  # HyperBackup, a codec pack.
+  itype=$(awk -F'"' '/^install_type=/{print $2; exit}' "$info" 2>/dev/null)
+  case "$itype" in system|system_hidden) scope=system ;; *) scope=user ;; esac
+  row "@service	$name	$state	installed	0	0	$info	Synology package	$scope"
   [ -n "$ver" ] && row "@unitpkg	$name	$name	$ver"
 done
 
