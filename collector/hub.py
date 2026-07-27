@@ -87,6 +87,29 @@ class Fleet:
             self.wake.wait(timeout=self.cfg.get("poll_interval", 180))
             self.wake.clear()
 
+    def refresh_hosts(self, host_ids: list[str]) -> int:
+        """Re-poll just these hosts and splice them into the current snapshot.
+
+        After removing a service or installing updates the card is stale
+        immediately, and waiting out a full cycle (or even a full re-poll of
+        twenty hosts) makes the UI feel like the action did not take.
+        """
+        wanted = [h for h in self.hosts() if h.get("id") in host_ids]
+        if not wanted:
+            return 0
+        fresh = probe.probe_all(wanted, self.cfg.get("ssh_key"))
+        by_id = {h["id"]: h for h in fresh}
+        with self.lock:
+            hosts = list(self.snapshot.get("hosts", []))
+            for i, host in enumerate(hosts):
+                if host.get("id") in by_id:
+                    hosts[i] = by_id[host["id"]]
+            # Camera links are cross-host, so recompute them over the merged set.
+            probe.link_cameras(hosts)
+            self.snapshot["hosts"] = hosts
+            self.snapshot["generated"] = int(time.time())
+        return len(fresh)
+
     def get(self) -> dict:
         with self.lock:
             return self.snapshot
@@ -142,12 +165,18 @@ class Jobs:
             code = self._update_host(job_id, host, key)
             with self.lock:
                 self.jobs[job_id]["results"][host["id"]] = "ok" if code == 0 else f"failed ({code})"
+            # Refresh this host before moving on: its update count and
+            # reboot-required flag have just changed.
+            try:
+                fleet.refresh_hosts([host["id"]])
+            except Exception as exc:
+                self._log(job_id, f"(переопрос не удался: {exc})")
             self._log(job_id, "")
         with self.lock:
             self.jobs[job_id]["state"] = "done"
             self.jobs[job_id]["finished"] = int(time.time())
             self.jobs[job_id]["current"] = ""
-        fleet.wake.set()  # refresh the dashboard as soon as the run ends
+            self.jobs[job_id]["refreshed"] = True
 
     def _update_host(self, job_id: str, host: dict, key: str | None) -> int:
         # DEBIAN_FRONTEND + confold: never block on a config-file prompt.
@@ -265,10 +294,16 @@ class Jobs:
         code = self._exec(job_id, host, key, remote)
         with self.lock:
             self.jobs[job_id]["results"][host["id"]] = "ok" if code == 0 else f"failed ({code})"
+        # Re-poll this host right away so the card reflects what just happened.
+        try:
+            fleet.refresh_hosts([host["id"]])
+        except Exception as exc:
+            self._log(job_id, f"(переопрос не удался: {exc})")
+        with self.lock:
             self.jobs[job_id]["state"] = "done"
             self.jobs[job_id]["finished"] = int(time.time())
             self.jobs[job_id]["current"] = ""
-        fleet.wake.set()
+            self.jobs[job_id]["refreshed"] = True
 
     def get(self, job_id: str) -> dict | None:
         with self.lock:
@@ -341,8 +376,21 @@ class Handler(BaseHTTPRequestHandler):
         path = self.path.split("?", 1)[0]
 
         if path == "/api/refresh":
-            self.fleet.wake.set()
-            self._json({"ok": True})
+            length = int(self.headers.get("Content-Length") or 0)
+            req = {}
+            if length:
+                try:
+                    req = json.loads(self.rfile.read(length).decode("utf-8") or "{}")
+                except json.JSONDecodeError:
+                    req = {}
+            wanted = req.get("hosts")
+            if wanted:
+                # Synchronous: the caller wants the fresh card, not a promise.
+                count = self.fleet.refresh_hosts(wanted)
+                self._json({"ok": True, "refreshed": count})
+            else:
+                self.fleet.wake.set()
+                self._json({"ok": True})
             return
 
         if path == "/api/update":

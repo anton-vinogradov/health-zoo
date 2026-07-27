@@ -85,7 +85,9 @@ function ago(ts) {
 function webUrl(host, link) {
   var port = link.port;
   var std = (link.scheme === 'http' && port === 80) || (link.scheme === 'https' && port === 443);
-  return link.scheme + '://' + host.addr + (std ? '' : ':' + port);
+  /* Some consoles live one path down from a distro's placeholder root ("/zm/",
+     "/admin/"); the probe records where it actually found the page. */
+  return link.scheme + '://' + host.addr + (std ? '' : ':' + port) + (link.path || '');
 }
 
 function shortMount(path) {
@@ -263,10 +265,21 @@ function hostCard(host) {
   }
 
   var footer = [];
-  var named = (host.web || []).filter(function (l) { return l.title || l.label; });
-  // Appliances answer on several ports where all but one are redirect stubs;
-  // if anything identified itself, show only those on the card.
-  (named.length ? named : (host.web || [])).slice(0, 3).forEach(function (link) {
+  // Appliances answer on several ports where all but one are redirect stubs or
+  // distro default pages; if anything identified itself as a real service, show
+  // only those on the card. The full list lives behind the "Сайты" button.
+  var named = (host.web || []).filter(function (l) { return (l.title || l.label) && !l.stub; });
+  // One service often answers on several ports (Pi-hole on :443 and :8080); the
+  // card wants a button per service, not per port. Links are sorted 80/443
+  // first, so the survivor is the address a person would type.
+  var seenName = {};
+  named = named.filter(function (l) {
+    var name = (l.title || l.label) + (l.path || '');
+    if (seenName[name]) return false;
+    seenName[name] = true;
+    return true;
+  });
+  (named.length ? named : (host.web || [])).slice(0, 6).forEach(function (link) {
     footer.push(h('a', {
       class: 'btn btn-sm btn-link', target: '_blank', rel: 'noopener',
       href: webUrl(host, link),
@@ -805,7 +818,9 @@ function pollJob() {
     if (done && jobTimer) {
       clearInterval(jobTimer);
       jobTimer = null;
-      refresh();
+      // The hub re-polls each target as its step finishes, so the snapshot is
+      // already current — just re-read it instead of triggering a full sweep.
+      load();
     }
   }).catch(function () { /* keep polling */ });
 }

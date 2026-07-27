@@ -599,21 +599,30 @@ def probe_host(host: dict, key: str | None) -> dict:
 
 # Page titles change far less often than the fleet is polled, so they are
 # cached; without this every cycle would re-fetch every panel on every host.
-_TITLE_CACHE: dict[tuple[str, int], tuple[str, float]] = {}
+_TITLE_CACHE: dict[tuple[str, int], tuple[str, str, float]] = {}
 _TITLE_TTL = 3600
 _TITLE_LOCK = threading.Lock()
 
+# "It works" is not an application: a distro's untouched web root answers on /
+# even when the thing worth linking to lives one path down. Pi-hole's FTL even
+# serves Apache's leftover index.html, so three ports on one box can all report
+# the same placeholder while running three different services.
+PLACEHOLDER_TITLE = re.compile(
+    r"default page|it works|welcome to nginx|test page|index of /", re.I)
 
-def fetch_title(url: str, addr: str, port: int) -> str:
-    """Ask a web UI what it calls itself, so links read as names not ports."""
-    key = (addr, port)
-    now = time.time()
-    with _TITLE_LOCK:
-        hit = _TITLE_CACHE.get(key)
-        if hit and now - hit[1] < _TITLE_TTL:
-            return hit[0]
+# Where those services actually keep their UI, by the process holding the port.
+APP_PATHS = {
+    "apache2": ["/zm/", "/admin/"],
+    "httpd": ["/zm/", "/admin/"],
+    "pihole-ftl": ["/admin/"],
+    "lighttpd": ["/admin/", "/zm/"],
+    "nginx": ["/zm/", "/admin/"],
+}
+FALLBACK_PATHS = ["/zm/", "/admin/"]
 
-    title = ""
+
+def _page_title(url: str) -> str:
+    """Read a page's <title>, or "" if it will not give one up."""
     try:
         ctx = ssl.create_default_context()
         # Appliance certificates are self-signed by definition; we are reading
@@ -623,17 +632,41 @@ def fetch_title(url: str, addr: str, port: int) -> str:
         req = urllib.request.Request(url, headers={"User-Agent": "health-zoo"})
         with urllib.request.urlopen(req, timeout=4, context=ctx) as resp:
             body = resp.read(65536).decode("utf-8", "replace")
-        match = re.search(r"<title[^>]*>(.*?)</title>", body, re.I | re.S)
-        if match:
-            # DSM writes its title with &nbsp; entities; unescape before trimming.
-            raw = html.unescape(match.group(1)).replace("\xa0", " ")
-            title = re.sub(r"\s+", " ", raw).strip()[:60]
     except Exception:
-        title = ""
+        return ""
+    match = re.search(r"<title[^>]*>(.*?)</title>", body, re.I | re.S)
+    if not match:
+        return ""
+    # DSM writes its title with &nbsp; entities; unescape before trimming.
+    raw = html.unescape(match.group(1)).replace("\xa0", " ")
+    return re.sub(r"\s+", " ", raw).strip()[:60]
+
+
+def fetch_title(url: str, addr: str, port: int, label: str = "") -> tuple[str, str]:
+    """Ask a web UI what it calls itself, so links read as names not ports.
+
+    Returns (title, path): when the root is a distro placeholder the known
+    sub-paths of whatever holds the port are tried, so the link points at the
+    console instead of at "It works".
+    """
+    key = (addr, port)
+    now = time.time()
+    with _TITLE_LOCK:
+        hit = _TITLE_CACHE.get(key)
+        if hit and now - hit[2] < _TITLE_TTL:
+            return hit[0], hit[1]
+
+    title, path = _page_title(url), ""
+    if not title or PLACEHOLDER_TITLE.search(title):
+        for candidate in APP_PATHS.get(label.lower(), FALLBACK_PATHS):
+            found = _page_title(url + candidate)
+            if found and not PLACEHOLDER_TITLE.search(found):
+                title, path = found, candidate
+                break
 
     with _TITLE_LOCK:
-        _TITLE_CACHE[key] = (title, now)
-    return title
+        _TITLE_CACHE[key] = (title, path, now)
+    return title, path
 
 
 def annotate_web(results: list[dict], workers: int = 12) -> None:
@@ -647,20 +680,27 @@ def annotate_web(results: list[dict], workers: int = 12) -> None:
             std = (link["scheme"] == "http" and port == 80) or \
                   (link["scheme"] == "https" and port == 443)
             url = f"{link['scheme']}://{host['addr']}" + ("" if std else f":{port}")
-            jobs.append((link, url, host["addr"], port))
+            jobs.append((link, url, host["addr"], port, link.get("label") or ""))
 
     if not jobs:
         return
     with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as pool:
-        futures = {pool.submit(fetch_title, url, addr, port): link
-                   for link, url, addr, port in jobs}
+        futures = {pool.submit(fetch_title, url, addr, port, label): link
+                   for link, url, addr, port, label in jobs}
         for future in concurrent.futures.as_completed(futures):
             try:
-                title = future.result()
+                title, path = future.result()
             except Exception:
-                title = ""
+                title, path = "", ""
             if title:
-                futures[future]["title"] = title
+                link = futures[future]
+                link["title"] = title
+                if path:
+                    link["path"] = path
+                # A distro's out-of-the-box page is not a service worth a
+                # button; keep it in the full list, but off the card. By now
+                # the sub-paths have been tried, so this really is all there is.
+                link["stub"] = bool(PLACEHOLDER_TITLE.search(title))
 
 
 def link_cameras(results: list[dict]) -> None:
