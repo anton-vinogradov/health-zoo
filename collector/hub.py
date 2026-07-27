@@ -100,6 +100,7 @@ class Fleet:
                                       self.hosts(), self.cfg.get("ssh_key"), hosts)
             probe.poll_unifi_controller(self.cfg, hosts)
             probe.analyse_wifi(hosts)
+            probe.check_forwards(hosts)
             self.apply_camera_limits(hosts)
             issues.annotate(hosts, self.cfg, self.suppressions)
             issues.annotate_checks(hosts, self.cfg)
@@ -210,8 +211,10 @@ class Fleet:
             for i, host in enumerate(hosts):
                 if host.get("id") in by_id:
                     hosts[i] = by_id[host["id"]]
-            # Camera links are cross-host, so recompute them over the merged set.
+            # Camera links and port forwards are cross-host, so recompute them
+            # over the merged set.
             probe.link_cameras(hosts)
+            probe.check_forwards(hosts)
             self.snapshot["hosts"] = hosts
             # Suppressions are derived from the hosts, so they have to be
             # recomputed here too: adding one and not seeing it take effect
@@ -284,6 +287,7 @@ class Jobs:
         doing that while other hosts are still reporting would lose their logs.
         """
         key = self.cfg.get("ssh_key")
+        cleanup = bool(fleet.settings.auto_cleanup().get("enabled"))
         parallel = [t for t in targets if not t.get("update_last")]
         afterwards = [t for t in targets if t.get("update_last")]
 
@@ -293,7 +297,7 @@ class Jobs:
                 entry["state"] = "running"
                 entry["started"] = int(time.time())
             self._log(job_id, f"=== {host['name']} ({host['addr']}) ===", host["id"])
-            code = self._update_host(job_id, host, key)
+            code = self._update_host(job_id, host, key, cleanup)
             try:
                 fleet.refresh_hosts([host["id"]])
             except Exception as exc:
@@ -337,7 +341,8 @@ class Jobs:
             self.jobs[job_id]["current"] = ""
             self.jobs[job_id]["refreshed"] = True
 
-    def _update_host(self, job_id: str, host: dict, key: str | None) -> int:
+    def _update_host(self, job_id: str, host: dict, key: str | None,
+                     cleanup: bool = False) -> int:
         # DEBIAN_FRONTEND + confold: never block on a config-file prompt.
         #
         # --with-new-pkgs is what makes "обновить всё" mean it. Plain `upgrade`
@@ -353,7 +358,20 @@ class Jobs:
             "sudo -n apt-get -y --with-new-pkgs -o Dpkg::Options::=--force-confdef "
             "-o Dpkg::Options::=--force-confold upgrade; "
             "rc=$?; "
-            "left=$(apt list --upgradable 2>/dev/null | tail -n +2); "
+            # Cleanup rides along with the upgrade rather than running on its
+            # own, and the second pass is the point of the ordering: a package
+            # is often held back only because it conflicts with something
+            # nothing needs any more. On watchcats the security update for
+            # libgl1-amber-dri was stuck behind libglapi-mesa — which was
+            # itself in the autoremove list. Clean first, then ask again.
+            + ("echo '--- чистка ненужных пакетов ---'; "
+               "sudo -n apt-get -y autoremove; "
+               "echo '--- повторная попытка после чистки ---'; "
+               "sudo -n apt-get -y --with-new-pkgs "
+               "-o Dpkg::Options::=--force-confdef "
+               "-o Dpkg::Options::=--force-confold upgrade; "
+               "[ $rc -eq 0 ] && rc=$?; " if cleanup else "")
+            + "left=$(apt list --upgradable 2>/dev/null | tail -n +2); "
             "[ -n \"$left\" ] && { "
             "  echo 'ОСТАЛОСЬ (нужно удаление пакетов, вручную):'; "
             "  echo \"$left\" | cut -d/ -f1 | tr '\\n' ' '; echo; }; "
@@ -793,6 +811,7 @@ class Handler(BaseHTTPRequestHandler):
                 "overridden": sorted(stored.keys()),
                 "by_role": issues.ROLE_THRESHOLDS,
                 "auto_reboot": self.fleet.settings.auto_reboot(),
+                "auto_cleanup": self.fleet.settings.auto_cleanup(),
                 "hosts": [{"id": h.get("id"), "name": h.get("name")}
                           for h in self.fleet.hosts()],
                 # Cameras come from the snapshot rather than the config: they
@@ -880,6 +899,8 @@ class Handler(BaseHTTPRequestHandler):
                 self.fleet.settings.set_auto_reboot(req["auto_reboot"])
             if isinstance(req.get("cameras"), dict):
                 self.fleet.settings.set_cameras(req["cameras"])
+            if isinstance(req.get("auto_cleanup"), dict):
+                self.fleet.settings.set_auto_cleanup(req["auto_cleanup"])
             # Applied to the live config and the current snapshot at once: a
             # threshold changed in the browser has to recolour the fleet now,
             # not at the next poll — otherwise it reads as having been ignored.
@@ -890,7 +911,8 @@ class Handler(BaseHTTPRequestHandler):
             issues.annotate_checks(hosts, self.fleet.cfg)
             self._json({"ok": True,
                         "thresholds": self.fleet.settings.thresholds(),
-                        "auto_reboot": self.fleet.settings.auto_reboot()})
+                        "auto_reboot": self.fleet.settings.auto_reboot(),
+                        "auto_cleanup": self.fleet.settings.auto_cleanup()})
             return
 
         if path == "/api/refresh":

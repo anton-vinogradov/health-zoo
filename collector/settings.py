@@ -83,6 +83,13 @@ AUTO_REBOOT_DEFAULT = {
 }
 
 
+# Removing packages nothing depends on is safe in a way rebooting is not — apt
+# keeps the running kernel and anything still needed — so this one may default
+# to on. It runs as part of an update, never on its own schedule: cleanup is a
+# consequence of upgrading, not an event.
+AUTO_CLEANUP_DEFAULT = {"enabled": True}
+
+
 class Settings:
     def __init__(self, path: str):
         self.path = path
@@ -178,6 +185,22 @@ class Settings:
                 else:
                     current.pop(key, None)
             self.data["cameras"] = current
+            self._save()
+            return current
+
+    # ---------- automatic cleanup ----------
+
+    def auto_cleanup(self) -> dict:
+        out = dict(AUTO_CLEANUP_DEFAULT)
+        out.update(self.data.get("auto_cleanup") or {})
+        return out
+
+    def set_auto_cleanup(self, values: dict) -> dict:
+        with self.lock:
+            current = self.auto_cleanup()
+            if "enabled" in values:
+                current["enabled"] = bool(values["enabled"])
+            self.data["auto_cleanup"] = current
             self._save()
             return current
 

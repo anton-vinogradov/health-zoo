@@ -401,6 +401,18 @@ function showSettings() {
         return h('label', { class: 'set-check' }, [box, h('span', { text: host.name })]);
       }));
 
+    var cleanup = h('input', { type: 'checkbox' });
+    cleanup.checked = !(cfg.auto_cleanup && cfg.auto_cleanup.enabled === false);
+    root.appendChild(section('Чистка ненужных пакетов', h('div', { class: 'set-block' }, [
+      h('label', { class: 'set-check' }, [cleanup,
+        h('span', { text: 'убирать пакеты, которые больше никому не нужны (apt autoremove)' })]),
+      h('p', { class: 'set-hint', text:
+        'Выполняется вместе с обновлением пакетов, а не отдельно: чистка — это ' +
+        'следствие обновления. apt сохраняет работающее ядро и всё, от чего ' +
+        'что-то зависит, поэтому в отличие от перезагрузки это безопасно и ' +
+        'включено по умолчанию.' })
+    ])));
+
     root.appendChild(section('Автоматическая перезагрузка', h('div', { class: 'set-block' }, [
       h('label', { class: 'set-check' }, [enabled,
         h('span', { text: 'перезагружать хост, когда он сам просит перезагрузку' })]),
@@ -438,6 +450,7 @@ function showSettings() {
               };
               return acc;
             }, {}),
+            auto_cleanup: { enabled: cleanup.checked },
             auto_reboot: { enabled: enabled.checked, from_hour: Number(fromHour.value),
                            to_hour: Number(toHour.value), exclude: exclude }
           })

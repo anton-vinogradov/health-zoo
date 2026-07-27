@@ -533,3 +533,32 @@ def test_reboot_job_reports_a_host_that_never_returns(monkeypatch):
     code = jobs._await_return("job1", {"id": "rt", "addr": "10.0.0.1"}, None)
     assert code == 2
     assert "не ответил" in " ".join(jobs.jobs["job1"]["log"])
+
+
+def test_cleanup_runs_between_two_upgrade_passes():
+    """A package held back by an orphan installs once the orphan is gone."""
+    import hub
+    jobs = hub.Jobs({})
+    calls = []
+
+    def fake_exec(job_id, host, key, remote):
+        calls.append(remote)
+        return 0
+
+    jobs._exec = fake_exec
+    jobs._update_host("job1", {"id": "srv", "user": "root"}, None, cleanup=True)
+    remote = calls[0]
+
+    first = remote.index("upgrade")
+    clean = remote.index("autoremove")
+    second = remote.index("upgrade", clean)
+    assert first < clean < second, "чистка должна стоять между двумя проходами"
+
+
+def test_cleanup_is_skipped_when_switched_off():
+    import hub
+    jobs = hub.Jobs({})
+    calls = []
+    jobs._exec = lambda job_id, host, key, remote: calls.append(remote) or 0
+    jobs._update_host("job1", {"id": "srv", "user": "root"}, None, cleanup=False)
+    assert "autoremove" not in calls[0]

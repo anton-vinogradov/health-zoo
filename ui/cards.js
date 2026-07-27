@@ -115,6 +115,24 @@ function hostCard(host) {
     chips.push(chip('💾 ← ' + host.receives_from.join(', '), 'ok'));
   }
   if (host.backup_orphan) chips.push(chipFor(host, 'no_backup', '💾 без бэкапа', 'bad'));
+  if (host.orphan_count) {
+    chips.push(chipFor(host, 'orphans', '🧹 лишних пакетов: ' + host.orphan_count, 'warn'));
+  }
+  // A dead forward is invisible until somebody needs it from outside.
+  var deadForwards = (host.forwards || []).filter(function (r) {
+    return r.verdict === 'no-listener' || r.verdict === 'host-down';
+  });
+  if (deadForwards.length) {
+    chips.push(chipFor(host, 'fwd:' + deadForwards[0].port,
+      '↦ проброс в никуда: ' + (deadForwards[0].comment || deadForwards[0].port), 'warn'));
+  }
+  var downTunnels = (host.ipsec || []).filter(function (p) {
+    return !p.disabled && p.state !== 'established';
+  });
+  if (downTunnels.length) {
+    chips.push(chipFor(host, 'ipsec:' + downTunnels[0].dst,
+      '🔒 туннель не поднят: ' + downTunnels[0].dst, 'warn'));
+  }
   /* An access point is judged by the networks people join, not by its radios:
      "ferretclub 2.4: 60%" is a complaint waiting to happen, "клиентов: 7" is
      trivia. The controller's own satisfaction score is used as-is. */

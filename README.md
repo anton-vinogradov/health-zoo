@@ -47,6 +47,11 @@ Only Debian-family hosts are updatable. NAS units and routers are reported but
 never touched: upgrading OpenWrt packages in place is a known way to brick a
 router, and DSM updates need credentials this tool deliberately does not hold.
 
+## What this is supposed to do
+
+[SPEC.md](SPEC.md) states the requirements, the invariants behind them and what
+is deliberately out of scope. It is updated with the code, not after it.
+
 ## Suppressing a finding
 
 Any monitoring system eventually shows something known, understood and not
@@ -81,6 +86,12 @@ near-full), and they are listed there rather than hidden. Cameras get a row
 each: a street camera silent for six hours is broken, a garage camera silent
 for two days is a garage nobody entered, and one fleet-wide number makes one of
 them wrong by construction.
+
+**Automatic cleanup** removes packages nothing depends on any more, as part of
+an update rather than on its own schedule. It is on by default, and unlike a
+reboot it is safe: apt keeps the running kernel and anything still needed. It
+also unsticks upgrades — a package held back only because it conflicts with an
+orphan installs on the second pass.
 
 The same view can turn on **automatic reboots**: hosts that report a pending
 reboot themselves are rebooted inside a chosen window of hours, one per poll,

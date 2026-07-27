@@ -68,6 +68,7 @@ LIST_FIELDS = {
     "backup": ["task", "name", "folders", "dest", "share"],
     "backuprepo": ["name", "last", "size"],
     "unbacked": ["share", "volume"],
+    "orphan": ["pkg"],
     "iface": ["name", "status", "rx", "tx", "comment"],
     "neighbor": ["id", "name", "snr", "hops", "last_heard", "battery"],
 }
@@ -165,6 +166,8 @@ def _post_process(data: dict) -> dict:
     for timer in data.get("timers", []):
         if not timer.get("scope"):
             timer["scope"] = "user"
+
+    data["orphan_count"] = len(data.get("orphans", []))
 
     updates = data.get("updates", [])
     data["update_count"] = len(updates)
@@ -428,6 +431,17 @@ ROUTEROS_CMD = (
     ':do {:put ("romon|".[:tostr [/tool romon get enabled]]."|")} on-error={}; '
     ':do {:put ("bandwidth-test|".[:tostr [/tool bandwidth-server get enabled]]."|2000")} on-error={}; '
     ':do {:put ("dns-resolver|".[:tostr [/ip dns get allow-remote-requests]]."|53")} on-error={}; '
+    # Port forwards and tunnel policies: configuration that is supposed to
+    # deliver traffic somewhere. The byte counter says whether it ever has.
+    ':put "@@nat"; :foreach i in=[/ip firewall nat find] do={'
+    ':put ([:tostr [/ip firewall nat get $i chain]]."|".[:tostr [/ip firewall nat get $i action]]'
+    '."|".[:tostr [/ip firewall nat get $i dst-port]]."|".[:tostr [/ip firewall nat get $i to-addresses]]'
+    '."|".[:tostr [/ip firewall nat get $i to-ports]]."|".[:tostr [/ip firewall nat get $i disabled]]'
+    '."|".[:tostr [/ip firewall nat get $i comment]]."|".[:tostr [/ip firewall nat get $i bytes]])}; '
+    ':put "@@ipsec"; :do {:foreach i in=[/ip ipsec policy find] do={'
+    ':put ([:tostr [/ip ipsec policy get $i src-address]]."|".[:tostr [/ip ipsec policy get $i dst-address]]'
+    '."|".[:tostr [/ip ipsec policy get $i ph2-state]]."|".[:tostr [/ip ipsec policy get $i disabled]]'
+    '."|".[:tostr [/ip ipsec policy get $i active]])}} on-error={}; '
     ':put "@@interface"; :foreach i in=[/interface find] do={'
     ':put ([:tostr [/interface get $i name]]."|".[:tostr [/interface get $i running]]'
     '."|".[:tostr [/interface get $i type]]."|".[:tostr [/interface get $i disabled]])}; '
@@ -638,6 +652,40 @@ def probe_routeros(host: dict, key: str | None) -> dict:
     data["endpoints"] = sorted(
         endpoints.values(),
         key=lambda e: (e["port"] if isinstance(e["port"], int) else 0, e.get("label", "")))
+
+    # Port forwards. A rule pointing at a host that no longer runs the service
+    # is invisible until somebody tries to use it — which is months later, from
+    # outside, when it matters.
+    forwards = []
+    for cells in _routeros_rows(sections.get("nat", [])):
+        cells += [""] * (8 - len(cells))
+        chain, action, dst_port, to_addr, to_ports, disabled, comment, seen = cells[:8]
+        if action not in ("dst-nat", "netmap", "redirect"):
+            continue
+        forwards.append({
+            "chain": chain, "action": action,
+            "port": dst_port, "to": to_addr, "to_port": to_ports,
+            "disabled": disabled == "true",
+            "comment": comment,
+            "bytes": int(seen) if seen.isdigit() else 0,
+        })
+    if forwards:
+        data["forwards"] = forwards
+
+    policies = []
+    for cells in _routeros_rows(sections.get("ipsec", [])):
+        cells += [""] * (5 - len(cells))
+        src, dst, phase2, disabled, active = cells[:5]
+        # The IPv6 catch-all template ships with every RouterOS and is not a
+        # tunnel anybody configured.
+        if src.startswith("::") and dst.startswith("::"):
+            continue
+        policies.append({
+            "src": src, "dst": dst, "state": phase2,
+            "disabled": disabled == "true", "active": active == "true",
+        })
+    if policies:
+        data["ipsec"] = policies
     for cells in _routeros_rows(sections.get("package", [])):
         name, version = cells[0], (cells[1] if len(cells) > 1 else "")
         disabled = (cells[2] if len(cells) > 2 else "false") == "true"
@@ -1500,6 +1548,63 @@ def link_backups(results: list[dict]) -> None:
         host["backup_orphan"] = bool(
             has_data and not host.get("backs_up_to")
             and not host.get("receives_from") and not host.get("backup_exempt"))
+
+
+def check_forwards(results: list[dict]) -> None:
+    """Decide, for each port forward, whether anything is still behind it.
+
+    A forward is configuration with no feedback: it keeps existing long after
+    the service it points at was moved, renamed or switched off, and the first
+    person to notice is whoever needed it from outside. The fleet already knows
+    which host answers on which port, so the question can simply be asked.
+    """
+    listeners: dict[str, set] = {}
+    reachable: dict[str, bool] = {}
+    for host in results:
+        addr = host.get("addr")
+        if not addr:
+            continue
+        reachable[addr] = bool(host.get("reachable"))
+        ports = listeners.setdefault(addr, set())
+        for source in ("listens", "udps"):
+            for entry in host.get(source) or []:
+                port = entry.get("port")
+                if str(port).isdigit():
+                    ports.add(int(port))
+        for entry in host.get("endpoints") or []:
+            if str(entry.get("port")).isdigit():
+                ports.add(int(entry["port"]))
+        # A camera answers on 554 whether or not anything asked it to; the
+        # recorder-side probe records that as an open port on the host itself.
+        for port, open_ in (host.get("ports") or {}).items():
+            if open_ and str(port).isdigit():
+                ports.add(int(port))
+
+    for host in results:
+        for rule in host.get("forwards") or []:
+            target = rule.get("to")
+            port = rule.get("to_port") or rule.get("port")
+            rule["verdict"] = "unknown"
+            if rule.get("disabled"):
+                rule["verdict"] = "disabled"
+                continue
+            if not target and rule.get("action") == "redirect":
+                # A redirect with no destination sends traffic to the router
+                # itself — the NTP hijack that keeps cameras on the right clock.
+                target = host.get("addr")
+            if not target or target not in reachable:
+                # Points outside the fleet, or at something health-zoo does not
+                # poll. Silence is the honest answer, not a guess.
+                continue
+            if not reachable[target]:
+                rule["verdict"] = "host-down"
+                continue
+            if not str(port).isdigit():
+                continue
+            if int(port) in listeners.get(target, set()):
+                rule["verdict"] = "ok"
+            else:
+                rule["verdict"] = "no-listener"
 
 
 def link_cameras(results: list[dict]) -> None:

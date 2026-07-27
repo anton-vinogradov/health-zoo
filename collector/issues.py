@@ -288,6 +288,28 @@ def host_issues(host: dict, cfg: dict | None = None) -> list[dict]:
             f"{endpoint.get('label')}:{endpoint.get('port')} доступен без "
             f"ограничения по адресу — {why}")
 
+    # Forwards and tunnels: configuration that silently stops working. Nothing
+    # complains when the service behind a forward moves away, and an IPsec
+    # policy that never came up looks identical to one nobody is using today.
+    for rule in host.get("forwards") or []:
+        where = f"{rule.get('port') or '?'} → {rule.get('to')}:{rule.get('to_port') or ''}"
+        label = rule.get("comment") or where
+        if rule.get("verdict") == "no-listener":
+            add("warn", f"fwd:{rule.get('port')}",
+                f"проброс «{label}» ведёт в никуда: на {rule.get('to')} "
+                f"порт {rule.get('to_port')} никто не слушает")
+        elif rule.get("verdict") == "host-down":
+            add("warn", f"fwd:{rule.get('port')}",
+                f"проброс «{label}»: хост {rule.get('to')} не отвечает")
+
+    for policy in host.get("ipsec") or []:
+        if policy.get("disabled"):
+            continue
+        if policy.get("state") != "established":
+            add("warn", f"ipsec:{policy.get('dst')}",
+                f"IPsec {policy.get('src')} → {policy.get('dst')} не поднят"
+                + (f" ({policy['state']})" if policy.get("state") else ""))
+
     # UniFi device states: 1 is connected and managed — the normal one. 0 is
     # disconnected, 2 pending adoption, 4 upgrading, 5 provisioning. Only
     # disconnected and pending are worth reporting; the rest are transient.
@@ -339,6 +361,16 @@ def host_issues(host: dict, cfg: dict | None = None) -> list[dict]:
         else:
             detail = why
         add("warn", "reboot", f"нужна перезагрузка: {detail}" if detail else "нужна перезагрузка")
+
+    orphans = host.get("orphan_count") or 0
+    if orphans:
+        # Not a fault — rot. Libraries and old kernels that keep being scanned,
+        # backed up and offered for upgrade long after whatever needed them was
+        # removed, and on a 16 GB router-adjacent box that adds up.
+        names = ", ".join(o.get("pkg", "") for o in (host.get("orphans") or [])[:4])
+        add("warn", "orphans",
+            f"{orphans} пакетов больше не нужны никому: {names}"
+            + (" и др." if orphans > 4 else ""))
 
     security = host.get("security_count") or 0
     if security:
@@ -537,6 +569,12 @@ def checks_for(host: dict, cfg: dict | None = None) -> list[dict]:
         "Список из кэша пакетного менеджера; security-обновления считаются отдельно",
         applies=bool(host.get("pkg_manager") or host.get("update_count")),
         skipped="пакеты не отслеживаются", keys=("security",))
+    add("updates", "Ненужные пакеты",
+        "Пакеты, которые ставились как зависимости и никому больше не нужны "
+        "(apt autoremove). Их можно вычищать автоматически — переключатель в "
+        "настройках.",
+        applies=agent == "linux", skipped="только для apt", keys=("orphans",))
+
     add("updates", "Требуется перезагрузка",
         "reboot-required у Debian, непринятая прошивка RouterBOARD — с причиной",
         keys=("reboot",))
@@ -579,6 +617,21 @@ def checks_for(host: dict, cfg: dict | None = None) -> list[dict]:
         "своей природе и замечанием не считается.",
         applies=bool(host.get("endpoints")) and host.get("agent") == "routeros",
         skipped="не роутер RouterOS", keys=("open",))
+
+    add("network", "Пробросы портов",
+        "Каждое правило dst-nat сверяется с парком: слушает ли кто-нибудь "
+        "порт, на который оно ведёт, и отвечает ли вообще этот хост. Правило, "
+        "указывающее в никуда, не жалуется само — о нём узнают снаружи и не "
+        "вовремя.",
+        applies=bool(host.get("forwards")), skipped="пробросов нет",
+        keys=("fwd",))
+
+    add("network", "Туннели IPsec",
+        "Включённые политики должны быть в состоянии established; политика, "
+        "которая никогда не поднималась, выглядит так же, как та, что просто "
+        "не нужна сегодня.",
+        applies=bool(host.get("ipsec")), skipped="IPsec не настроен",
+        keys=("ipsec",))
 
     add("network", "Доступность снаружи",
         "Порт проверяется с другого хоста в интернете — то, что видит клиент",

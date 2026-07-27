@@ -55,6 +55,14 @@ if command -v apt-get >/dev/null 2>&1; then
       print "@update\t" pkg "\t" old "\t" new "\t" sec "\t" suite
     }'
 fi
+# Packages nothing depends on any more. They are not a fault, but they are
+# rot: old kernels and libraries that keep being downloaded, scanned and
+# backed up long after the thing that needed them was removed.
+if command -v apt-get >/dev/null 2>&1; then
+  LC_ALL=C apt-get -s autoremove 2>/dev/null \
+    | awk '/^Remv /{print "@orphan\t" $2}' | head -100
+fi
+
 [ -f /var/run/reboot-required ] && emit reboot_required 1
 [ -f /var/run/reboot-required.pkgs ] && \
   emit reboot_pkgs "$(tr '\n' ' ' < /var/run/reboot-required.pkgs)"

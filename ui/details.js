@@ -214,6 +214,58 @@ function showHost(host) {
         }))));
   }
 
+  /* Forwards and tunnels: the configuration that stops working without
+     saying so. The verdict column is the point of the table. */
+  if ((host.orphans || []).length) {
+    body.appendChild(section('Ненужные пакеты (' + host.orphans.length + ')',
+      h('div', { class: 'scroll-y' }, [table(['пакет'],
+        host.orphans.map(function (o) {
+          return h('tr', null, [h('td', { class: 'mono', text: o.pkg })]);
+        }))])));
+  }
+
+  if ((host.forwards || []).length) {
+    var VERDICT = {
+      'ok': ['есть кому ответить', 'ok'],
+      'no-listener': ['ведёт в никуда', 'bad'],
+      'host-down': ['хост не отвечает', 'bad'],
+      'disabled': ['выключено', ''],
+      'unknown': ['цель вне парка', '']
+    };
+    body.appendChild(section('Пробросы портов',
+      table(['правило', 'снаружи', 'куда', 'состояние', 'прошло байт'],
+        host.forwards.map(function (rule) {
+          var verdict = VERDICT[rule.verdict] || VERDICT.unknown;
+          return h('tr', null, [
+            h('td', { text: rule.comment || rule.action }),
+            h('td', { class: 'mono right', text: rule.port || '' }),
+            h('td', { class: 'mono', text: (rule.to || 'сам роутер') +
+                      (rule.to_port ? ':' + rule.to_port : '') }),
+            h('td', { class: verdict[1] === 'bad' ? 'warn' : '', text: verdict[0] }),
+            // Zero bytes on a live rule is not a fault by itself — a forward
+            // for a service used twice a year is legitimately idle — but next
+            // to "ведёт в никуда" it is the confirmation.
+            h('td', { class: 'mono right', text: bytes(rule.bytes || 0) })
+          ]);
+        }))));
+  }
+
+  if ((host.ipsec || []).length) {
+    body.appendChild(section('Туннели IPsec',
+      table(['откуда', 'куда', 'состояние'],
+        host.ipsec.map(function (policy) {
+          var up = policy.state === 'established';
+          return h('tr', null, [
+            h('td', null, [h('span', { class: 'dot ' + (policy.disabled ? '' : up ? 'ok' : 'bad') }),
+                           h('span', { class: 'mono', text: policy.src })]),
+            h('td', { class: 'mono', text: policy.dst }),
+            h('td', { class: !policy.disabled && !up ? 'warn' : '',
+                      text: policy.disabled ? 'выключен'
+                            : (policy.state || 'не поднят') })
+          ]);
+        }))));
+  }
+
   if ((host.smarts || []).length) {
     body.appendChild(section('Здоровье дисков', table(
       ['', 'устройство', 'модель', 'темп.', 'наработка', 'износ', 'realloc/pending'],
