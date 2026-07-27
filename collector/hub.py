@@ -84,6 +84,7 @@ class Fleet:
                                       self.hosts(), self.cfg.get("ssh_key"), hosts)
             issues.annotate(hosts, self.cfg)
             snap = {
+                "unmanaged": probe.find_unmanaged(hosts, self.hosts()),
                 "generated": int(time.time()),
                 "duration_ms": int((time.time() - started) * 1000),
                 "subnets": self.cfg.get("subnets", []),
@@ -378,6 +379,52 @@ class Jobs:
             self.jobs[job_id]["finished"] = int(time.time())
             self.jobs[job_id]["current"] = ""
 
+    def start_service_action(self, host: dict, unit: str, action: str,
+                             fleet: Fleet) -> tuple[str | None, str]:
+        """Restart or stop a unit. Restart is the common case — a crashed
+        service usually needs starting again, not removing."""
+        with self.lock:
+            if self.active and self.jobs[self.active]["state"] == "running":
+                return None, "another job is already running"
+            job_id = self._new_id()
+            self.jobs[job_id] = {
+                "id": job_id, "kind": action, "state": "running",
+                "started": int(time.time()), "targets": [host["id"]],
+                "current": host["id"], "log": [], "results": {},
+            }
+            self.active = job_id
+        thread = threading.Thread(target=self._run_service_action,
+                                  args=(job_id, host, unit, action, fleet), daemon=True)
+        thread.start()
+        return job_id, ""
+
+    def _run_service_action(self, job_id: str, host: dict, unit: str,
+                            action: str, fleet: Fleet) -> None:
+        quoted = shlex.quote(unit)
+        verb = {"restart": "перезапуск", "stop": "остановка", "start": "запуск"}[action]
+        self._log(job_id, f"=== {verb} {unit} на {host['name']} ===")
+
+        if host.get("agent") == "openwrt":
+            remote = f"/etc/init.d/{quoted} {action}"
+        elif host.get("agent") == "synology":
+            # DSM wraps services in packages; synopkg is the supported way in.
+            remote = f"synopkg {action} {quoted} 2>&1 || sudo -n synopkg {action} {quoted}"
+        else:
+            remote = f"sudo -n systemctl {action} {quoted} && systemctl is-active {quoted}"
+            if host.get("user") == "root":
+                remote = remote.replace("sudo -n ", "")
+
+        code = self._exec(job_id, host, self.cfg.get("ssh_key"), remote)
+        try:
+            fleet.refresh_hosts([host["id"]])
+        except Exception as exc:
+            self._log(job_id, f"(переопрос не удался: {exc})")
+        with self.lock:
+            self.jobs[job_id]["results"][host["id"]] = "ok" if code == 0 else f"failed ({code})"
+            self.jobs[job_id]["state"] = "done"
+            self.jobs[job_id]["finished"] = int(time.time())
+            self.jobs[job_id]["current"] = ""
+
     def start_removal(self, host: dict, unit: str, fleet: Fleet) -> tuple[str | None, str]:
         with self.lock:
             if self.active and self.jobs[self.active]["state"] == "running":
@@ -640,6 +687,36 @@ class Handler(BaseHTTPRequestHandler):
                 self._json({"error": "unknown host"}, 404)
                 return
             job_id, err = self.jobs.start_reboot(host, self.fleet)
+            if not job_id:
+                self._json({"error": err}, 409)
+                return
+            self._json({"ok": True, "job": job_id})
+            return
+
+        if path == "/api/service/action":
+            length = int(self.headers.get("Content-Length") or 0)
+            try:
+                req = json.loads(self.rfile.read(length).decode("utf-8") or "{}")
+            except json.JSONDecodeError:
+                self._json({"error": "bad json"}, 400)
+                return
+            host = next((h for h in self.fleet.hosts() if h.get("id") == req.get("host")), None)
+            unit = (req.get("unit") or "").strip()
+            action = req.get("action")
+            if not host:
+                self._json({"error": "unknown host"}, 404)
+                return
+            if action not in ("restart", "stop", "start"):
+                self._json({"error": "action must be restart/stop/start"}, 400)
+                return
+            if not unit or not re.fullmatch(r"[A-Za-z0-9@:._-]+", unit):
+                self._json({"error": "bad unit name"}, 400)
+                return
+            # Stopping sshd is as effective a way to lose a host as removing it.
+            if action != "restart" and Jobs.protected(unit):
+                self._json({"error": f"{unit} защищён от остановки"}, 403)
+                return
+            job_id, err = self.jobs.start_service_action(host, unit, action, self.fleet)
             if not job_id:
                 self._json({"error": err}, 409)
                 return

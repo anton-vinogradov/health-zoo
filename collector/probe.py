@@ -400,6 +400,14 @@ ROUTEROS_CMD = (
     # RouterOS 7 renamed the wireless stack: /interface wifi, not
     # /interface wireless. A router here is also the site's access point, so
     # its radios and client count matter as much as its uplink.
+    # DHCP leases are the network's own inventory: addresses, names and MACs,
+    # already collected by the router. More accurate than a ping sweep and
+    # free — it is one more line in a command we already run.
+    ':put "@@lease"; :do {:foreach l in=[/ip dhcp-server lease find] do={'
+    ':put ([:tostr [/ip dhcp-server lease get $l address]]."|"'
+    '.[:tostr [/ip dhcp-server lease get $l host-name]]."|"'
+    '.[:tostr [/ip dhcp-server lease get $l mac-address]]."|"'
+    '.[:tostr [/ip dhcp-server lease get $l status]])}} on-error={}; '
     ':put "@@wifi"; :do {:foreach i in=[/interface wifi find] do={'
     ':put ([:tostr [/interface wifi get $i name]]."|"'
     '.[:tostr [/interface wifi get $i configuration.ssid]]."|"'
@@ -603,6 +611,19 @@ def probe_routeros(host: dict, key: str | None) -> dict:
         })
     if ifaces:
         data["ifaces"] = ifaces
+
+    leases = []
+    for cells in _routeros_rows(sections.get("lease", [])):
+        if not cells[0]:
+            continue
+        leases.append({
+            "addr": cells[0],
+            "name": cells[1] if len(cells) > 1 else "",
+            "mac": cells[2] if len(cells) > 2 else "",
+            "state": cells[3] if len(cells) > 3 else "",
+        })
+    if leases:
+        data["leases"] = leases
 
     radios = []
     for cells in _routeros_rows(sections.get("wifi", [])):
@@ -1024,6 +1045,51 @@ def run_external_checks(checks: list[dict], hosts: list[dict], key: str | None,
         found = per_target.get(host.get("id"))
         if found:
             host["external"] = found
+
+
+# Vendor prefixes worth naming: seeing "Ubiquiti" next to an unknown address
+# answers "what is that" far faster than the MAC does.
+MAC_VENDORS = {
+    "90:09:d0": "Synology", "74:83:c2": "Ubiquiti", "24:0f:9b": "Hikvision",
+    "d4:e8:53": "Hikvision", "44:1b:f6": "Espressif", "48:ca:43": "Espressif",
+    "e8:f6:0a": "Espressif", "dc:a6:32": "Raspberry Pi", "b8:27:eb": "Raspberry Pi",
+    "34:7e:5c": "Sonos", "c4:ad:34": "MikroTik", "68:1d:ef": "Intel NUC",
+    "b8:87:6e": "Yandex", "ac:c5:1b": "Pantum",
+}
+
+
+def find_unmanaged(results: list[dict], hosts: list[dict]) -> list[dict]:
+    """Devices the network knows about but the config does not.
+
+    The routers already hold a DHCP lease table; comparing it against the
+    configured hosts turns "what else is on my network" into a list — new
+    hardware to add, and anything that should not be there at all.
+    """
+    known = set()
+    for host in hosts:
+        known.add(host.get("addr"))
+        for alias in host.get("aliases", []) or []:
+            known.add(alias)
+    for host in results:
+        known.add(host.get("addr"))
+
+    seen: dict[str, dict] = {}
+    for host in results:
+        for lease in host.get("leases", []):
+            addr = lease.get("addr")
+            if not addr or addr in known or addr in seen:
+                continue
+            mac = (lease.get("mac") or "").lower()
+            seen[addr] = {
+                "addr": addr,
+                "name": lease.get("name") or "",
+                "mac": mac,
+                "vendor": MAC_VENDORS.get(mac[:8], ""),
+                "via": host.get("name", ""),
+            }
+    return sorted(seen.values(), key=lambda d: [int(p) for p in d["addr"].split(".")]
+                  if d["addr"].count(".") == 3 and all(p.isdigit() for p in d["addr"].split("."))
+                  else [0, 0, 0, 0])
 
 
 def link_backups(results: list[dict]) -> None:

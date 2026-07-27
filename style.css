@@ -448,3 +448,10 @@ table.list td.right { text-align: right; }
 .card-head .card-addr { margin-left: auto; }
 .card-head .head-action { margin-left: 0; }
 table.list td.warn { color: var(--warn); }
+table.list td.nowrap { white-space: nowrap; }
+table.list td.nowrap .btn + .btn { margin-left: 4px; }
+
+/* Discovered-but-unconfigured devices: present, but not something the
+   dashboard claims to watch. */
+.card.unmanaged { cursor: default; opacity: .68; }
+.card.unmanaged:hover { transform: none; border-color: var(--line); }

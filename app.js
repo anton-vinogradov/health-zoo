@@ -445,6 +445,46 @@ function renderAlert(hosts) {
   box.classList.remove('hidden');
 }
 
+function renderUnmanaged(root, devices) {
+  /* Everything the routers' DHCP tables know about that the config does not.
+     Two uses: hardware worth adding to the dashboard, and anything on the
+     network that has no business being there. */
+  if (!devices.length) return;
+
+  var open = localStorage.getItem('hz-unmanaged-open') === '1';
+  var list = h('div', { class: 'cards' }, devices.map(function (d) {
+    return h('div', { class: 'card state-off unmanaged' }, [
+      h('div', { class: 'card-head' }, [
+        h('span', { class: 'card-role', text: '❔' }),
+        h('span', { class: 'card-name', text: d.name || d.vendor || 'без имени' }),
+        h('span', { class: 'card-addr', text: d.addr })
+      ]),
+      h('div', { class: 'card-os', text: (d.vendor ? d.vendor + ' · ' : '') + (d.mac || '') })
+    ]);
+  }));
+  list.style.display = open ? '' : 'none';
+
+  var toggle = h('button', {
+    class: 'btn btn-sm',
+    text: (open ? 'скрыть' : 'показать') + ' (' + devices.length + ')',
+    onclick: function () {
+      open = !open;
+      list.style.display = open ? '' : 'none';
+      toggle.textContent = (open ? 'скрыть' : 'показать') + ' (' + devices.length + ')';
+      localStorage.setItem('hz-unmanaged-open', open ? '1' : '0');
+    }
+  });
+
+  root.appendChild(h('section', { class: 'subnet' }, [
+    h('div', { class: 'subnet-head' }, [
+      h('h2', { text: 'Обнаружено в сети' }),
+      h('span', { class: 'subnet-cidr', text: 'нет в конфиге, взято из DHCP роутеров' }),
+      h('span', { class: 'subnet-count' }, [toggle])
+    ]),
+    list
+  ]));
+}
+
 function render() {
   if (!state) return;
   var root = document.getElementById('fleet');
@@ -462,6 +502,8 @@ function render() {
   buildTree(state.subnets || [], state.hosts || []).forEach(function (node) {
     root.appendChild(subnetSection(node, 0));
   });
+
+  renderUnmanaged(root, state.unmanaged || []);
 
   renderAlert(state.hosts || []);
 
@@ -616,7 +658,13 @@ function showHost(host) {
             h('td', { text: s.name.replace(/\.service$/, ''), title: s.desc || '' }),
             h('td', { class: 'mono', text: s.state }),
             h('td', { class: 'mono', text: s.version || '' }),
-            h('td', { class: 'right' }, [
+            h('td', { class: 'right nowrap' }, [
+              // Restart first: a crashed service usually needs starting again,
+              // not removing. Removal stays available but is not the default.
+              removable ? h('button', {
+                class: 'btn btn-sm', text: '↻', title: 'перезапустить сервис',
+                onclick: function (e) { e.stopPropagation(); serviceAction(host, s, 'restart'); }
+              }) : null,
               removable && !isProtected(s.name) ? h('button', {
                 class: 'btn btn-sm btn-danger', text: '✕', title: 'удалить сервис с хоста',
                 onclick: function (e) { e.stopPropagation(); removeService(host, s); }
@@ -883,6 +931,22 @@ function rebootHost(host) {
   fetch('/api/reboot', {
     method: 'POST', headers: actionHeaders(),
     body: JSON.stringify({ host: host.id })
+  }).then(function (r) { return r.json(); }).then(function (res) {
+    if (res.error) { if (!actionFailed(res)) alert('Не вышло: ' + res.error); return; }
+    document.getElementById('modal').classList.add('hidden');
+    openJobLog();
+  }).catch(function (e) { alert('Ошибка запроса: ' + e); });
+}
+
+/* ---------- service actions ---------- */
+
+function serviceAction(host, svc, action) {
+  var name = svc.name.replace(/\.service$/, '');
+  if (!confirm('Перезапустить «' + name + '» на ' + host.name + '?')) return;
+
+  fetch('/api/service/action', {
+    method: 'POST', headers: actionHeaders(),
+    body: JSON.stringify({ host: host.id, unit: svc.name, action: action })
   }).then(function (r) { return r.json(); }).then(function (res) {
     if (res.error) { if (!actionFailed(res)) alert('Не вышло: ' + res.error); return; }
     document.getElementById('modal').classList.add('hidden');
