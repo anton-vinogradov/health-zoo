@@ -98,6 +98,8 @@ Marked: **✓** done, **▶** in progress, **○** deliberately not done.
 | ✓ | Backups: freshness, share coverage, hosts with no backup at all |
 | ✓ | Cameras: stream state, silent detection, archive depth |
 | ✓ | Wi-Fi: radios on air, airtime (own and foreign), channel choice, per-SSID quality |
+| ✓ | Wireless clients (speakers): a channel the access points are saturating |
+| ✓ | Device firmware: UniFi through the controller, Sonos through its own update service |
 | ✓ | TLS certificate expiry |
 | ✓ | Reachability from outside (measured from an external host) |
 | ✓ | Port forwards that lead nowhere; IPsec policies that never came up |

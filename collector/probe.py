@@ -895,43 +895,126 @@ def probe_sonos(host: dict) -> dict:
         data["zone"] = tag("ZoneName", status) or data["hostname"]
         data["hardware"] = tag("HardwareVersion", status)
 
-    # Playback state is informational: a stopped speaker is not a fault.
-    envelope = (
-        '<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/">'
-        '<s:Body><u:GetTransportInfo '
-        'xmlns:u="urn:schemas-upnp-org:service:AVTransport:1">'
-        "<InstanceID>0</InstanceID></u:GetTransportInfo></s:Body></s:Envelope>"
-    )
-    url = f"http://{host['addr']}:1400/MediaRenderer/AVTransport/Control"
-    action = '"urn:schemas-upnp-org:service:AVTransport:1#GetTransportInfo"'
-    body = ""
-    try:
-        if via:
-            cmd = list(SSH_BASE)
-            if via.get("key"):
-                cmd += ["-i", os.path.expanduser(via["key"])]
-            target = via["addr"]
-            if via.get("user"):
-                target = f"{via['user']}@{target}"
-            cmd += [target, "curl -s -m 6 -X POST "
-                    f"-H {shlex.quote('SOAPAction: ' + action)} "
-                    "-H 'Content-Type: text/xml; charset=utf-8' "
-                    f"--data {shlex.quote(envelope)} {shlex.quote(url)}"]
-            result = subprocess.run(cmd, capture_output=True, timeout=20, text=True)
-            body = result.stdout
-        else:
+    def soap(path: str, service: str, action: str, args: str = "") -> str:
+        """One UPnP call. The speakers answer plain SOAP over HTTP on 1400."""
+        envelope = (
+            '<?xml version="1.0"?>'
+            '<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/" '
+            's:encodingStyle="http://schemas.xmlsoap.org/soap/encoding/">'
+            f'<s:Body><u:{action} '
+            f'xmlns:u="urn:schemas-upnp-org:service:{service}:1">'
+            f"{args}</u:{action}></s:Body></s:Envelope>"
+        )
+        url = f"http://{host['addr']}:1400{path}"
+        action_header = f'"urn:schemas-upnp-org:service:{service}:1#{action}"'
+        try:
+            if via:
+                cmd = list(SSH_BASE)
+                if via.get("key"):
+                    cmd += ["-i", os.path.expanduser(via["key"])]
+                target = via["addr"]
+                if via.get("user"):
+                    target = f"{via['user']}@{target}"
+                cmd += [target, "curl -s -m 6 -X POST "
+                        f"-H {shlex.quote('SOAPAction: ' + action_header)} "
+                        "-H 'Content-Type: text/xml; charset=utf-8' "
+                        f"--data {shlex.quote(envelope)} {shlex.quote(url)}"]
+                result = subprocess.run(cmd, capture_output=True, timeout=20, text=True)
+                return result.stdout
             request = urllib.request.Request(
                 url, data=envelope.encode(),
-                headers={"SOAPAction": action,
+                headers={"SOAPAction": action_header,
                          "Content-Type": "text/xml; charset=utf-8"})
             with urllib.request.urlopen(request, timeout=6) as resp:
-                body = resp.read().decode("utf-8", "replace")
-    except Exception:
-        body = ""
+                return resp.read().decode("utf-8", "replace")
+        except Exception:
+            return ""
+
+    # Playback state is informational: a stopped speaker is not a fault.
+    body = soap("/MediaRenderer/AVTransport/Control", "AVTransport",
+                "GetTransportInfo", "<InstanceID>0</InstanceID>")
 
     state = re.search(r"<CurrentTransportState>([^<]*)</CurrentTransportState>", body)
     if state:
         data["playback"] = state.group(1)
+
+    # Volume is the difference between "silent because nobody asked for music"
+    # and "silent because someone muted it and forgot".
+    volume = soap("/MediaRenderer/RenderingControl/Control", "RenderingControl",
+                  "GetVolume", "<InstanceID>0</InstanceID><Channel>Master</Channel>")
+    match = re.search(r"<CurrentVolume>(\d+)</CurrentVolume>", volume)
+    if match:
+        data["volume"] = int(match.group(1))
+    muted = soap("/MediaRenderer/RenderingControl/Control", "RenderingControl",
+                 "GetMute", "<InstanceID>0</InstanceID><Channel>Master</Channel>")
+    if "<CurrentMute>1</CurrentMute>" in muted:
+        data["muted"] = True
+
+    if data.get("playback") == "PLAYING":
+        position = soap("/MediaRenderer/AVTransport/Control", "AVTransport",
+                        "GetPositionInfo", "<InstanceID>0</InstanceID>")
+        meta = html.unescape(position)
+        title = re.search(r"<dc:title>([^<]*)</dc:title>", meta)
+        artist = re.search(r"<dc:creator>([^<]*)</dc:creator>", meta)
+        if title:
+            data["track"] = " — ".join(
+                x.group(1) for x in (artist, title) if x and x.group(1))
+
+    # How the speaker is attached to the network, and to which group. Sonos
+    # publishes this for the whole household, so one call describes every
+    # speaker — but each answers for itself, so read only its own entry.
+    topology = html.unescape(soap("/ZoneGroupTopology/Control", "ZoneGroupTopology",
+                                  "GetZoneGroupState"))
+    mine = ""
+    for member in re.findall(r"<ZoneGroupMember [^>]*>", topology):
+        if f'Location="http://{host["addr"]}:1400/' in member:
+            mine = member
+            break
+    if mine:
+        def attr(name: str) -> str:
+            found = re.search(rf'{name}="([^"]*)"', mine)
+            return found.group(1) if found else ""
+
+        wired = attr("EthLink") == "1"
+        data["link"] = "ethernet" if wired else "wifi"
+        freq = attr("ChannelFreq")
+        if freq.isdigit() and not wired:
+            number = int(freq)
+            # 2.4 GHz starts at 2412 (channel 1), 5 GHz counts from 5000.
+            data["wifi_freq"] = number
+            data["wifi_channel"] = ((number - 2407) // 5 if number < 3000
+                                    else (number - 5000) // 5)
+            data["wifi_band"] = "2.4" if number < 3000 else "5"
+        if attr("BehindWifiExtender") == "1":
+            data["behind_extender"] = True
+
+        # Who plays together with whom: a speaker alone in its group is normal,
+        # but "Кухня" silently ending up grouped with another room is the kind
+        # of thing that explains a complaint.
+        group = re.search(r'<ZoneGroup [^>]*Coordinator="([^"]*)"[^>]*>(.*?)</ZoneGroup>',
+                          topology, re.S)
+        for candidate in re.finditer(r'<ZoneGroup [^>]*>(?:(?!</ZoneGroup>).)*</ZoneGroup>',
+                                     topology, re.S):
+            block = candidate.group(0)
+            if f'Location="http://{host["addr"]}:1400/' not in block:
+                continue
+            names = re.findall(r'ZoneName="([^"]*)"', block)
+            if len(names) > 1:
+                data["group"] = names
+            break
+
+    # The speaker knows which version it would install; comparing that with the
+    # one it runs is the same "updates pending" question as everywhere else.
+    update = html.unescape(soap("/ZoneGroupTopology/Control", "ZoneGroupTopology",
+                                "CheckForUpdate",
+                                "<UpdateType>Software</UpdateType>"
+                                "<CachedOnly>1</CachedOnly><Version></Version>"))
+    offered = re.search(r'<UpdateItem[^>]*Version="([^"]*)"', update)
+    running = data.get("os_name", "").replace("Sonos ", "").strip()
+    if offered and running and offered.group(1) != running:
+        data["updates"] = [{"pkg": "Sonos", "old": running,
+                            "new": offered.group(1), "security": "0", "suite": ""}]
+        data["update_count"] = 1
 
     return data
 
@@ -1550,6 +1633,29 @@ def analyse_wifi(results: list[dict]) -> None:
             radio["overlaps_with"] = sorted(set(clashes))
         if channel not in NON_OVERLAPPING_24:
             radio["off_grid"] = True
+
+    # Wireless clients that matter on their own: a speaker sitting on a channel
+    # the access points are already fighting over explains stuttering audio,
+    # and nothing else in the fleet would connect those two facts.
+    for host in results:
+        channel = host.get("wifi_channel")
+        if host.get("link") != "wifi" or not isinstance(channel, int):
+            continue
+        if host.get("wifi_band") != "2.4":
+            continue
+        crowding = []
+        for other_host, radio in radios_24:
+            if abs(radio["channel"] - channel) >= 5:
+                continue
+            airtime = radio.get("utilization")
+            if isinstance(airtime, (int, float)) and airtime >= 40:
+                crowding.append({
+                    "ap": other_host.get("name", other_host.get("id", "")),
+                    "channel": radio["channel"],
+                    "airtime": airtime,
+                })
+        if crowding:
+            host["wifi_crowded_by"] = crowding
 
 
 def find_unmanaged(results: list[dict], hosts: list[dict]) -> list[dict]:

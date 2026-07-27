@@ -580,3 +580,28 @@ def test_vhost_names_replace_by_address_links():
     # instead of offering http://<ip>:8080 that answers only on the host.
     assert links["java"]["local"] is True
     assert links["java"]["served_by"] == "app.example.dev"
+
+
+def test_speaker_on_a_channel_the_access_points_are_saturating():
+    """The speaker reports nothing wrong — it just sounds bad."""
+    speaker = {"id": "sonos", "agent": "sonos", "reachable": True,
+               "link": "wifi", "wifi_band": "2.4", "wifi_channel": 7}
+    ap = {"id": "ap", "name": "Прихожая", "reachable": True,
+          "radios": [{"band": "2.4", "channel": 8, "utilization": 52}]}
+
+    probe.analyse_wifi([speaker, ap])
+    assert speaker["wifi_crowded_by"][0]["ap"] == "Прихожая"
+
+    found = {i["key"]: i for i in issues.host_issues(speaker)}
+    assert "wifi_crowded" in found
+    assert "52%" in found["wifi_crowded"]["text"]
+
+
+def test_a_wired_speaker_is_not_blamed_for_the_air():
+    speaker = {"id": "sonos", "agent": "sonos", "reachable": True,
+               "link": "ethernet"}
+    ap = {"id": "ap", "name": "Прихожая", "reachable": True,
+          "radios": [{"band": "2.4", "channel": 8, "utilization": 80}]}
+
+    probe.analyse_wifi([speaker, ap])
+    assert "wifi_crowded_by" not in speaker

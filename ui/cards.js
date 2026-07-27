@@ -162,6 +162,21 @@ function hostCard(host) {
       (host.radios || host.radioiws || []).length) {
     chips.push(chip('📶 клиентов: ' + host.wifi_clients, ''));
   }
+  if (host.link) {
+    chips.push(chipFor(host, 'wifi_crowded',
+      host.link === 'ethernet' ? '🔌 кабель'
+        : '📶 Wi-Fi ' + (host.wifi_band ? host.wifi_band + ' ГГц' : '') +
+          (host.wifi_channel ? ', канал ' + host.wifi_channel : ''),
+      host.wifi_crowded_by ? 'warn' : ''));
+  }
+  if (host.volume !== undefined) {
+    chips.push(chip((host.muted ? '🔇 ' : '🔊 ') + host.volume + '%' +
+                    (host.muted ? ' (заглушено)' : ''), host.muted ? 'warn' : ''));
+  }
+  if (host.group) {
+    chips.push(chip('⛓ группа: ' + host.group.join(' + '), ''));
+  }
+  if (host.track) chips.push(chip('♪ ' + host.track, ''));
   if (host.playback) {
     // "тишина" was a riddle: it read as a fault rather than as "the speaker is
     // idle, which is what a speaker is most of the time".

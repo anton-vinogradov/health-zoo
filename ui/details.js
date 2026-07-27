@@ -91,6 +91,22 @@ function showHost(host) {
     fact('в контроллере', host.unifi_state === 2 ? 'управляется' : 'не управляется (' + host.unifi_state + ')');
   }
   fact('зона', host.zone);
+  if (host.link) {
+    fact('подключение', host.link === 'ethernet' ? 'кабелем'
+         : 'по Wi-Fi' + (host.wifi_band ? ', ' + host.wifi_band + ' ГГц' : '') +
+           (host.wifi_channel ? ', канал ' + host.wifi_channel : '') +
+           (host.wifi_freq ? ' (' + host.wifi_freq + ' МГц)' : ''));
+  }
+  (host.wifi_crowded_by || []).forEach(function (c) {
+    fact('канал занят', c.ap + ' вещает на канале ' + c.channel + ' и занимает ' +
+                        c.airtime + '% эфира — это тот же участок диапазона');
+  });
+  if (host.volume !== undefined) {
+    fact('громкость', host.volume + '%' + (host.muted ? ' — звук заглушен' : ''));
+  }
+  if (host.group) fact('группа', host.group.join(' + '));
+  if (host.track) fact('сейчас играет', host.track);
+  if (host.behind_extender) fact('через репитер', 'колонка подключена не напрямую к точке');
   fact('воспроизведение', host.playback === 'PLAYING' ? 'играет'
        : host.playback === 'STOPPED' ? 'ничего не играет — колонка на связи и свободна'
        : host.playback === 'PAUSED_PLAYBACK' ? 'на паузе'

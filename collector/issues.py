@@ -310,6 +310,16 @@ def host_issues(host: dict, cfg: dict | None = None) -> list[dict]:
                 f"IPsec {policy.get('src')} → {policy.get('dst')} не поднят"
                 + (f" ({policy['state']})" if policy.get("state") else ""))
 
+    # A wireless client on a channel the access points are already saturating.
+    # The speaker itself reports nothing wrong — it just sounds bad.
+    crowded = host.get("wifi_crowded_by") or []
+    if crowded:
+        worst = max(crowded, key=lambda c: c.get("airtime") or 0)
+        add("warn", "wifi_crowded",
+            f"на Wi-Fi канале {host.get('wifi_channel')} (2.4 ГГц) тесно: "
+            f"{worst['ap']} на канале {worst['channel']} занимает "
+            f"{worst['airtime']}% эфира")
+
     # UniFi device states: 1 is connected and managed — the normal one. 0 is
     # disconnected, 2 pending adoption, 4 upgrading, 5 provisioning. Only
     # disconnected and pending are worth reporting; the rest are transient.
@@ -632,6 +642,19 @@ def checks_for(host: dict, cfg: dict | None = None) -> list[dict]:
         "не нужна сегодня.",
         applies=bool(host.get("ipsec")), skipped="IPsec не настроен",
         keys=("ipsec",))
+
+    add("network", "Канал беспроводного клиента",
+        "Для устройств, подключённых по Wi-Fi: не стоит ли клиент на канале, "
+        "который точки доступа уже загрузили. Само устройство об этом не "
+        "сообщает — оно просто хуже работает.",
+        applies=host.get("link") == "wifi",
+        skipped="подключено кабелем или не по Wi-Fi", keys=("wifi_crowded",))
+
+    add("updates", "Прошивка устройства",
+        "Точка доступа спрашивает контроллер, колонка — сервис обновлений "
+        "Sonos; обе сравнивают предложенную версию с текущей.",
+        applies=agent in ("unifi", "sonos"),
+        skipped="не устройство с собственной прошивкой", keys=("updates",))
 
     add("network", "Доступность снаружи",
         "Порт проверяется с другого хоста в интернете — то, что видит клиент",
