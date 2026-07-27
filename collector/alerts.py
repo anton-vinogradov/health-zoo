@@ -51,6 +51,7 @@ class Alerts:
         self.active: dict[str, dict] = {}
         self.pending: dict[str, int] = {}   # candidate problems and their streak
         self.clearing: dict[str, int] = {}  # problems that look resolved
+        self.muted: dict[str, float] = {}   # host -> ignore alerts until
         self.seeded = False
         self._load_state()
 
@@ -94,10 +95,22 @@ class Alerts:
             return f"{link['scheme']}://{host['addr']}" + ("" if std else f":{port}")
         return ""
 
+    def mute(self, host_id: str, seconds: int) -> None:
+        """Ignore a host for a while — used around a deliberate reboot, which
+        would otherwise be reported as the host going down."""
+        with self.lock:
+            self.muted[host_id] = time.time() + seconds
+
     def _current(self, hosts: list[dict]) -> dict[str, dict]:
         wanted = ("bad",) if self.min_level == "bad" else ("bad", "warn")
+        now = time.time()
+        with self.lock:
+            muted = {h for h, until in self.muted.items() if until > now}
+            self.muted = {h: u for h, u in self.muted.items() if u > now}
         out: dict[str, dict] = {}
         for host in hosts:
+            if host["id"] in muted:
+                continue
             for issue in host.get("issues", []):
                 if issue["level"] not in wanted:
                     continue

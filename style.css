@@ -198,7 +198,7 @@ html, body {
 .card.state-bad { border-left-color: var(--bad); }
 .card.state-off { border-left-color: var(--text-faint); opacity: .72; }
 
-.card-head { display: flex; align-items: center; gap: 7px; margin-bottom: 2px; }
+.card-head { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-bottom: 2px; }
 .card-role { font-size: 14px; line-height: 1; }
 .card-name { font-weight: 600; font-size: 14px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .card-addr { margin-left: auto; font-family: var(--mono); font-size: 11px; color: var(--text-faint); }

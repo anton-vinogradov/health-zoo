@@ -260,6 +260,13 @@ function hostCard(host) {
       onclick: function (e) { e.stopPropagation(); startUpdate([host.id]); }
     }));
   }
+  if (host.agent === 'linux' && host.reachable) {
+    footer.push(h('button', {
+      class: 'btn btn-sm ' + (host.reboot_required ? 'btn-warn' : ''),
+      text: 'ребут', title: 'перезагрузить ' + host.name,
+      onclick: function (e) { e.stopPropagation(); rebootHost(host); }
+    }));
+  }
 
   return h('div', {
     class: 'card state-' + level,
@@ -270,14 +277,18 @@ function hostCard(host) {
       h('span', { class: 'card-name', text: host.name }),
       // Pending work belongs next to the host's identity, not mixed in with
       // the chips describing what it runs.
+      // Spelled out: a lone glyph reads as decoration, not as "this box is
+      // waiting for you to do something".
       host.update_count ? h('span', {
         class: 'head-badge ' + (host.security_count ? 'warn' : 'info'),
-        title: host.update_count + ' обновлений' +
+        title: host.update_count + ' доступных обновлений' +
           (host.security_count ? ', из них ' + host.security_count + ' security' : ''),
-        text: '↑' + host.update_count + (host.security_count ? '⚠' : '')
+        text: host.update_count + ' обновл.' + (host.security_count ? ' ⚠' : '')
       }) : null,
       host.reboot_required ? h('span', {
-        class: 'head-badge warn', title: 'нужна перезагрузка', text: '⟳'
+        class: 'head-badge warn',
+        title: 'после обновлений нужна перезагрузка',
+        text: 'нужен ребут'
       }) : null,
       h('span', { class: 'card-addr', text: host.addr })
     ]),
@@ -503,6 +514,19 @@ function showHost(host) {
   }
   if (host.note) fact('заметка', host.note);
   body.appendChild(section('Общее', h('dl', { class: 'kv' }, facts)));
+
+  if (host.agent === 'linux' && host.reachable) {
+    body.appendChild(section('Действия', h('div', { class: 'card-foot' }, [
+      host.updatable ? h('button', {
+        class: 'btn btn-sm btn-warn', text: 'обновить пакеты',
+        onclick: function () { startUpdate([host.id]); }
+      }) : null,
+      h('button', {
+        class: 'btn btn-sm', text: 'перезагрузить хост',
+        onclick: function () { rebootHost(host); }
+      })
+    ])));
+  }
 
   var issues = hostIssues(host).filter(function (i) { return i.level !== 'ok'; });
   if (issues.length) {
@@ -808,6 +832,28 @@ function showSites() {
       table(['хост', 'адрес', 'что это'], rows)));
   }
   document.getElementById('modal').classList.remove('hidden');
+}
+
+/* ---------- reboot ---------- */
+
+function rebootHost(host) {
+  var self = host.local ? '\n\nЭТО ХОСТ САМОГО ДАШБОРДА — страница станет недоступна ' +
+                          'до его возвращения.' : '';
+  var typed = prompt(
+    'Перезагрузить ' + host.name + ' (' + host.addr + ')?' + self +
+    '\n\nАлерты по хосту будут молчать, пока он поднимается.' +
+    '\n\nДля подтверждения введите имя хоста:');
+  if (typed === null) return;
+  if (typed.trim() !== host.name) { alert('Имя не совпало — перезагрузка отменена.'); return; }
+
+  fetch('/api/reboot', {
+    method: 'POST', headers: actionHeaders(),
+    body: JSON.stringify({ host: host.id })
+  }).then(function (r) { return r.json(); }).then(function (res) {
+    if (res.error) { if (!actionFailed(res)) alert('Не вышло: ' + res.error); return; }
+    document.getElementById('modal').classList.add('hidden');
+    openJobLog();
+  }).catch(function (e) { alert('Ошибка запроса: ' + e); });
 }
 
 /* ---------- service removal ---------- */

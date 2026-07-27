@@ -264,6 +264,45 @@ class Jobs:
         base = re.sub(r"\.(service|timer|socket)$", "", unit)
         return base in cls.PROTECTED or base.startswith("systemd-")
 
+    def start_reboot(self, host: dict, fleet: Fleet) -> tuple[str | None, str]:
+        with self.lock:
+            if self.active and self.jobs[self.active]["state"] == "running":
+                return None, "another job is already running"
+            job_id = self._new_id()
+            self.jobs[job_id] = {
+                "id": job_id, "kind": "reboot", "state": "running",
+                "started": int(time.time()), "targets": [host["id"]],
+                "current": host["id"], "log": [], "results": {},
+            }
+            self.active = job_id
+        thread = threading.Thread(target=self._run_reboot, args=(job_id, host, fleet),
+                                  daemon=True)
+        thread.start()
+        return job_id, ""
+
+    def _run_reboot(self, job_id: str, host: dict, fleet: Fleet) -> None:
+        # A planned reboot is not an outage: silence this host while it comes
+        # back, or the dashboard pages about a problem we caused on purpose.
+        grace = int(self.cfg.get("reboot_grace_seconds", 900))
+        fleet.alerts.mute(host["id"], grace)
+
+        self._log(job_id, f"=== перезагрузка {host['name']} ({host['addr']}) ===")
+        self._log(job_id, f"алерты по этому хосту молчат {grace // 60} мин")
+
+        # Detached and delayed: the ssh session dies with the reboot, and
+        # without the delay the command would be killed before it takes.
+        remote = "sudo -n shutdown -r +0 'health-zoo: reboot requested' >/dev/null 2>&1 & exit 0"
+        if host.get("user") == "root":
+            remote = remote.replace("sudo -n ", "")
+        code = self._exec(job_id, host, self.cfg.get("ssh_key"), remote)
+
+        self._log(job_id, "команда отправлена, хост уходит в перезагрузку")
+        with self.lock:
+            self.jobs[job_id]["results"][host["id"]] = "ok" if code == 0 else f"failed ({code})"
+            self.jobs[job_id]["state"] = "done"
+            self.jobs[job_id]["finished"] = int(time.time())
+            self.jobs[job_id]["current"] = ""
+
     def start_removal(self, host: dict, unit: str, fleet: Fleet) -> tuple[str | None, str]:
         with self.lock:
             if self.active and self.jobs[self.active]["state"] == "running":
@@ -512,6 +551,27 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/alerts/test":
             ok, message = self.fleet.alerts.test()
             self._json({"ok": ok, "message": message}, 200 if ok else 400)
+            return
+
+        if path == "/api/reboot":
+            length = int(self.headers.get("Content-Length") or 0)
+            try:
+                req = json.loads(self.rfile.read(length).decode("utf-8") or "{}")
+            except json.JSONDecodeError:
+                self._json({"error": "bad json"}, 400)
+                return
+            host = next((h for h in self.fleet.hosts() if h.get("id") == req.get("host")), None)
+            if not host:
+                self._json({"error": "unknown host"}, 404)
+                return
+            if host.get("agent") != "linux":
+                self._json({"error": "перезагрузка поддержана только для linux-хостов"}, 400)
+                return
+            job_id, err = self.jobs.start_reboot(host, self.fleet)
+            if not job_id:
+                self._json({"error": err}, 409)
+                return
+            self._json({"ok": True, "job": job_id})
             return
 
         if path == "/api/service/remove":
