@@ -36,6 +36,9 @@
 html, body {
   margin: 0;
   padding: 0;
+  /* Nothing here should ever scroll sideways; wide content gets its own
+     scroller instead. */
+  overflow-x: hidden;
   background: var(--bg);
   color: var(--text);
   font: 14px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
@@ -122,6 +125,17 @@ html, body {
 .alert-item b { font-weight: 600; }
 .alert-item.bad b { color: var(--bad); }
 .alert-item.warn b { color: var(--warn); }
+.alert-more {
+  display: none;
+  margin-top: 6px;
+  border: 0;
+  background: none;
+  padding: 0;
+  color: var(--accent);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
 
 @media (max-width: 560px) { .alert { margin: 10px 12px -2px; } }
 
@@ -179,6 +193,10 @@ html, body {
   gap: 10px;
   align-items: start;   /* a card with many links grows alone, not the whole row */
 }
+/* Grid items default to min-width:auto, so one nowrap chip was widening the
+   whole column past the viewport — on a phone that clipped every value on
+   the right-hand side. */
+.cards > * { min-width: 0; }
 
 /* ---------- host card ---------- */
 
@@ -321,6 +339,7 @@ html, body {
 .kv dt { color: var(--text-dim); }
 .kv dd { margin: 0; font-family: var(--mono); font-size: 12px; word-break: break-word; }
 
+.table-wrap { overflow-x: auto; max-width: 100%; }
 table.list { width: 100%; border-collapse: collapse; font-size: 12.5px; }
 table.list th {
   text-align: left;
@@ -386,12 +405,45 @@ table.list td.right { text-align: right; }
 .btn-warn:hover:not(:disabled) { background: var(--warn); color: #16191d; border-color: var(--warn); }
 
 @media (max-width: 560px) {
-  .subnet .subnet { margin-left: 6px; padding-left: 8px; }
+  /* Four levels of nesting at 16px each ate half the screen and pushed the
+     deepest subnet's heading off the right edge; on a phone the rails stay
+     visible but thin. */
+  .subnet.has-children > .subnet-body { padding-left: 8px; margin-left: 2px; }
+  .subnet .subnet { margin: 12px 0 2px -8px; padding: 8px 8px 10px 10px; }
+  .subnet-head { flex-wrap: wrap; gap: 4px 8px; }
+  .subnet-cidr { font-size: 11px; }
+  /* The header wraps into rows instead of scrolling controls off-screen:
+     on a phone the rightmost buttons were simply unreachable. */
   .topbar { flex-wrap: wrap; }
+  .actions { flex-wrap: wrap; gap: 6px; }
+  /* Two per row rather than six squeezed into one: forcing them onto a
+     single line made every label truncate *and* pushed the whole page wider
+     than the viewport, which is what was clipping the cards. */
+  .actions .btn { flex: 1 1 calc(50% - 6px); min-width: 0; font-size: 12px;
+                  padding: 7px 8px; }
+  .actions .btn-icon { flex: 0 0 auto; }
+  .search { flex: 1 1 100%; width: auto; }
+  .brand { width: 100%; }
+  /* A banner listing sixteen findings pushed the fleet itself below the
+     fold; on a phone it collapses to the worst few with a way to expand. */
+  .alert-list.collapsed .alert-item:nth-child(n+5) { display: none; }
+  .alert-more { display: inline-block; }
   .actions { width: 100%; }
-  .actions .btn { flex: 1; }
   .fleet { padding: 12px; gap: 14px; }
   .cards { grid-template-columns: 1fr; }
+  /* On a phone the value column was clipping mid-number ("537 М"); the label
+     is the part that can afford to shrink. */
+  .metric-label { width: 38px; font-size: 11px; }
+  .metric-value { max-width: 62%; font-size: 11px; }
+  .metric .bar { min-width: 24px; }
+  .card { padding: 10px; }
+  /* Address and reboot button wrap to a second line together rather than
+     squeezing the hostname down to "v…" — the name is what identifies a card. */
+  .card-head { flex-wrap: wrap; }
+  .card-name { min-width: 8ch; flex: 0 1 auto; }
+  .card-addr { font-size: 10.5px; white-space: nowrap; }
+  .head-badge { font-size: 10px; padding: 1px 5px; }
+  .chip { font-size: 10.5px; }
   .modal { padding: 0; }
   .modal-card { max-height: 100dvh; height: 100dvh; border-radius: 0; border: 0; }
 }
@@ -501,3 +553,56 @@ tr.check-na .check-name { color: var(--text-faint); }
   cursor: pointer;
 }
 .link-btn:hover { text-decoration: underline; }
+
+/* ---------- parallel update tabs ---------- */
+
+.job-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 10px 14px 0;
+}
+.job-tab {
+  padding: 4px 10px;
+  border: 1px solid var(--line);
+  border-radius: 20px;
+  background: var(--bg-card);
+  color: var(--text-dim);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+.job-tab.active { border-color: var(--accent); color: var(--text); }
+/* Colour says "is this host done", so the operator can stop watching it. */
+.job-tab.running { color: var(--warn); border-color: color-mix(in srgb, var(--warn) 45%, var(--line)); }
+.job-tab.ok { color: var(--ok); border-color: color-mix(in srgb, var(--ok) 45%, var(--line)); }
+.job-tab.failed { color: var(--bad); border-color: color-mix(in srgb, var(--bad) 50%, var(--line)); }
+.job-tab.ok.active, .job-tab.running.active, .job-tab.failed.active { border-width: 2px; }
+
+/* ---------- update log colouring ---------- */
+
+.log-line { white-space: pre-wrap; word-break: break-word; }
+.log-head { color: var(--accent); font-weight: 600; margin-top: 6px; }
+.log-error { color: var(--bad); }
+.log-warn { color: var(--warn); }
+.log-reboot { color: var(--warn); font-weight: 600; }
+.log-act { color: var(--text); }
+.log-summary { color: var(--ok); font-weight: 600; }
+.log-note { color: var(--info); font-style: italic; }
+/* Fetch chatter is most of the output and almost never what you are looking
+   for; dimming it makes the few interesting lines findable. */
+.log-noise { color: var(--text-faint); }
+.log-pkg { color: var(--info); font-weight: 600; }
+
+.search {
+  width: 130px;
+  padding: 6px 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--bg-card);
+  color: var(--text);
+  font: inherit;
+  font-size: 13px;
+}
+.search:focus { outline: none; border-color: var(--accent); }
+.job-fail { color: var(--bad); font-size: 12px; margin-top: 4px; }
