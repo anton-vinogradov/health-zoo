@@ -515,11 +515,15 @@ ROUTEROS_CMD = (
     # resolver, dhcp, ntp, ipsec, l2tp-server and the reverse proxy show up
     # alongside ssh and winbox. "address" is the access restriction, and its
     # absence is the difference between a service offered to one subnet and one
-    # offered to whoever can reach the box.
+    # offered to whoever can reach the box. Most of that list is UDP, and the
+    # protocol belongs to the entry rather than to the name: the resolver is
+    # listed twice, once per protocol, and assuming tcp reports the wrong port
+    # for half the router and hides the other half of the resolver.
     ':put "@@service"; :foreach i in=[/ip service find] do={'
     ':put ([:tostr [/ip service get $i name]]."|".[:tostr [/ip service get $i port]]'
     '."|".[:tostr [/ip service get $i disabled]]."|"'
-    '.[:tostr [/ip service get $i address]])}; '
+    '.[:tostr [/ip service get $i address]]."|"'
+    '.[:tostr [/ip service get $i proto]])}; '
     # Tools that open a port without appearing in /ip service.
     ':put "@@extra"; '
     ':do {:put ("socks|".[:tostr [/ip socks get enabled]]."|1080")} on-error={}; '
@@ -726,6 +730,7 @@ def probe_routeros(host: dict, key: str | None) -> dict:
         name, port = cells[0], (cells[1] if len(cells) > 1 else "")
         disabled = (cells[2] if len(cells) > 2 else "false") == "true"
         restriction = cells[3] if len(cells) > 3 else ""
+        proto = (cells[4] if len(cells) > 4 else "") or "tcp"
         if not name:
             continue
         services.append({
@@ -734,7 +739,7 @@ def probe_routeros(host: dict, key: str | None) -> dict:
             "enabled": "disabled" if disabled else "enabled",
             "restarts": 0,
             "path": "/ip service",
-            "desc": (f"port {port}" if port else "служба роутера")
+            "desc": (f"port {port}/{proto}" if port else "служба роутера")
                     + (f", доступ с {restriction}" if restriction else ""),
             # Everything in /ip service is RouterOS itself — as is every
             # feature package. A router has no applications of its own here, so
@@ -743,10 +748,14 @@ def probe_routeros(host: dict, key: str | None) -> dict:
         })
         if disabled or not port:
             continue
-        # The same service appears once per address family; one chip is enough.
-        entry = endpoints.setdefault((name, port), {
+        # A name and port can repeat — an open session is listed as an entry of
+        # its own — and one chip is enough for that. The protocol is what makes
+        # two entries genuinely different listeners: the resolver answers on
+        # 53/tcp and 53/udp, and collapsing them loses the one that carries
+        # nearly all the queries.
+        entry = endpoints.setdefault((name, port, proto), {
             "port": int(port) if port.isdigit() else port,
-            "process": name, "label": name, "proto": "tcp",
+            "process": name, "label": name, "proto": proto,
             "scope": "lan" if restriction else "any",
             "restricted_to": restriction,
         })
@@ -763,13 +772,14 @@ def probe_routeros(host: dict, key: str | None) -> dict:
         # resolver is "resolver" there); only report what it does not list.
         if not on or (number and number in taken_ports):
             continue
-        endpoints.setdefault((name, port or name), {
+        endpoints.setdefault((name, port or name, "tcp"), {
             "port": number, "process": name, "label": name, "proto": "tcp",
             "scope": "any", "restricted_to": "",
         })
     data["endpoints"] = sorted(
         endpoints.values(),
-        key=lambda e: (e["port"] if isinstance(e["port"], int) else 0, e.get("label", "")))
+        key=lambda e: (e["port"] if isinstance(e["port"], int) else 0,
+                       e.get("label", ""), e.get("proto", "")))
 
     # Port forwards. A rule pointing at a host that no longer runs the service
     # is invisible until somebody tries to use it — which is months later, from

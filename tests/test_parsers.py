@@ -111,9 +111,25 @@ wireless|7.23.2|false
 container||true
 
 @@service
-ssh|17|false
-ftp|21|true
-www|80|false
+ssh|17|false||tcp
+ssh|17|false||tcp
+ftp|21|true||tcp
+telnet|23|true||tcp
+resolver|53|false||tcp
+resolver|53|false||udp
+dhcp|67|false||udp
+dhcpclient|68|false||udp
+www|80|false||tcp
+ntp|123|false||udp
+www-ssl|443|true||tcp
+reverse-proxy|443|false||tcp
+ipsec|500|false||udp
+l2tp-server|1701|false||udp
+ipsec|4500|false||udp
+discover|5678|false||udp
+winbox|8291|false||tcp
+api|8728|true||tcp
+api-ssl|8729|true||tcp
 
 @@interface
 ether1|true|ether|false
@@ -167,6 +183,21 @@ def test_routeros_services_and_uninstalled_packages():
     assert names["routeros"]["version"] == "7.23.2"
     # A package with no version is merely downloadable, not installed.
     assert "container" not in names
+
+
+def test_routeros_endpoints_keep_the_protocol_of_each_entry():
+    """Most of /ip service is UDP, and the resolver is listed under both."""
+    data = _routeros(ROUTEROS_OUTPUT)
+    open_ports = {(e["port"], e["proto"]) for e in data["endpoints"]}
+    assert (53, "tcp") in open_ports and (53, "udp") in open_ports
+    assert {(67, "udp"), (123, "udp"), (500, "udp"), (5678, "udp")} <= open_ports
+    assert {(17, "tcp"), (80, "tcp"), (8291, "tcp")} <= open_ports
+    # An open session is listed as an entry of its own — still one listener.
+    assert sum(1 for e in data["endpoints"] if e["port"] == 17) == 1
+    # Disabled services are configuration, not something anybody can reach;
+    # www-ssl shares its port with the reverse proxy that is running.
+    assert not {port for port, _ in open_ports} & {21, 23, 8728, 8729}
+    assert [e["label"] for e in data["endpoints"] if e["port"] == 443] == ["reverse-proxy"]
 
 
 def test_routeros_interface_state():
