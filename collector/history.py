@@ -12,6 +12,7 @@ showing an empty page while the first poll runs.
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
 import threading
 import time
@@ -65,17 +66,35 @@ def extract(host: dict) -> dict[str, float]:
 
 
 class History:
+    """Optional by design: if the database cannot be opened the dashboard runs
+    without trends rather than refusing to start. Monitoring that dies because
+    its own bookkeeping failed is worse than monitoring with no history."""
+
     def __init__(self, path: str, retention_days: int = 180):
         self.path = path
         self.retention = retention_days * 86400
         self.lock = threading.Lock()
-        self._conn = sqlite3.connect(path, check_same_thread=False)
-        self._conn.executescript(SCHEMA)
-        # WAL keeps the writer from blocking the HTTP threads that read.
-        self._conn.execute("PRAGMA journal_mode=WAL")
-        self._conn.commit()
+        self._conn = None
+        try:
+            directory = os.path.dirname(path)
+            if directory:
+                os.makedirs(directory, exist_ok=True)
+            self._conn = sqlite3.connect(path, check_same_thread=False)
+            self._conn.executescript(SCHEMA)
+            # WAL keeps the writer from blocking the HTTP threads that read.
+            self._conn.execute("PRAGMA journal_mode=WAL")
+            self._conn.commit()
+        except (sqlite3.Error, OSError) as exc:
+            print(f"health-zoo: history disabled ({path}: {exc})", flush=True)
+            self._conn = None
+
+    @property
+    def available(self) -> bool:
+        return self._conn is not None
 
     def record(self, hosts: list[dict], snapshot: dict | None = None) -> None:
+        if not self._conn:
+            return
         now = int(time.time())
         rows = []
         for host in hosts:
@@ -92,6 +111,8 @@ class History:
             self._conn.commit()
 
     def last_snapshot(self) -> dict | None:
+        if not self._conn:
+            return None
         with self.lock:
             row = self._conn.execute(
                 "SELECT body FROM snapshots ORDER BY ts DESC LIMIT 1").fetchone()
@@ -104,6 +125,8 @@ class History:
 
     def series(self, host: str, metric: str, since: int, points: int = 120) -> list[list]:
         """Downsampled [[ts, value], …] — enough for a sparkline, not a plot."""
+        if not self._conn:
+            return []
         with self.lock:
             rows = self._conn.execute(
                 "SELECT ts, value FROM samples WHERE host=? AND metric=? AND ts>=? "
@@ -118,6 +141,8 @@ class History:
         return out
 
     def metrics(self, host: str) -> list[str]:
+        if not self._conn:
+            return []
         with self.lock:
             rows = self._conn.execute(
                 "SELECT DISTINCT metric FROM samples WHERE host=? ORDER BY metric",
@@ -131,6 +156,8 @@ class History:
         full in three weeks", which is the difference between a number and a
         reason to act.
         """
+        if not self._conn:
+            return None
         since = int(time.time()) - window_days * 86400
         with self.lock:
             rows = self._conn.execute(

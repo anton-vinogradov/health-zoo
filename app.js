@@ -148,11 +148,6 @@ function hostCard(host) {
   var level = hostLevel(host);
   var chips = [];
 
-  if (host.update_count > 0) {
-    chips.push(chip('↑ ' + host.update_count + ' обновл.' +
-      (host.security_count ? ' · ' + host.security_count + ' security' : ''),
-      host.security_count ? 'warn' : 'info'));
-  }
   if (host.reachable && host.error) chips.push(chip('нет доступа', 'warn'));
   if (host.recorded_by) {
     chips.push(chip(host.camera_live ? 'пишется: ' + host.recorded_by : 'запись стоит: ' + host.recorded_by,
@@ -173,7 +168,6 @@ function hostCard(host) {
       stopped.length ? 'bad' : ''));
   }
   if ((host.cameras || []).length) chips.push(chip('📷 ' + host.cameras.length, ''));
-  if (host.reboot_required) chips.push(chip('⟳ перезагрузка', 'warn'));
   (host.degraded_raid || []).forEach(function (r) { chips.push(chip('RAID ' + r.state, 'bad')); });
   if ((host.failing_disks || []).length) {
     chips.push(chip('⚠ диск: ' + host.failing_disks[0].dev, 'bad'));
@@ -184,14 +178,18 @@ function hostCard(host) {
     chips.push(chip('эфир ' + host.channel_utilization + '%', host.channel_utilization > 25 ? 'warn' : ''));
   }
   // Published services that are not web pages — VPN endpoints, proxies, RTSP.
-  // They are as much a part of "what this box does" as the panels are.
-  (host.endpoints || []).slice(0, 5).forEach(function (ep) {
-    var name = ep.label || ep.process || ep.port;
-    chips.push(chip('⇄ ' + name + ':' + ep.port + (ep.proto === 'udp' ? '/udp' : ''), ''));
+  // One process on three ports is one service, so group by name: "telemt:443,
+  // 2053, 8443" instead of three separate chips saying the same thing.
+  var byService = {};
+  (host.endpoints || []).forEach(function (ep) {
+    var name = ep.label || ep.process || String(ep.port);
+    var key = name + (ep.proto === 'udp' ? '/udp' : '');
+    (byService[key] = byService[key] || []).push(ep.port);
   });
-  if ((host.endpoints || []).length > 5) {
-    chips.push(chip('+' + (host.endpoints.length - 5) + ' портов', ''));
-  }
+  Object.keys(byService).slice(0, 6).forEach(function (name) {
+    chips.push(chip('⇄ ' + name.replace('/udp', '') + ':' + byService[name].join(', ') +
+      (name.indexOf('/udp') >= 0 ? '/udp' : ''), ''));
+  });
   if (host.role === 'camera' && host.ports) {
     var rtsp = host.ports['554'];
     if (rtsp) chips.push(chip('RTSP жив', 'ok'));
@@ -270,6 +268,17 @@ function hostCard(host) {
     h('div', { class: 'card-head' }, [
       h('span', { class: 'card-role', text: ROLE_ICON[host.role] || ROLE_ICON.other }),
       h('span', { class: 'card-name', text: host.name }),
+      // Pending work belongs next to the host's identity, not mixed in with
+      // the chips describing what it runs.
+      host.update_count ? h('span', {
+        class: 'head-badge ' + (host.security_count ? 'warn' : 'info'),
+        title: host.update_count + ' обновлений' +
+          (host.security_count ? ', из них ' + host.security_count + ' security' : ''),
+        text: '↑' + host.update_count + (host.security_count ? '⚠' : '')
+      }) : null,
+      host.reboot_required ? h('span', {
+        class: 'head-badge warn', title: 'нужна перезагрузка', text: '⟳'
+      }) : null,
       h('span', { class: 'card-addr', text: host.addr })
     ]),
     h('div', { class: 'card-os', text: subtitle }),

@@ -408,3 +408,18 @@ table.list td.right { text-align: right; }
   cursor: default;
 }
 .sitelink.local { color: var(--text-faint); }
+
+/* Pending updates and a required reboot live in the card header: they are
+   facts about the host itself, not about what it runs. */
+.head-badge {
+  font-size: 10.5px;
+  font-weight: 600;
+  padding: 1px 6px;
+  border-radius: 20px;
+  border: 1px solid var(--line);
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+.head-badge.warn { color: var(--warn); border-color: color-mix(in srgb, var(--warn) 45%, var(--line)); }
+.head-badge.info { color: var(--info); border-color: color-mix(in srgb, var(--info) 40%, var(--line)); }
+.card-head .card-addr { margin-left: auto; }
