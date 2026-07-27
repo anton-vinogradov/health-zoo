@@ -54,6 +54,7 @@ document.addEventListener('DOMContentLoaded', function () {
   });
   document.getElementById('btn-sites').addEventListener('click', showSites);
   document.getElementById('btn-suppressions').addEventListener('click', showSuppressions);
+  document.getElementById('btn-settings').addEventListener('click', showSettings);
   document.getElementById('btn-upgrade-all').addEventListener('click', function () { startUpdate([]); });
 
   document.querySelectorAll('[data-close]').forEach(function (el) {

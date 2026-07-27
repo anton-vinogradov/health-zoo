@@ -27,6 +27,7 @@ import alerts  # noqa: E402
 import history  # noqa: E402
 import issues  # noqa: E402
 import probe  # noqa: E402
+import settings as settings_mod  # noqa: E402
 import suppressions as suppressions_mod  # noqa: E402
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -67,9 +68,15 @@ class Fleet:
         self.lock = threading.Lock()
         self.snapshot: dict = {"generated": 0, "hosts": [], "polling": False}
         self.wake = threading.Event()
+        # Set once the Jobs registry exists; automatic reboots go through the
+        # same machinery as the button, so there is one reboot path, not two.
+        self.jobs_ref: "Jobs | None" = None
         self.alerts = alerts.Alerts(cfg)
         self.suppressions = suppressions_mod.Suppressions(
             cfg.get("suppressions_file", "/var/lib/health-zoo/suppressions.json"))
+        self.settings = settings_mod.Settings(
+            cfg.get("settings_file", "/var/lib/health-zoo/settings.json"))
+        self.settings.apply_to(cfg)
         self.history = history.History(
             cfg.get("history_db", "/var/lib/health-zoo/history.db"),
             cfg.get("history_retention_days", 180))
@@ -118,6 +125,7 @@ class Fleet:
             # a single-host refresh after an action would look like everything
             # else vanished.
             self.alerts.process(hosts)
+            self.maybe_auto_reboot(hosts)
         except Exception as exc:  # keep the loop alive whatever happens
             with self.lock:
                 self.snapshot["polling"] = False
@@ -128,6 +136,49 @@ class Fleet:
             self.poll_once()
             self.wake.wait(timeout=self.cfg.get("poll_interval", 180))
             self.wake.clear()
+
+    def maybe_auto_reboot(self, hosts: list[dict]) -> None:
+        """Reboot hosts that asked for it, if the operator turned this on.
+
+        Deliberately narrow. Only hosts that themselves report a pending
+        reboot, only inside the configured hours, one per poll, never the same
+        host twice in a day, and never the host running the dashboard — it
+        would kill the job reporting its own progress. Everything else waits
+        for the next window, which is the whole point of having one.
+        """
+        conf = self.settings.auto_reboot()
+        if not conf.get("enabled"):
+            return
+        hour = time.localtime().tm_hour
+        start, end = int(conf.get("from_hour", 4)), int(conf.get("to_hour", 6))
+        # A window may wrap past midnight (23 -> 5).
+        inside = start <= hour < end if start <= end else (hour >= start or hour < end)
+        if not inside:
+            return
+        excluded = set(conf.get("exclude") or [])
+        min_gap = int(conf.get("min_interval_hours", 20)) * 3600
+        now = int(time.time())
+        for host in hosts:
+            host_id = host.get("id")
+            if not host.get("reboot_required") or host_id in excluded:
+                continue
+            source = next((h for h in self.hosts() if h.get("id") == host_id), None)
+            if not source or source.get("local") or source.get("update_last"):
+                continue
+            if now - self.settings.last_reboot(host_id) < min_gap:
+                continue
+            if not self.jobs_ref:
+                return
+            job_id, err = self.jobs_ref.start_reboot(source, self)
+            if not job_id:
+                # Another job holds the slot; try again next poll rather than
+                # queueing reboots up behind an update run.
+                return
+            self.settings.note_reboot(host_id, now)
+            self.alerts.notify(
+                f"перезагружаю {host.get('name', host_id)} — "
+                f"{(host.get('reboot_pkgs') or '').strip() or 'система просит перезагрузку'}")
+            return
 
     def refresh_hosts(self, host_ids: list[str]) -> int:
         """Re-poll just these hosts and splice them into the current snapshot.
@@ -672,6 +723,26 @@ class Handler(BaseHTTPRequestHandler):
             self._json(snap)
             return
 
+        if path == "/api/settings":
+            # Defaults travel with the values so the form can show what a field
+            # would fall back to, and mark the ones actually overridden.
+            defaults = dict(issues.DEFAULT_THRESHOLDS)
+            defaults.update(self.fleet.cfg.get("thresholds") or {})
+            stored = self.fleet.settings.thresholds()
+            self._json({
+                "fields": settings_mod.FIELDS,
+                "values": {f["key"]: stored.get(f["key"], defaults.get(f["key"]))
+                           for f in settings_mod.FIELDS},
+                "defaults": {f["key"]: issues.DEFAULT_THRESHOLDS.get(f["key"])
+                             for f in settings_mod.FIELDS},
+                "overridden": sorted(stored.keys()),
+                "by_role": issues.ROLE_THRESHOLDS,
+                "auto_reboot": self.fleet.settings.auto_reboot(),
+                "hosts": [{"id": h.get("id"), "name": h.get("name")}
+                          for h in self.fleet.hosts()],
+            })
+            return
+
         if path.startswith("/api/history/"):
             # /api/history/<host>/<metric>?days=7
             parts = path.split("/")
@@ -722,6 +793,33 @@ class Handler(BaseHTTPRequestHandler):
         denied = self._authorized()
         if denied:
             self._json({"error": denied}, 403)
+            return
+
+        if path == "/api/settings":
+            length = int(self.headers.get("Content-Length") or 0)
+            try:
+                req = json.loads(self.rfile.read(length).decode("utf-8") or "{}")
+            except json.JSONDecodeError:
+                self._json({"error": "bad json"}, 400)
+                return
+            if isinstance(req.get("thresholds"), dict):
+                # What "default" means here is the built-in value plus whatever
+                # the config file pins — the layers the UI never edits.
+                defaults = dict(issues.DEFAULT_THRESHOLDS)
+                defaults.update(getattr(self.fleet.settings, "_base", {}))
+                self.fleet.settings.set_thresholds(req["thresholds"], defaults)
+            if isinstance(req.get("auto_reboot"), dict):
+                self.fleet.settings.set_auto_reboot(req["auto_reboot"])
+            # Applied to the live config and the current snapshot at once: a
+            # threshold changed in the browser has to recolour the fleet now,
+            # not at the next poll — otherwise it reads as having been ignored.
+            self.fleet.settings.apply_to(self.fleet.cfg)
+            hosts = self.fleet.get().get("hosts", [])
+            issues.annotate(hosts, self.fleet.cfg, self.fleet.suppressions)
+            issues.annotate_checks(hosts, self.fleet.cfg)
+            self._json({"ok": True,
+                        "thresholds": self.fleet.settings.thresholds(),
+                        "auto_reboot": self.fleet.settings.auto_reboot()})
             return
 
         if path == "/api/refresh":
@@ -914,6 +1012,7 @@ def main() -> None:
     jobs = Jobs(cfg)
     Handler.fleet = fleet
     Handler.jobs = jobs
+    fleet.jobs_ref = jobs
 
     threading.Thread(target=fleet.loop, daemon=True).start()
 

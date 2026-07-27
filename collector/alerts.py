@@ -295,6 +295,12 @@ class Alerts:
         except (subprocess.SubprocessError, OSError):
             pass  # a failed notification must never disturb polling
 
+    def notify(self, text: str) -> None:
+        """Send one line the rules did not produce — an action being taken."""
+        if not self.enabled:
+            return
+        self._send("🔄 health-zoo: " + text)
+
     def test(self) -> tuple[bool, str]:
         """Send a probe message; used by /api/alerts/test."""
         if not self.enabled:

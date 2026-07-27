@@ -63,6 +63,28 @@ The **Исключения** view lists them fleet-wide, with age, remaining tim
 whether the underlying finding still occurs at all. That last column is the
 useful one: a suppression hiding nothing can simply be dropped.
 
+## Settings
+
+Thresholds are decisions, and decisions get revised while looking at the
+dashboard rather than while editing a file over ssh. The **Настройки** view
+edits them: disk, memory, temperature, Wi-Fi airtime and satisfaction, backup
+freshness, camera silence, certificate expiry. Each field shows what it would
+fall back to, and only values that actually differ are stored — a later change
+to a default still reaches everything nobody pinned.
+
+Roles keep their own overrides (a NAS recording video is *supposed* to sit
+near-full), and they are listed there rather than hidden.
+
+The same view can turn on **automatic reboots**: hosts that report a pending
+reboot themselves are rebooted inside a chosen window of hours, one per poll,
+never twice within a day, never the host running the dashboard, and never one
+on the exclusion list. Every automatic reboot announces itself in Telegram
+first. It is off by default — a dashboard that reboots machines without being
+asked is a surprise, and the first surprise lands during a recording.
+
+Stored in `/var/lib/health-zoo/settings.json`, which the service owns; the
+hand-written `/etc/health-zoo.json` stays the description of the fleet.
+
 ## Removing a service
 
 Each service in the host detail view has a remove button: it stops the unit,

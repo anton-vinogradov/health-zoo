@@ -418,3 +418,45 @@ def test_checks_show_the_reason_next_to_the_check(tmp_path):
     entry = checks["Упавшие сервисы"]
     assert entry["status"] == "muted"
     assert entry["suppressed"][0]["reason"] == "стенд, чинить не планируем"
+
+
+def test_only_changed_thresholds_are_stored(tmp_path):
+    """The form submits every field; the file must keep only the decisions.
+
+    Storing all of them would pin today's defaults forever, so a later change
+    to a default would silently not reach a fleet that never asked for that.
+    """
+    import settings as settings_mod
+    store = settings_mod.Settings(str(tmp_path / "settings.json"))
+    defaults = {"disk_warn": 90, "temp_warn": 88}
+
+    store.set_thresholds({"disk_warn": 90, "temp_warn": 80}, defaults)
+    assert store.thresholds() == {"temp_warn": 80}
+
+    # Setting it back to the default removes the override rather than pinning it.
+    store.set_thresholds({"temp_warn": 88}, defaults)
+    assert store.thresholds() == {}
+
+
+def test_settings_layer_over_config_not_over_themselves(tmp_path):
+    """Clearing a value in the UI falls back to the config, not to the last merge."""
+    import settings as settings_mod
+    store = settings_mod.Settings(str(tmp_path / "settings.json"))
+    cfg = {"thresholds": {"disk_warn": 95}}
+
+    store.set_thresholds({"disk_warn": 80}, {"disk_warn": 90})
+    store.apply_to(cfg)
+    assert cfg["thresholds"]["disk_warn"] == 80
+
+    store.set_thresholds({"disk_warn": None}, {"disk_warn": 90})
+    store.apply_to(cfg)
+    assert cfg["thresholds"]["disk_warn"] == 95
+
+
+def test_auto_reboot_window_wraps_past_midnight():
+    """A 23:00-05:00 window is the normal one, and it crosses the date line."""
+    def inside(hour, start, end):
+        return start <= hour < end if start <= end else (hour >= start or hour < end)
+
+    assert [inside(h, 23, 5) for h in (22, 23, 0, 4, 5)] == [False, True, True, True, False]
+    assert [inside(h, 4, 6) for h in (3, 4, 5, 6)] == [False, True, True, False]

@@ -282,3 +282,141 @@ function pollJob() {
   }).catch(function () { /* keep polling */ });
 }
 
+
+/* ---------- settings ---------- */
+
+/* Thresholds are decisions, and decisions get revised while looking at the
+   dashboard — not while editing a file over ssh. Only the values that were
+   actually changed are stored, so a later change to a default still applies to
+   everything nobody has overridden. */
+function showSettings() {
+  document.getElementById('modal-title').textContent = 'Настройки';
+  var root = document.getElementById('modal-body');
+  root.innerHTML = '';
+  root.appendChild(h('p', { class: 'checks-intro', text: 'Загружаю…' }));
+  document.getElementById('modal').classList.remove('hidden');
+
+  fetch('/api/settings').then(function (r) { return r.json(); }).then(function (cfg) {
+    root.innerHTML = '';
+    var inputs = {};
+
+    root.appendChild(h('p', { class: 'checks-intro', text:
+      'Пороги применяются ко всем хостам. У некоторых ролей значения свои: NAS с ' +
+      'видеоархивом заполнен под завязку по назначению, а не от беды. Такие ' +
+      'исключения перечислены ниже.' }));
+
+    var groups = [];
+    cfg.fields.forEach(function (f) {
+      if (groups.indexOf(f.group) < 0) groups.push(f.group);
+    });
+    groups.forEach(function (group) {
+      var rows = cfg.fields.filter(function (f) { return f.group === group; })
+        .map(function (f) {
+          var overridden = cfg.overridden.indexOf(f.key) >= 0;
+          var input = h('input', {
+            class: 'set-input', type: 'number', value: cfg.values[f.key],
+            min: f.min, max: f.max
+          });
+          inputs[f.key] = input;
+          return h('tr', null, [
+            h('td', null, [
+              h('div', { text: f.label }),
+              f.hint ? h('div', { class: 'set-hint', text: f.hint }) : null
+            ]),
+            h('td', { class: 'right nowrap' }, [
+              input,
+              h('span', { class: 'set-unit', text: f.unit || '' })
+            ]),
+            h('td', { class: 'right nowrap' }, [
+              // The default is shown, not hidden behind a reset button: the
+              // useful question is "what would this be if I left it alone".
+              h('span', { class: 'set-default' + (overridden ? ' changed' : ''),
+                          text: 'по умолчанию ' + cfg.defaults[f.key] }),
+              overridden ? h('button', {
+                class: 'btn btn-sm', text: '↺', title: 'вернуть значение по умолчанию',
+                onclick: function () { input.value = cfg.defaults[f.key]; }
+              }) : null
+            ])
+          ]);
+        });
+      root.appendChild(section(group, table(['проверка', 'значение', ''], rows)));
+    });
+
+    var roles = Object.keys(cfg.by_role || {});
+    if (roles.length) {
+      root.appendChild(section('Свои пороги по ролям',
+        table(['роль', 'что переопределено'], roles.map(function (role) {
+          var over = cfg.by_role[role];
+          return h('tr', null, [
+            h('td', { text: ROLE_NAME[role] || role }),
+            h('td', { class: 'mono', text: Object.keys(over).map(function (k) {
+              return k + ' = ' + over[k];
+            }).join(', ') })
+          ]);
+        }))));
+    }
+
+    /* Rebooting on its own is the one setting here that acts rather than
+       measures, so it says exactly what it will do and when. */
+    var auto = cfg.auto_reboot || {};
+    var enabled = h('input', { type: 'checkbox' });
+    enabled.checked = !!auto.enabled;
+    var fromHour = h('input', { class: 'set-input', type: 'number', min: 0, max: 23,
+                                value: auto.from_hour });
+    var toHour = h('input', { class: 'set-input', type: 'number', min: 0, max: 23,
+                              value: auto.to_hour });
+    var excludeBoxes = {};
+    var excludeList = h('div', { class: 'set-exclude' },
+      (cfg.hosts || []).map(function (host) {
+        var box = h('input', { type: 'checkbox' });
+        box.checked = (auto.exclude || []).indexOf(host.id) >= 0;
+        excludeBoxes[host.id] = box;
+        return h('label', { class: 'set-check' }, [box, h('span', { text: host.name })]);
+      }));
+
+    root.appendChild(section('Автоматическая перезагрузка', h('div', { class: 'set-block' }, [
+      h('label', { class: 'set-check' }, [enabled,
+        h('span', { text: 'перезагружать хост, когда он сам просит перезагрузку' })]),
+      h('p', { class: 'set-hint', text:
+        'Только те хосты, которые сами сообщают о необходимости перезагрузки (после ' +
+        'обновления ядра), и только в указанные часы. Один хост за цикл, не чаще раза ' +
+        'в сутки, и никогда — хост с самим дашбордом: он бы оборвал собственный отчёт. ' +
+        'Перед каждой перезагрузкой уходит сообщение в Telegram.' }),
+      h('div', { class: 'set-row' }, [
+        h('span', { text: 'окно, часы:' }), fromHour, h('span', { text: '—' }), toHour
+      ]),
+      h('div', { class: 'set-row' }, [h('span', { text: 'никогда не перезагружать:' })]),
+      excludeList
+    ])));
+
+    var status = h('span', { class: 'set-status' });
+    root.appendChild(h('div', { class: 'set-actions' }, [
+      h('button', { class: 'btn btn-primary', text: 'Сохранить', onclick: function () {
+        var thresholds = {};
+        Object.keys(inputs).forEach(function (key) {
+          thresholds[key] = inputs[key].value === '' ? null : Number(inputs[key].value);
+        });
+        var exclude = Object.keys(excludeBoxes).filter(function (id) {
+          return excludeBoxes[id].checked;
+        });
+        status.textContent = 'сохраняю…';
+        fetch('/api/settings', {
+          method: 'POST', headers: actionHeaders(),
+          body: JSON.stringify({
+            thresholds: thresholds,
+            auto_reboot: { enabled: enabled.checked, from_hour: Number(fromHour.value),
+                           to_hour: Number(toHour.value), exclude: exclude }
+          })
+        }).then(function (r) { return r.json(); }).then(function (res) {
+          if (res.error) { if (!actionFailed(res)) alert('Не вышло: ' + res.error); return; }
+          status.textContent = 'сохранено — пороги применены к текущему снимку';
+          load();
+        }).catch(function (e) { alert('Ошибка запроса: ' + e); });
+      } }),
+      status
+    ]));
+  }).catch(function (e) {
+    root.innerHTML = '';
+    root.appendChild(h('p', { class: 'checks-intro', text: 'не удалось загрузить настройки: ' + e }));
+  });
+}
