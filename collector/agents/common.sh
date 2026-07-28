@@ -83,9 +83,11 @@ common_temps() {
 # apart; the idle delta is what the machine did not spend.
 common_cpu() {
   [ -r /proc/stat ] || return 0
+  # shellcheck disable=SC2046  # word splitting is the point: busy and idle
   set -- $(awk '/^cpu /{print $2+$3+$4+$6+$7+$8, $5; exit}' /proc/stat)
   busy1=$1; idle1=$2
   sleep 1
+  # shellcheck disable=SC2046  # same two fields, a second later
   set -- $(awk '/^cpu /{print $2+$3+$4+$6+$7+$8, $5; exit}' /proc/stat)
   busy2=$1; idle2=$2
   total=$((busy2 - busy1 + idle2 - idle1))
