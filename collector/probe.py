@@ -39,6 +39,10 @@ PORT_TIMEOUT = 2
 
 SSH_BASE = [
     "ssh",
+    # The agent is ~29 KB of shell sent to every host on every poll and it
+    # compresses to about a fifth of that; the CPU it costs is far less than
+    # the bytes it saves, especially over the tunnel to the other site.
+    "-C",
     "-o", "BatchMode=yes",
     "-o", "ConnectTimeout=8",
     "-o", "StrictHostKeyChecking=accept-new",
@@ -67,6 +71,10 @@ LIST_FIELDS = {
     "radio": ["name", "channel", "clients", "noise", "utilization"],
     "radioiw": ["dev", "ssid", "freq", "clients"],
     "link": ["name", "speed", "duplex", "state", "errors", "crc", "flaps", "capable"],
+    # Hardware running below what it can do: the agent phrases its own case,
+    # because what counts as a cap is platform knowledge. The parser makes
+    # the key plural, so the row is "@cap" and the field is "caps".
+    "cap": ["what", "detail"],
     "listen": ["port", "process", "scope"],
     "udp": ["port", "process", "scope"],
     # Same shape the RouterOS parser builds by hand, so both kinds of router
@@ -560,6 +568,18 @@ ROUTEROS_CMD = (
     # `monitor` reports what the port negotiated; the configuration says only
     # what it was allowed to. A gigabit port sitting at 100Mbps is the symptom
     # this exists to catch, and it is invisible in the settings.
+    # Fast path and bridge hardware offload: without them the router forwards
+    # in software, which on these boxes is a few hundred megabits, not a gigabit.
+    # `find ... disabled=no` matches nothing on RouterOS 7 even for rules whose
+    # `disabled` reads false, so the state of each rule is asked for directly
+    # and counted here rather than in the query.
+    ':put "@@fastpath"; :do {:foreach r in=[/ip firewall filter find '
+    'action=fasttrack-connection] do={'
+    ':put ("fasttrack|".[:tostr [/ip firewall filter get $r disabled]])}; '
+    ':foreach i in=[/interface bridge port find] do={'
+    ':put ("hw|".[:tostr [/interface bridge port get $i interface]]."|"'
+    '.[:tostr [/interface bridge port get $i hw]]."|"'
+    '.[:tostr [/interface bridge port get $i inactive]])}} on-error={}; '
     ':put "@@ethernet"; :do {:foreach i in=[/interface ethernet find] do={'
     ':local m [/interface ethernet monitor $i once as-value]; '
     ':put ([:tostr [/interface ethernet get $i name]]."|".[:tostr ($m->"status")]'
@@ -846,6 +866,25 @@ def probe_routeros(host: dict, key: str | None) -> dict:
                 continue
         if data.get("wan_addr"):
             break
+
+    capped = []
+    rows = _routeros_rows(sections.get("fastpath", []))
+    fasttrack = [cells for cells in rows if cells and cells[0] == "fasttrack"]
+    if fasttrack and not any(len(c) > 1 and c[1] == "false" for c in fasttrack):
+        capped.append({"what": "маршрутизация",
+                       "detail": "правило fasttrack выключено — соединения идут "
+                                 "полным путём через процессор"})
+    elif not fasttrack and sections.get("fastpath") is not None:
+        capped.append({"what": "маршрутизация",
+                       "detail": "нет правила fasttrack — соединения идут "
+                                 "полным путём через процессор"})
+    for cells in rows:
+        if cells[0] == "hw" and len(cells) > 3 and cells[2] == "false" \
+                and cells[3] == "false":
+            capped.append({"what": f"порт {cells[1]}",
+                           "detail": "аппаратная разгрузка моста выключена"})
+    if capped:
+        data["caps"] = capped
 
     links = []
     for cells in _routeros_rows(sections.get("ethernet", [])):
@@ -2532,31 +2571,41 @@ def verify_exposure(results: list[dict], cfg: dict, key: str | None) -> None:
                 continue
             jobs.append((rule, entrance, int(port)))
 
-    def knock(job: tuple) -> tuple:
-        _, addr, port = job
-        remote = (f"timeout 8 bash -c '</dev/tcp/{addr}/{port}' >/dev/null 2>&1 "
-                  f"&& echo 0 || echo 1")
-        cmd = list(SSH_BASE)
-        if key:
-            cmd += ["-i", os.path.expanduser(key)]
-        if prober.get("port"):
-            cmd += ["-p", str(prober["port"])]
-        target = prober["addr"]
-        if prober.get("user"):
-            target = f"{prober['user']}@{target}"
-        try:
-            res = subprocess.run(cmd + [target, remote],
-                                 capture_output=True, timeout=25, text=True)
-            return job, res.stdout.strip().endswith("0")
-        except (subprocess.SubprocessError, OSError):
-            return job, False
-
     if not jobs:
         return
-    with concurrent.futures.ThreadPoolExecutor(max_workers=6) as pool:
-        for (rule, _, _), answered in pool.map(knock, jobs):
-            rule["verified"] = answered
-            rule["verified_from"] = prober.get("name", "")
+
+    # One session for the whole list, all knocks in parallel on the far side.
+    # A session per port meant ten logins to the same VPS every three minutes,
+    # which cost more than the knocks themselves.
+    pairs = " ".join(f"{addr}:{port}" for _, addr, port in jobs)
+    remote = (
+        f"for pair in {pairs}; do "
+        "( addr=${pair%:*}; port=${pair##*:}; "
+        "timeout 6 bash -c \"</dev/tcp/$addr/$port\" >/dev/null 2>&1 "
+        "&& echo \"$pair ok\" || echo \"$pair no\" ) & done; wait"
+    )
+    cmd = list(SSH_BASE)
+    if key:
+        cmd += ["-i", os.path.expanduser(key)]
+    if prober.get("port"):
+        cmd += ["-p", str(prober["port"])]
+    target = prober["addr"]
+    if prober.get("user"):
+        target = f"{prober['user']}@{target}"
+    answers: dict[str, bool] = {}
+    try:
+        res = subprocess.run(cmd + [target, remote],
+                             capture_output=True, timeout=40, text=True)
+        for line in res.stdout.splitlines():
+            parts = line.split()
+            if len(parts) == 2:
+                answers[parts[0]] = parts[1] == "ok"
+    except (subprocess.SubprocessError, OSError):
+        answers = {}
+
+    for rule, addr, port in jobs:
+        rule["verified"] = answers.get(f"{addr}:{port}", False)
+        rule["verified_from"] = prober.get("name", "")
 
 
 def link_exposure(results: list[dict]) -> None:

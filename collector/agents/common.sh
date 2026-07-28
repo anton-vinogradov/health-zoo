@@ -76,6 +76,57 @@ common_temps() {
   } | sort -u -t'	' -k1,1 | awk -F'\t' '{print "@temp\t" $1 "\t" $2}'
 }
 
+# ---------- hardware running below what it can do ----------
+# One row shape for every such finding — a subject and a phrase — so a new
+# source is a few lines here and no new rule anywhere else. Only genuine caps
+# are reported: a PCIe root port idling at 2.5 GT/s with nothing behind it is
+# not one, and neither is the "powersave" governor, which on intel_pstate is
+# the normal setting and still boosts to the top frequency.
+common_capped() {
+  freq=/sys/devices/system/cpu/cpu0/cpufreq
+  if [ -r "$freq/scaling_max_freq" ] && [ -r "$freq/cpuinfo_max_freq" ]; then
+    now=$(cat "$freq/scaling_max_freq"); top=$(cat "$freq/cpuinfo_max_freq")
+    [ "$now" -lt "$top" ] 2>/dev/null && \
+      row "@cap	процессор	потолок частоты $((now / 1000)) МГц из $((top / 1000))"
+  fi
+  # Storage and network devices only: those are the ones where a downtrained
+  # link costs throughput somebody notices.
+  for dev in /sys/bus/pci/devices/*; do
+    class=$(cat "$dev/class" 2>/dev/null)
+    case "$class" in 0x01*|0x02*) ;; *) continue ;; esac
+    name=$(basename "$dev")
+    cur=$(cut -d' ' -f1 "$dev/current_link_speed" 2>/dev/null)
+    max=$(cut -d' ' -f1 "$dev/max_link_speed" 2>/dev/null)
+    curw=$(cat "$dev/current_link_width" 2>/dev/null)
+    maxw=$(cat "$dev/max_link_width" 2>/dev/null)
+    [ -n "$cur" ] && [ -n "$max" ] && [ "${cur%%.*}" -lt "${max%%.*}" ] 2>/dev/null && \
+      row "@cap	PCIe $name	$cur ГТ/с из $max"
+    [ -n "$curw" ] && [ -n "$maxw" ] && [ "$curw" -lt "$maxw" ] 2>/dev/null && \
+      row "@cap	PCIe $name	x$curw линий из x$maxw"
+  done
+  # SATA negotiates like ethernet does, and fails the same way: a drive that
+  # supports 6 Gb/s and came up at 3 has a cable or a backplane problem.
+  if command -v smartctl >/dev/null 2>&1; then
+    sm="smartctl"
+    if [ "$(id -u)" != 0 ] && command -v sudo >/dev/null 2>&1 && sudo -n true 2>/dev/null; then
+      sm="sudo -n smartctl"
+    fi
+    for disk in /dev/sd?; do
+      [ -b "$disk" ] || continue
+      $sm -i "$disk" 2>/dev/null | awk -v d="$(basename "$disk")" '
+        /SATA Version is:/ {
+          top = ""; now = ""
+          for (i = 1; i <= NF; i++) {
+            if ($i ~ /Gb\/s/ && top == "") top = $(i-1)
+            if ($i ~ /current:/) now = $(i+1)
+          }
+          if (top != "" && now != "" && now + 0 < top + 0)
+            printf "@capped\tдиск %s\tSATA %s Гбит/с из %s\n", d, now, top
+        }'
+    done
+  fi
+}
+
 # ---------- physical links ----------
 # A gigabit port that negotiated 100 Mbit is almost always a cable, a connector
 # or a socket that has started to fail — and nothing on the host complains,
@@ -131,7 +182,10 @@ common_cpu() {
   # shellcheck disable=SC2046  # word splitting is the point: busy and idle
   set -- $(awk '/^cpu /{print $2+$3+$4+$6+$7+$8, $5; exit}' /proc/stat)
   busy1=$1; idle1=$2
-  sleep 1
+  # A third of a second is enough to divide two counters and costs every host
+  # in the fleet two thirds of a second less per poll. BusyBox without fancy
+  # sleep takes the whole second instead of failing.
+  sleep 0.3 2>/dev/null || sleep 1
   # shellcheck disable=SC2046  # same two fields, a second later
   set -- $(awk '/^cpu /{print $2+$3+$4+$6+$7+$8, $5; exit}' /proc/stat)
   busy2=$1; idle2=$2

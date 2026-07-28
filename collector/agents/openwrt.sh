@@ -108,6 +108,18 @@ if [ -r /proc/net/dev ]; then
   }' /proc/net/dev
 fi
 
+# ---------- routing done by the processor ----------
+# Without flow offloading every forwarded packet walks the whole netfilter path
+# on a router-grade CPU, which is the difference between a gigabit and a few
+# hundred megabits — and it is off unless somebody turned it on.
+if command -v uci >/dev/null 2>&1; then
+  if [ "$(uci -q get firewall.@defaults[0].flow_offloading)" != "1" ]; then
+    row "@cap	маршрутизация	разгрузка потоков выключена — каждый пакет идёт через процессор"
+  elif [ "$(uci -q get firewall.@defaults[0].flow_offloading_hw)" != "1" ]; then
+    row "@cap	маршрутизация	разгрузка потоков только программная, аппаратная выключена"
+  fi
+fi
+
 # ---------- port forwards and the address they are published on ----------
 # Whether anything behind this router is reachable from the internet is decided
 # here and nowhere else: a forward counts only when the address it is published

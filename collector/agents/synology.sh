@@ -160,6 +160,7 @@ emit pkg_manager synology
 # so the web link has to be discovered rather than assumed.
 common_cpu
 common_links
+common_capped
 common_peer
 common_listeners
 

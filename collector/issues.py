@@ -306,6 +306,13 @@ def host_issues(host: dict, cfg: dict | None = None) -> list[dict]:
             add("warn" if speed >= 100 else "bad", f"link:{link['name']}",
                 f"порт {link['name']}: {_speed(speed)}, хотя умеет {_speed(capable)}")
 
+    # Hardware that could do more than it is doing. Stated as a finding rather
+    # than a fault: none of these stops anything working, they just cost the
+    # difference quietly, every day, until somebody looks.
+    for cap in host.get("caps", []):
+        add("warn", f"capped:{cap.get('what')}",
+            f"{cap.get('what')}: {cap.get('detail')}")
+
     # Only the hottest sensor: a quad-core reports one reading per core plus a
     # package total, and six identical "82°" entries say nothing extra.
     temps = host.get("temps") or []
@@ -788,6 +795,12 @@ def checks_for(host: dict, cfg: dict | None = None) -> list[dict]:
         f"Предупреждение с {limits['swap_warn']}%: активный swap на слабых машинах "
         "означает нехватку памяти",
         applies=bool(host.get("swap_total")), skipped="swap не настроен", keys=("swap",))
+    add("resources", "Работает не на полную",
+        "Железо, которое умеет больше, чем делает: потолок частоты процессора, "
+        "PCIe или SATA, договорившиеся ниже своих возможностей, выключенная "
+        "разгрузка маршрутизации. Ничего из этого не ломается — оно просто "
+        "молча стоит дешевле, чем куплено",
+        keys=("capped",))
     add("services", "Перезапуски юнитов",
         "Счётчик рестартов systemd сравнивается с прошлым опросом: юнит, который "
         "падает и поднимается заново, в каждый отдельный момент выглядит "
