@@ -204,11 +204,12 @@ function showHost(host) {
   var allRadios = (host.radios || []).concat(host.radioiws || []);
   if (allRadios.length) {
     body.appendChild(section('Радио (' + (host.wifi_clients || 0) + ' клиентов)',
-      table(['радио', 'канал', 'клиентов', 'эфир: всего', 'свой', 'чужой', 'качество'],
+      table(['радио', 'канал', 'клиентов', 'эфир: всего', 'свой', 'чужой', 'повторы', 'качество'],
         allRadios.map(function (r) {
           var dead = !r.disabled && (r.channel === 0 || r.freq === 0);
           var band = r.band ? r.band + ' ГГц' : (r.name || r.dev || '');
           var warnAir = r.band === '2.4' ? 40 : 60;
+          var warnRetry = r.band === '2.4' ? 35 : 45;
           return h('tr', null, [
             h('td', null, [h('span', { class: 'dot ' + (dead ? 'bad' : r.disabled ? '' : 'ok') }),
                            h('span', { text: band + (r.ssid ? ' · ' + r.ssid : '') })]),
@@ -223,6 +224,10 @@ function showHost(host) {
             // Foreign airtime is the number that decides whether changing
             // channel would help: our own load moves with us, theirs does not.
             h('td', { class: 'mono right', text: r.foreign_utilization === undefined || r.foreign_utilization === null ? '' : r.foreign_utilization + '%' }),
+            /* Retries answer a question airtime cannot: the channel can read
+               half empty while our own frames keep going out twice. */
+            h('td', { class: 'mono right' + (r.retries >= warnRetry ? ' warn' : ''),
+                      text: r.retries === undefined || r.retries === null ? '' : r.retries + '%' }),
             h('td', { class: 'mono right', text: r.satisfaction === undefined || r.satisfaction === null ? '' : r.satisfaction + '%' })
           ]);
         }))));

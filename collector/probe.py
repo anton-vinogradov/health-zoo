@@ -1644,12 +1644,43 @@ def _channel_freq(channel: int, band: str) -> int:
     return 2407 + 5 * channel if band == "2.4" else 5000 + 5 * channel
 
 
-def _measure_neighbours(radios: list[dict], sightings: list[dict]) -> None:
+def _channel_floor(sightings: list[dict], band: str) -> dict:
+    """Per candidate channel: the least interference there can possibly be.
+
+    A radio listens through a filter centred on its own channel, so networks at
+    the far end of the band are heard faint or not at all. Every number here is
+    therefore a floor, never an estimate: the channel the radio is sitting on
+    is measured, the others can only be worse than they look.
+    """
+    floor = {}
+    for option in sorted(NON_OVERLAPPING_24):
+        level, landed = interference(sightings, _channel_freq(option, band), 20)
+        if level is None:
+            continue
+        loudest = landed[0]
+        floor[str(option)] = {
+            "level": level,
+            "networks": len(landed),
+            "loudest": loudest["essid"] or "(скрытый)",
+            "signal": loudest["signal"],
+        }
+    return floor
+
+
+def _measure_neighbours(radios: list[dict], sightings: list[dict],
+                        site_sightings: list[dict] | None = None,
+                        ap_mac: str = "") -> None:
     """Attach measured interference — who is heard, how loud, how much overlap.
 
     The question is never "does anyone share our channel number" but "how much
     energy from other networks lands in our carrier". A network two channels
     away at -50 dBm hurts; one on our exact channel at -92 dBm does not.
+
+    What the other access points on the site hear is carried alongside rather
+    than merged in. They stand somewhere else, so their signal levels are not
+    this radio's — but a loud network only they can hear is still a reason not
+    to move onto that channel, and it is the one thing a single radio sitting
+    on one channel can never learn on its own.
     """
     if not sightings:
         return
@@ -1675,13 +1706,13 @@ def _measure_neighbours(radios: list[dict], sightings: list[dict]) -> None:
             "share": n["share"],
         } for n in landed[:5]]
         radio["neighbour_count"] = len(landed)
-        if band == "2.4":
-            # The same measurement, asked of the channels we could move to.
-            # This is what makes the finding actionable instead of merely true.
-            radio["channel_options"] = {
-                str(option): interference(near, _channel_freq(option, band), 20)[0]
-                for option in sorted(NON_OVERLAPPING_24)
-            }
+        if band != "2.4":
+            continue
+        radio["channel_floor"] = _channel_floor(near, band)
+        elsewhere = [s for s in (site_sightings or [])
+                     if s["freq"] < 3000 and s.get("heard_by") != ap_mac]
+        if elsewhere:
+            radio["channel_floor_site"] = _channel_floor(elsewhere, band)
 
 
 def poll_unifi_controller(cfg: dict, results: list[dict]) -> None:
@@ -1752,7 +1783,19 @@ def poll_unifi_controller(cfg: dict, results: list[dict]) -> None:
             "freq": frequency,
             "width": sighting.get("bw") or 20,
             "signal": signal,
+            "heard_by": sighting.get("ap_mac"),
         })
+
+    # One entry per network across the whole site, kept at the loudest reading
+    # anyone got. A UniFi site is one location by construction, so this is the
+    # band as the building experiences it — the part of it no single radio can
+    # hear from where it is parked.
+    site_wide: dict = {}
+    for sightings in heard.values():
+        for sighting in sightings:
+            previous = site_wide.get(sighting["bssid"])
+            if previous is None or sighting["signal"] > previous["signal"]:
+                site_wide[sighting["bssid"]] = sighting
 
     by_addr = {h.get("addr"): h for h in results}
     for device in devices.get("data", []):
@@ -1808,9 +1851,14 @@ def poll_unifi_controller(cfg: dict, results: list[dict]) -> None:
                 "foreign_utilization": (total - mine) if isinstance(total, int) else None,
                 "satisfaction": radio.get("satisfaction"),
                 "tx_power": radio.get("tx_power"),
+                # Airtime says the channel is busy; retries say our own frames
+                # are the ones losing. That is the difference between a band
+                # that is merely occupied and one we cannot transmit on.
+                "retries": radio.get("tx_retries_pct"),
                 "disabled": False,
             })
-        _measure_neighbours(radios, heard.get(device.get("mac"), []))
+        _measure_neighbours(radios, heard.get(device.get("mac"), []),
+                            list(site_wide.values()), device.get("mac", ""))
         if radios:
             host["radios"] = radios
 
@@ -1889,12 +1937,12 @@ NON_OVERLAPPING_24 = {1, 6, 11}
 # Below roughly -85 dBm a network is a rumour: it neither defers to us nor
 # raises our noise floor enough to cost a frame.
 AUDIBLE_DBM = -85
-# Scan entries persist in the controller for months. Anything older than a few
-# minutes describes an air that no longer exists.
+# The controller keeps one row per network, updated whenever it is heard again,
+# and `within` bounds that by last_seen — so the hour-long window is what makes
+# the set current. `rssi_age` is asked for as well but cannot be leaned on: the
+# controller has been seen returning ages of ninety days on rows it had just
+# refreshed. It is a sanity check here, not the filter.
 FRESH_SIGHTING_SECONDS = 900
-# Half a channel of separation is not a decision worth making: 6 dB is four
-# times the power, which is where moving an access point starts to pay off.
-WORTH_MOVING_DB = 6
 
 
 def _span(center: float, width: int) -> tuple[float, float]:

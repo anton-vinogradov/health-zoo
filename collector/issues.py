@@ -31,7 +31,18 @@ DEFAULT_THRESHOLDS = {
     # congested at levels where 5 GHz is still comfortable.
     "airtime_warn_24": 40, "airtime_bad_24": 70,
     "airtime_warn_5": 60, "airtime_bad_5": 85,
+    # Retries are normal — rate adaptation lives on them — but a third of
+    # frames repeated means the channel is being lost, not shared.
+    "retries_warn_24": 35, "retries_warn_5": 45,
     "wifi_satisfaction_warn": 80,
+    # Moving channel costs every client a reconnect, so it has to buy back
+    # more than measurement noise: eight points of foreign airtime, backed by
+    # enough polls that a single busy evening cannot be the whole sample.
+    "channel_gain_pct": 8,
+    "channel_evidence_samples": 10,
+    # A candidate heard this much louder than the channel we are on is worse
+    # even before correcting for the receiver being deaf to it.
+    "channel_gain_db": 6,
     # Let's Encrypt renews at 30 days; a warning at 21 means renewal has
     # already failed twice, and 7 means it is now urgent.
     "cert_warn_days": 21,
@@ -54,6 +65,128 @@ def thresholds_for(host: dict, cfg: dict | None = None) -> dict:
     limits.update(cfg.get("thresholds_by_role", {}).get(host.get("role", ""), {}))
     limits.update(cfg.get("thresholds_by_host", {}).get(host.get("id", ""), {}))
     return limits
+
+
+def _channels_ruled_out(radio: dict, limits: dict) -> dict:
+    """Candidates already known to be worse than where the radio is now.
+
+    Off-channel readings understate — the receiver is filtered — so a candidate
+    that already sounds louder than the channel we are measuring properly is
+    genuinely louder. That is the one direction in which this data can be
+    trusted, and it is enough to strike a channel off the list without ever
+    moving the radio onto it.
+    """
+    # Both sides of the comparison have to be measured over the same width.
+    # `interference` spans the carrier the radio actually runs, which on a
+    # 40 MHz radio collects roughly twice the neighbourhood — comparing that
+    # against 20 MHz candidates would quietly clear every one of them.
+    floor = radio.get("channel_floor") or {}
+    same_width = (floor.get(str(radio.get("channel"))) or {}).get("level")
+    here = same_width if isinstance(same_width, (int, float)) else radio.get("interference")
+    if not isinstance(here, (int, float)):
+        return {}
+    margin = limits.get("channel_gain_db", 6)
+    out = {}
+    for key, entry in floor.items():
+        level = (entry or {}).get("level")
+        if not str(key).isdigit() or not isinstance(level, (int, float)):
+            continue
+        if int(key) != radio.get("channel") and level - here >= margin:
+            out[int(key)] = entry
+    return out
+
+
+def _ago(hours: float) -> str:
+    if hours < 1:
+        return "только что"
+    if hours < 48:
+        return f"{round(hours)} ч назад"
+    return f"{round(hours / 24)} дн назад"
+
+
+def _channel_advice(radio: dict, limits: dict) -> str:
+    """Where this 2.4 GHz radio should sit — or nothing, if nobody can tell.
+
+    Silence is a valid answer here and used to be the missing one: the check
+    this replaced compared the channel it was on against what it thought the
+    others sounded like, and recommended moves onto channels it had simply
+    failed to hear.
+    """
+    if radio.get("band") != "2.4":
+        return ""
+    channel = radio.get("channel")
+    if not isinstance(channel, int) or not channel:
+        return ""
+
+    measured = {}
+    for key, entry in (radio.get("channel_history") or {}).items():
+        if str(key).isdigit() and isinstance(entry, dict):
+            measured[int(key)] = entry
+    enough = limits.get("channel_evidence_samples", 10)
+    gain = limits.get("channel_gain_pct", 8)
+    ruled_out = _channels_ruled_out(radio, limits)
+    here = measured.get(channel)
+
+    if here and here.get("samples", 0) >= enough:
+        better = sorted(
+            (c for c, entry in measured.items()
+             if c != channel and c not in ruled_out
+             and entry.get("samples", 0) >= enough
+             and here["median"] - entry["median"] >= gain),
+            key=lambda c: measured[c]["median"])
+        if better:
+            best = measured[better[0]]
+            return (f"канал {channel}: чужой эфир {here['median']}% по "
+                    f"{here['samples']} замерам. На канале {better[0]} было "
+                    f"{best['median']}% ({best['samples']} замеров, последний "
+                    f"{_ago(best['age_hours'])}) — стоит перейти туда")
+
+    # Nothing is provable, so speak only if something is actually hurting —
+    # and busy air is not the only way it can. A channel can read as half
+    # empty while a third of our frames go out twice, which is the case that
+    # a threshold on airtime alone sits quietly through.
+    util = radio.get("utilization")
+    retries = radio.get("retries")
+    busy = (isinstance(util, (int, float))
+            and util >= limits.get("airtime_warn_24", 40))
+    losing = (isinstance(retries, (int, float))
+              and retries >= limits.get("retries_warn_24", 35))
+    if not (busy or losing):
+        return ""
+    symptom = f"эфир {util}%" if busy else f"{retries}% передач повторно"
+
+    known = set(measured) | set(ruled_out) | {channel}
+    for key in (radio.get("channel_floor") or {}):
+        if str(key).isdigit():
+            known.add(int(key))
+    untried = sorted(c for c in known
+                     if c != channel and c not in ruled_out
+                     and measured.get(c, {}).get("samples", 0) < enough)
+    struck = ", ".join(
+        f"{c} занят ({entry['loudest']} {entry['signal']} дБм)"
+        for c, entry in sorted(ruled_out.items()))
+    # A wide neighbour lands on several candidates at once, so it is named once
+    # with the channels it covers rather than repeated under each of them.
+    from_others: dict = {}
+    for key, entry in (radio.get("channel_floor_site") or {}).items():
+        if str(key).isdigit() and int(key) in untried:
+            from_others.setdefault(
+                (entry["loudest"], entry["signal"]), []).append(int(key))
+    elsewhere = ", ".join(
+        f"{essid} {signal} дБм на {'/'.join(str(c) for c in sorted(channels))}"
+        for (essid, signal), channels in from_others.items())
+
+    if not untried:
+        return (f"канал {channel}: {symptom}, но остальные каналы хуже"
+                + (f" — {struck}" if struck else ""))
+    parts = [f"канал {channel}: {symptom}, а на "
+             f"{', '.join(str(c) for c in untried)} это радио не стояло — "
+             "сравнить не с чем, нужен перебор с замерами"]
+    if struck:
+        parts.append(struck)
+    if elsewhere:
+        parts.append(f"с другой точки там слышно {elsewhere}")
+    return ". ".join(parts)
 
 
 def _level(value, warn, bad) -> str:
@@ -238,26 +371,24 @@ def host_issues(host: dict, cfg: dict | None = None) -> list[dict]:
             add("bad" if util >= bad_at else "warn", f"radioair:{name}",
                 f"эфир {label} занят на {util}%{source}")
 
-        # Not "someone shares our channel number" but "this much of other
-        # networks' power lands in our carrier" — and the same measurement
-        # repeated for the channels we could move to, which is what turns a
-        # true statement into a decision.
-        level = radio.get("interference")
-        options = {channel: value
-                   for channel, value in (radio.get("channel_options") or {}).items()
-                   if isinstance(value, (int, float))}
-        quietest, quietest_level = min(options.items(), key=lambda item: item[1],
-                                       default=(None, None))
-        if (isinstance(level, (int, float)) and quietest
-                and level - quietest_level >= limits.get("channel_gain_db", 6)):
-            loudest = (radio.get("neighbours") or [{}])[0]
-            source = ""
-            if loudest.get("signal") is not None:
-                source = (f"; громче всех {loudest.get('essid')} "
-                          f"{loudest['signal']} дБм")
-            add("warn", f"radioneighbours:{name}",
-                f"канал {radio.get('channel')} ({label}): соседи дают {level} дБм"
-                f"{source}. На канале {quietest} было бы {quietest_level} дБм")
+        # Airtime says the band is busy; retries say our own frames are the
+        # ones not getting through. A quiet-looking channel with a third of
+        # transmissions repeated is the case airtime alone would have missed.
+        retries = radio.get("retries")
+        retry_at = limits.get("retries_warn_24" if band == "2.4" else "retries_warn_5", 40)
+        if isinstance(retries, (int, float)) and retries >= retry_at:
+            add("warn", f"radioretry:{name}",
+                f"{label}: {retries}% передач уходят повторно")
+
+        # Which channel to sit on is decided on measurements taken from that
+        # channel — and a radio only ever measures the one it is on. What it
+        # hears about the rest of the band comes through its own filter and is
+        # always too quiet, so it can prove a channel bad and never prove one
+        # good. Recommendations therefore come from recorded history; what the
+        # radio hears right now is only allowed to rule candidates out.
+        verdict = _channel_advice(radio, limits)
+        if verdict:
+            add("warn", f"radioneighbours:{name}", verdict)
         elif radio.get("off_grid"):
             add("warn", f"radiogrid:{name}",
                 f"канал {radio.get('channel')} в 2.4 ГГц перекрывается с соседними; "
@@ -336,6 +467,12 @@ def host_issues(host: dict, cfg: dict | None = None) -> list[dict]:
             add("warn", f"fwd:{rule.get('port')}",
                 f"проброс «{label}» ведёт в никуда: на {rule.get('to')} "
                 f"порт {rule.get('to_port')} никто не слушает")
+        elif rule.get("verdict") == "no-answer":
+            # The port is bound and the connection is refused or times out —
+            # a wedged service, which a listener list reports as healthy.
+            add("warn", f"fwd:{rule.get('port')}",
+                f"проброс «{label}»: {rule.get('to')}:{rule.get('to_port')} "
+                f"слушает, но соединение не принимает")
         elif rule.get("verdict") == "host-down":
             add("warn", f"fwd:{rule.get('port')}",
                 f"проброс «{label}»: хост {rule.get('to')} не отвечает")
@@ -598,9 +735,22 @@ def checks_for(host: dict, cfg: dict | None = None) -> list[dict]:
     add("network", "Выбор канала",
         "В 2.4 ГГц не перекрываются только 1, 6 и 11; соседние точки на близких "
         "каналах глушат друг друга сильнее, чем стоя на одном. Сравниваются "
-        "только точки одной площадки",
+        "только точки одной площадки. Переход на другой канал советуется, "
+        f"только если радио там уже стояло и намеряло минимум на "
+        f"{limits.get('channel_gain_pct', 8)}% меньше чужого эфира "
+        f"(не меньше {limits.get('channel_evidence_samples', 10)} замеров): "
+        "то, что радио слышит про чужие каналы со своего, всегда тише правды "
+        "и годится только чтобы канал вычеркнуть",
         applies=any(r.get("band") == "2.4" for r in host.get("radios", [])),
-        skipped="радио 2.4 ГГц нет", keys=("radiooverlap", "radiogrid"))
+        skipped="радио 2.4 ГГц нет",
+        keys=("radiooverlap", "radiogrid", "radioneighbours"))
+    add("network", "Повторные передачи",
+        f"Доля кадров, ушедших повторно: с {limits.get('retries_warn_24', 35)}% "
+        f"в 2.4 ГГц и {limits.get('retries_warn_5', 45)}% в 5 ГГц. Показывает "
+        "то, чего не видно по загрузке эфира: канал может быть свободен, а наши "
+        "кадры всё равно не доходить",
+        applies=any(r.get("retries") is not None for r in host.get("radios", [])),
+        skipped="точка не отдаёт долю повторов", keys=("radioretry",))
     add("network", "Ширина канала 2.4 ГГц",
         "В 2.4 ГГц помещаются три канала по 20 МГц; 40 МГц занимают половину "
         "диапазона и приносят чужой трафик, которого можно было не слышать",

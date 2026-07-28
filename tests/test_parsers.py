@@ -699,6 +699,166 @@ def test_a_virtual_access_point_does_not_jam_its_own_radio():
     assert "overlaps_with" not in router["radios"][1]
 
 
+# --------------------------------------------------------------------------
+# 2.4 GHz channel choice
+#
+# The bug these came from: the check recommended a channel it had only heard
+# through the receiver's own filter. Sitting on 1 it promised -76.5 dBm on
+# channel 11; the radio was moved and measured -63.7 dBm there, and airtime
+# went up rather than down.
+# --------------------------------------------------------------------------
+
+def _radio_on(channel, **extra):
+    radio = {"name": "ng", "band": "2.4", "channel": channel, "utilization": 75}
+    radio.update(extra)
+    return radio
+
+
+def test_a_channel_never_measured_is_never_recommended():
+    """The whole bug: quiet-sounding is not quiet, it is unheard."""
+    radio = _radio_on(11, interference=-63.7, channel_floor={
+        "1": {"level": -76.5, "networks": 1, "loudest": "DomRu_89", "signal": -76},
+        "6": {"level": -75.8, "networks": 2, "loudest": "Keenetic", "signal": -75},
+        "11": {"level": -63.7, "networks": 9, "loudest": "RT-WiFi", "signal": -65},
+    })
+    ap = {"id": "ap", "name": "Прихожая", "reachable": True, "radios": [radio]}
+
+    found = {i["key"]: i for i in issues.host_issues(ap)}
+    text = found["radioneighbours:ng"]["text"]
+    assert "не стояло" in text and "сравнить не с чем" in text
+    # The number that used to be printed as a promise.
+    assert "-76.5" not in text and "−76.5" not in text
+
+
+def test_a_channel_measured_from_the_channel_itself_is_recommended():
+    radio = _radio_on(11, interference=-63.7, channel_history={
+        "11": {"samples": 40, "median": 35.0, "age_hours": 0.0, "span_hours": 6.0},
+        "1": {"samples": 60, "median": 18.0, "age_hours": 5.0, "span_hours": 48.0},
+    })
+    ap = {"id": "ap", "name": "Прихожая", "reachable": True, "radios": [radio]}
+
+    text = {i["key"]: i for i in issues.host_issues(ap)}["radioneighbours:ng"]["text"]
+    assert "На канале 1 было 18.0%" in text
+    assert "60 замеров" in text
+
+
+def test_a_measured_gain_too_small_to_pay_for_the_reconnect_is_not_advice():
+    radio = _radio_on(11, utilization=30, channel_history={
+        "11": {"samples": 40, "median": 35.0, "age_hours": 0.0, "span_hours": 6.0},
+        "1": {"samples": 60, "median": 31.0, "age_hours": 5.0, "span_hours": 48.0},
+    })
+    ap = {"id": "ap", "name": "Прихожая", "reachable": True, "radios": [radio]}
+
+    assert "radioneighbours:ng" not in {i["key"] for i in issues.host_issues(ap)}
+
+
+def test_one_evening_of_samples_is_not_a_measurement():
+    """Airtime swings by half within minutes; a handful of polls is noise."""
+    radio = _radio_on(11, channel_history={
+        "11": {"samples": 40, "median": 35.0, "age_hours": 0.0, "span_hours": 6.0},
+        "1": {"samples": 4, "median": 12.0, "age_hours": 5.0, "span_hours": 0.2},
+    })
+    ap = {"id": "ap", "name": "Прихожая", "reachable": True, "radios": [radio]}
+
+    text = {i["key"]: i for i in issues.host_issues(ap)}["radioneighbours:ng"]["text"]
+    assert "На канале 1 было" not in text
+    assert "не стояло" in text
+
+
+def test_a_candidate_heard_louder_than_here_is_struck_off():
+    """Off-channel readings understate, so louder-than-us is trustworthy."""
+    radio = _radio_on(11, interference=-63.7, channel_floor={
+        "1": {"level": -75.0, "networks": 2, "loudest": "тихая", "signal": -75},
+        "6": {"level": -54.8, "networks": 9, "loudest": "DomRu_89", "signal": -55},
+    })
+    ap = {"id": "ap", "name": "Прихожая", "reachable": True, "radios": [radio]}
+
+    text = {i["key"]: i for i in issues.host_issues(ap)}["radioneighbours:ng"]["text"]
+    assert "6 занят (DomRu_89 -55 дБм)" in text
+    assert "на 1" in text  # still worth trying
+
+
+def test_a_wide_radio_compares_itself_over_the_same_width():
+    """A 40 MHz carrier collects twice the neighbourhood; comparing that raw
+    number against 20 MHz candidates would clear every one of them."""
+    radio = _radio_on(11, width=40, interference=-58.0, channel_floor={
+        # What lands in a 20 MHz slice on 11 — the like-for-like figure.
+        "11": {"level": -64.0, "networks": 8, "loudest": "RT-WiFi", "signal": -65},
+        "6": {"level": -55.0, "networks": 9, "loudest": "DomRu_89", "signal": -55},
+    })
+    ap = {"id": "ap", "name": "Прихожая", "reachable": True, "radios": [radio]}
+
+    text = {i["key"]: i for i in issues.host_issues(ap)}["radioneighbours:ng"]["text"]
+    assert "6 занят (DomRu_89 -55 дБм)" in text
+
+
+def test_history_never_overrules_a_channel_known_to_be_worse():
+    radio = _radio_on(11, interference=-63.7,
+                      channel_floor={"6": {"level": -50.0, "networks": 9,
+                                           "loudest": "DomRu_89", "signal": -50}},
+                      channel_history={
+                          "11": {"samples": 40, "median": 35.0, "age_hours": 0.0,
+                                 "span_hours": 6.0},
+                          "6": {"samples": 60, "median": 10.0, "age_hours": 300.0,
+                                "span_hours": 48.0}})
+    ap = {"id": "ap", "name": "Прихожая", "reachable": True, "radios": [radio]}
+
+    text = {i["key"]: i for i in issues.host_issues(ap)}["radioneighbours:ng"]["text"]
+    assert "На канале 6 было" not in text
+
+
+def test_retries_alone_are_enough_to_ask_for_a_trial():
+    """Half-empty air with a third of frames repeated is still a bad channel."""
+    radio = _radio_on(11, utilization=30, retries=41.2, interference=-63.7,
+                      channel_floor={"1": {"level": -76.5, "networks": 1,
+                                           "loudest": "DomRu_89", "signal": -76}})
+    ap = {"id": "ap", "name": "Прихожая", "reachable": True, "radios": [radio]}
+
+    text = {i["key"]: i for i in issues.host_issues(ap)}["radioneighbours:ng"]["text"]
+    assert "41.2% передач повторно" in text
+    assert "не стояло" in text
+
+
+def test_a_quiet_radio_says_nothing_at_all():
+    radio = _radio_on(11, utilization=12, interference=-63.7, channel_floor={
+        "1": {"level": -76.5, "networks": 1, "loudest": "DomRu_89", "signal": -76}})
+    ap = {"id": "ap", "name": "Прихожая", "reachable": True, "radios": [radio]}
+
+    assert "radioneighbours:ng" not in {i["key"] for i in issues.host_issues(ap)}
+
+
+def test_what_only_the_other_access_point_can_hear_is_carried_over():
+    """One radio in one room cannot hear the whole flat; the pair can."""
+    kitchen = [{"essid": "DomRu_89", "bssid": "aa", "channel": 6, "freq": 2437,
+                "width": 20, "signal": -55, "heard_by": "kitchen"}]
+    hall_own = [{"essid": "RT-WiFi", "bssid": "bb", "channel": 11, "freq": 2462,
+                 "width": 20, "signal": -65, "heard_by": "hall"}]
+    radios = [{"name": "ng", "band": "2.4", "channel": 11, "width": 20}]
+
+    probe._measure_neighbours(radios, hall_own, hall_own + kitchen, "hall")
+    assert "6" not in radios[0]["channel_floor"]          # the hall cannot hear it
+    assert radios[0]["channel_floor_site"]["6"]["loudest"] == "DomRu_89"
+
+
+def test_the_radios_own_sightings_are_not_counted_as_someone_elses():
+    own = [{"essid": "RT-WiFi", "bssid": "bb", "channel": 11, "freq": 2462,
+            "width": 20, "signal": -65, "heard_by": "hall"}]
+    radios = [{"name": "ng", "band": "2.4", "channel": 11, "width": 20}]
+
+    probe._measure_neighbours(radios, own, own, "hall")
+    assert "channel_floor_site" not in radios[0]
+
+
+def test_retries_are_flagged_where_airtime_would_not_be():
+    ap = {"id": "ap", "name": "Прихожая", "reachable": True,
+          "radios": [{"name": "ng", "band": "2.4", "channel": 11,
+                      "utilization": 30, "retries": 41.2}]}
+
+    found = {i["key"]: i for i in issues.host_issues(ap)}
+    assert "radioair:ng" not in found
+    assert "41.2%" in found["radioretry:ng"]["text"]
+
+
 def test_forty_megahertz_in_the_crowded_band_is_reported():
     ap = {"id": "ap", "name": "Кухня", "reachable": True,
           "radios": [{"name": "ng", "band": "2.4", "channel": 6, "width": 40},

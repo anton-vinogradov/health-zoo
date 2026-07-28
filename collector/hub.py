@@ -101,6 +101,7 @@ class Fleet:
                                       self.hosts(), self.cfg.get("ssh_key"), hosts)
             probe.poll_unifi_controller(self.cfg, hosts)
             probe.analyse_wifi(hosts)
+            self.attach_channel_history(hosts)
             probe.check_forwards(hosts)
             for host in hosts:
                 probe.endpoints_from_probed_ports(host)
@@ -141,6 +142,25 @@ class Fleet:
             self.poll_once()
             self.wake.wait(timeout=self.cfg.get("poll_interval", 180))
             self.wake.clear()
+
+    def attach_channel_history(self, hosts: list[dict]) -> None:
+        """Give each 2.4 GHz radio what it has measured on the other channels.
+
+        Without this the only comparison available is what a radio hears about
+        the far end of the band from where it sits, which is systematically
+        too quiet — the receiver is filtered, not the air. Recorded history is
+        the honest version: it was taken on that channel, from this antenna.
+        """
+        if not self.history.available:
+            return
+        for host in hosts:
+            for radio in host.get("radios", []):
+                name = radio.get("name") or radio.get("dev")
+                if radio.get("band") != "2.4" or not name:
+                    continue
+                evidence = self.history.channel_evidence(str(host.get("id", "")), name)
+                if evidence:
+                    radio["channel_history"] = evidence
 
     def apply_camera_limits(self, hosts: list[dict]) -> None:
         """Attach each camera its own silence thresholds, where one was set."""

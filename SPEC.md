@@ -97,7 +97,8 @@ Marked: **✓** done, **▶** in progress, **○** deliberately not done.
 | ✓ | Reboot required — naming what is waiting for it |
 | ✓ | Backups: freshness, share coverage, hosts with no backup at all |
 | ✓ | Cameras: stream state, silent detection, archive depth |
-| ✓ | Wi-Fi: radios on air, airtime (own and foreign), channel choice, per-SSID quality |
+| ✓ | Wi-Fi: radios on air, airtime (own and foreign), retry rate, channel choice, per-SSID quality |
+| ✓ | 2.4 GHz channel choice rests only on readings taken from the channel itself: a radio hears other channels through its own filter and always too quietly, so that data can strike a candidate off but never pick one. A move is advised from recorded airtime history — what the radio measured while it was actually there. `tools/channel-trial.py` fills that history in an evening |
 | ✓ | Wireless clients (speakers): a channel the access points are saturating |
 | ✓ | Device firmware: UniFi through the controller, Sonos through its own update service, mesh nodes against the latest meshtastic/firmware release |
 | ✓ | Camera firmware: read by the recorder, which already holds the credentials; judged by build age, since the vendor publishes no list to compare against |

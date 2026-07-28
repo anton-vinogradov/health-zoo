@@ -50,6 +50,24 @@ def extract(host: dict) -> dict[str, float]:
             out[f"disk:{disk['mount']}"] = float(disk["pct"])
             out[f"disk_used:{disk['mount']}"] = float(disk.get("used") or 0)
 
+    # Airtime filed under the channel it was measured on. A radio only ever
+    # measures the channel it is sitting on, so this is the only way a claim
+    # like "channel 1 was quieter" can ever be backed by anything: it has to
+    # have been recorded back when the radio was actually there.
+    for radio in host.get("radios", []):
+        name = radio.get("name") or radio.get("dev")
+        if not name or radio.get("virtual"):
+            continue
+        for field, key in (("utilization", "airtime"), ("foreign_utilization", "foreign"),
+                           ("retries", "retries")):
+            value = radio.get(field)
+            if isinstance(value, (int, float)):
+                out[f"radio:{name}:{key}"] = float(value)
+        channel = radio.get("channel")
+        foreign = radio.get("foreign_utilization")
+        if isinstance(channel, int) and channel and isinstance(foreign, (int, float)):
+            out[f"radio:{name}:ch{channel}:foreign"] = float(foreign)
+
     temps = host.get("temps") or []
     if temps:
         out["temp_max"] = float(max(t.get("c") or 0 for t in temps))
@@ -138,6 +156,48 @@ class History:
         for i in range(points):
             ts, value = rows[int(i * step)]
             out.append([int(ts), value])
+        return out
+
+    def channel_evidence(self, host: str, radio: str, days: int = 30) -> dict:
+        """What this radio measured while it was actually sitting on each channel.
+
+        Returned per channel: how many polls back it up, the median foreign
+        airtime across them, and how long ago the last one was. The median is
+        deliberate — airtime on a single poll has been seen swinging from 27%
+        to 49% and back inside three minutes, so one reading is noise and only
+        a distribution is a fact.
+        """
+        if not self._conn:
+            return {}
+        since = int(time.time()) - days * 86400
+        prefix = f"radio:{radio}:ch"
+        with self.lock:
+            rows = self._conn.execute(
+                "SELECT metric, ts, value FROM samples "
+                "WHERE host=? AND metric LIKE ? AND metric LIKE '%:foreign' AND ts>=?",
+                (host, prefix + "%", since)).fetchall()
+        gathered: dict[int, list] = {}
+        for metric, ts, value in rows:
+            channel = metric[len(prefix):].split(":")[0]
+            if not channel.isdigit():
+                continue
+            gathered.setdefault(int(channel), []).append((ts, value))
+        now = int(time.time())
+        out = {}
+        for channel, samples in gathered.items():
+            values = sorted(v for _, v in samples)
+            middle = len(values) // 2
+            median = (values[middle] if len(values) % 2
+                      else (values[middle - 1] + values[middle]) / 2)
+            stamps = [ts for ts, _ in samples]
+            out[channel] = {
+                "samples": len(values),
+                "median": round(median, 1),
+                "age_hours": round((now - max(stamps)) / 3600.0, 1),
+                # Twenty samples from one evening say less than twenty spread
+                # over three days: the neighbours keep office hours too.
+                "span_hours": round((max(stamps) - min(stamps)) / 3600.0, 1),
+            }
         return out
 
     def metrics(self, host: str) -> list[str]:
