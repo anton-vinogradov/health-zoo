@@ -74,7 +74,7 @@ LIST_FIELDS = {
     # Hardware running below what it can do: the agent phrases its own case,
     # because what counts as a cap is platform knowledge. The parser makes
     # the key plural, so the row is "@cap" and the field is "caps".
-    "cap": ["what", "detail"],
+    "cap": ["what", "detail", "level"],
     "listen": ["port", "process", "scope"],
     "udp": ["port", "process", "scope"],
     # Same shape the RouterOS parser builds by hand, so both kinds of router
@@ -579,7 +579,8 @@ ROUTEROS_CMD = (
     ':foreach i in=[/interface bridge port find] do={'
     ':put ("hw|".[:tostr [/interface bridge port get $i interface]]."|"'
     '.[:tostr [/interface bridge port get $i hw]]."|"'
-    '.[:tostr [/interface bridge port get $i inactive]])}} on-error={}; '
+    '.[:tostr [/interface bridge port get $i inactive]]."|"'
+    '.[:tostr [/interface bridge port get $i bridge]])}} on-error={}; '
     ':put "@@ethernet"; :do {:foreach i in=[/interface ethernet find] do={'
     ':local m [/interface ethernet monitor $i once as-value]; '
     ':put ([:tostr [/interface ethernet get $i name]]."|".[:tostr ($m->"status")]'
@@ -878,11 +879,18 @@ def probe_routeros(host: dict, key: str | None) -> dict:
         capped.append({"what": "маршрутизация",
                        "detail": "нет правила fasttrack — соединения идут "
                                  "полным путём через процессор"})
+    # Hardware offload belongs to one bridge per switch group: a second bridge —
+    # the one isolating the cameras here — cannot have it at all, and repeating
+    # that every three minutes is noise about a decision already made. A port
+    # stands out only when its own bridge is offloaded and it is not.
+    offloaded_bridges = {cells[4] for cells in rows
+                         if cells[0] == "hw" and len(cells) > 4 and cells[2] == "true"}
     for cells in rows:
-        if cells[0] == "hw" and len(cells) > 3 and cells[2] == "false" \
-                and cells[3] == "false":
+        if cells[0] == "hw" and len(cells) > 4 and cells[2] == "false" \
+                and cells[3] == "false" and cells[4] in offloaded_bridges:
             capped.append({"what": f"порт {cells[1]}",
-                           "detail": "аппаратная разгрузка моста выключена"})
+                           "detail": "аппаратная разгрузка выключена, хотя у "
+                                     f"остальных портов моста {cells[4]} она есть"})
     if capped:
         data["caps"] = capped
 

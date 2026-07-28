@@ -113,7 +113,14 @@ fi
 # on a router-grade CPU, which is the difference between a gigabit and a few
 # hundred megabits — and it is off unless somebody turned it on.
 if command -v uci >/dev/null 2>&1; then
-  if [ "$(uci -q get firewall.@defaults[0].flow_offloading)" != "1" ]; then
+  # zapret owns this decision where it is installed: its own FLOWOFFLOAD option
+  # decides what may bypass netfilter, because an offloaded connection never
+  # reaches the queue it does its work in. Reporting the firewall knob there
+  # would be advice to break DPI circumvention.
+  owner=$(uci -q get zapret.config.FLOWOFFLOAD)
+  if [ -n "$owner" ]; then
+    [ "$owner" = "none" ] && row "@cap	маршрутизация	разгрузку потоков держит выключенной zapret (FLOWOFFLOAD=none) — иначе обход DPI перестаёт работать	info"
+  elif [ "$(uci -q get firewall.@defaults[0].flow_offloading)" != "1" ]; then
     row "@cap	маршрутизация	разгрузка потоков выключена — каждый пакет идёт через процессор"
   elif [ "$(uci -q get firewall.@defaults[0].flow_offloading_hw)" != "1" ]; then
     row "@cap	маршрутизация	разгрузка потоков только программная, аппаратная выключена"

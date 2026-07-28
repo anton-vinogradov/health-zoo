@@ -310,7 +310,9 @@ def host_issues(host: dict, cfg: dict | None = None) -> list[dict]:
     # than a fault: none of these stops anything working, they just cost the
     # difference quietly, every day, until somebody looks.
     for cap in host.get("caps", []):
-        add("warn", f"capped:{cap.get('what')}",
+        # A cap somebody chose on purpose is worth seeing and not worth
+        # colouring: the agent that knows it was deliberate says so.
+        add(cap.get("level") or "warn", f"capped:{cap.get('what')}",
             f"{cap.get('what')}: {cap.get('detail')}")
 
     # Only the hottest sensor: a quad-core reports one reading per core plus a
