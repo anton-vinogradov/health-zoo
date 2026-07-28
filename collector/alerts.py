@@ -209,19 +209,28 @@ class Alerts:
         bad, warn = [], []
         for host in hosts:
             for issue in host.get("issues", []):
+                # Anything below "warn" is either normal for that device or a
+                # finding somebody accepted in writing. Both were already
+                # answered, and a digest that repeats them every morning is how
+                # people learn to stop reading the digest.
+                if issue["level"] not in ("bad", "warn"):
+                    continue
                 name = host.get("name", host["id"])
                 (bad if issue["level"] == "bad" else warn).append((name, issue["text"]))
         if not bad and not warn:
             return ""
         lines = ["🩺 health-zoo — сводка за сутки"]
-        if bad:
+        for entries, icon, title in ((bad, "🔴", "требует внимания"),
+                                     (warn, "🟡", "замечания")):
+            if not entries:
+                continue
             lines.append("")
-            lines.append(f"🔴 требует внимания ({len(bad)}):")
-            lines += [f"• {n}: {t}" for n, t in bad[:15]]
-        if warn:
-            lines.append("")
-            lines.append(f"🟡 замечания ({len(warn)}):")
-            lines += [f"• {n}: {t}" for n, t in warn[:15]]
+            lines.append(f"{icon} {title} ({len(entries)}):")
+            lines += [f"• {n}: {t}" for n, t in entries[:15]]
+            # A list cut at fifteen with nothing said about it reads as the
+            # whole list.
+            if len(entries) > 15:
+                lines.append(f"…и ещё {len(entries) - 15}")
         return "\n".join(lines + self._footer())
 
     # ---------- message shaping ----------
