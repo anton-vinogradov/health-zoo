@@ -8,6 +8,7 @@ laying out NVMe and SATA attributes completely differently.
 
 from __future__ import annotations
 
+import json
 import sys
 from pathlib import Path
 
@@ -918,3 +919,102 @@ def test_old_camera_firmware_is_reported_only_against_a_known_build():
     fresh = {"id": "cam", "reachable": True, "role": "camera",
              "os_name": "V5.8", "firmware_age_days": 200}
     assert "firmware_age" not in {i["key"] for i in issues.host_issues(fresh)}
+
+
+# --------------------------------------------------------------------------
+# UniFi controller commands
+# --------------------------------------------------------------------------
+
+UNIFI_AP = {"mac": "aa:bb:cc:dd:ee:ff", "ip": "192.0.2.7", "state": 1,
+            "uptime": 812345, "version": "6.6.65", "upgradable": True}
+
+UNIFI_CFG = {"unifi_controller": {"url": "https://192.0.2.13:8443",
+                                  "username": "health-zoo", "password": "x"}}
+
+
+class _Reply:
+    def __init__(self, body):
+        self.body = json.dumps(body).encode()
+
+    def read(self):
+        return self.body
+
+
+class _FakeController:
+    """A UniFi Network 10.2.105 controller, including the part that matters:
+    `cmd/devmgr` answers rc=ok to any string in `cmd`, executed or not.
+
+    `after` is the device record the controller starts serving once a command
+    has been sent — i.e. whether the access point actually did anything.
+    """
+
+    def __init__(self, device, after=None):
+        self.device = device
+        self.after = after
+        self.sent = []
+
+    def open(self, request, timeout=None):
+        if isinstance(request, str):
+            assert request.endswith("/stat/device")
+            return _Reply({"data": [self.device]})
+        self.sent.append(json.loads(request.data.decode()))
+        if self.after is not None:
+            self.device = self.after
+        return _Reply({"meta": {"rc": "ok"}, "data": []})
+
+
+def test_a_mistyped_unifi_command_never_reaches_the_controller(monkeypatch):
+    """rc=ok comes back for «restrat» too, so the name cannot be sent on trust."""
+    sessions = []
+    monkeypatch.setattr(probe, "_unifi_session",
+                        lambda conf, password: sessions.append(conf))
+
+    ok, error = probe.unifi_command(UNIFI_CFG, UNIFI_AP["mac"], "restrat")
+
+    assert ok is False
+    assert "restrat" in error
+    assert sessions == [], "неизвестную команду отправлять некуда"
+
+
+def test_a_unifi_reboot_is_confirmed_by_the_device_not_by_rc(monkeypatch):
+    """The proof is the uptime the access point reset, not the reply."""
+    controller = _FakeController(dict(UNIFI_AP), after=dict(UNIFI_AP, uptime=41))
+    monkeypatch.setattr(probe, "_unifi_session", lambda conf, password: controller)
+
+    ok, error = probe.unifi_command(UNIFI_CFG, "AA:BB:CC:DD:EE:FF", "restart")
+
+    assert (ok, error) == (True, "")
+    assert controller.sent == [{"cmd": "restart", "mac": "aa:bb:cc:dd:ee:ff"}]
+
+
+def test_a_unifi_command_that_moved_nothing_is_not_a_success(monkeypatch):
+    """rc=ok while the point keeps its uptime and stays connected: it slept."""
+    controller = _FakeController(dict(UNIFI_AP))
+    monkeypatch.setattr(probe, "_unifi_session", lambda conf, password: controller)
+
+    ok, error = probe.unifi_command(UNIFI_CFG, UNIFI_AP["mac"], "restart",
+                                    confirm_seconds=0.01)
+
+    assert ok is False
+    assert "не изменила состояние" in error
+
+
+def test_a_unifi_upgrade_is_confirmed_by_the_offer_disappearing(monkeypatch):
+    """Nothing downstream watches a firmware upgrade, so this is the only check."""
+    controller = _FakeController(dict(UNIFI_AP),
+                                 after=dict(UNIFI_AP, upgradable=False))
+    monkeypatch.setattr(probe, "_unifi_session", lambda conf, password: controller)
+
+    assert probe.unifi_command(UNIFI_CFG, UNIFI_AP["mac"], "upgrade") == (True, "")
+
+
+def test_a_unifi_command_for_a_point_the_controller_lost(monkeypatch):
+    """A stale MAC only shows up as UnknownDevice when the command name is real."""
+    controller = _FakeController(dict(UNIFI_AP))
+    monkeypatch.setattr(probe, "_unifi_session", lambda conf, password: controller)
+
+    ok, error = probe.unifi_command(UNIFI_CFG, "11:22:33:44:55:66", "restart")
+
+    assert ok is False
+    assert "не управляет" in error
+    assert controller.sent == [], "команду некому адресовать"

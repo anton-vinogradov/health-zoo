@@ -1715,6 +1715,35 @@ def _measure_neighbours(radios: list[dict], sightings: list[dict],
             radio["channel_floor_site"] = _channel_floor(elsewhere, band)
 
 
+def _unifi_session(conf: dict, password: str):
+    """Log in to the controller and return an opener that carries the cookie."""
+    import http.cookiejar
+    context = ssl.create_default_context()
+    # Controller certificates are self-signed unless someone went out of their
+    # way; this reads statistics, it does not trust the endpoint with secrets
+    # beyond the credentials it was given for exactly this purpose.
+    context.check_hostname = False
+    context.verify_mode = ssl.CERT_NONE
+    opener = urllib.request.build_opener(
+        urllib.request.HTTPSHandler(context=context),
+        urllib.request.HTTPCookieProcessor(http.cookiejar.CookieJar()))
+    base = (conf.get("url") or "").rstrip("/")
+    opener.open(urllib.request.Request(
+        f"{base}/api/login",
+        data=json.dumps({"username": conf.get("username"),
+                         "password": password}).encode(),
+        headers={"Content-Type": "application/json"}), timeout=10).read()
+    return opener
+
+
+def _unifi_devices(opener, base: str, site: str) -> dict:
+    """MAC -> device record: the controller's own view of what it manages."""
+    body = json.loads(
+        opener.open(f"{base}/api/s/{site}/stat/device", timeout=15).read())
+    return {(device.get("mac") or "").lower(): device
+            for device in body.get("data", [])}
+
+
 def poll_unifi_controller(cfg: dict, results: list[dict]) -> None:
     """Enrich access points from the UniFi controller's API.
 
@@ -1731,34 +1760,16 @@ def poll_unifi_controller(cfg: dict, results: list[dict]) -> None:
         return
 
     site = conf.get("site", "default")
-    context = ssl.create_default_context()
-    # Controller certificates are self-signed unless someone went out of their
-    # way; this reads statistics, it does not trust the endpoint with secrets
-    # beyond the credentials it was given for exactly this purpose.
-    context.check_hostname = False
-    context.verify_mode = ssl.CERT_NONE
-
-    import http.cookiejar
-    import json as _json
-    jar = http.cookiejar.CookieJar()
-    opener = urllib.request.build_opener(
-        urllib.request.HTTPSHandler(context=context),
-        urllib.request.HTTPCookieProcessor(jar))
-
     try:
-        login = urllib.request.Request(
-            f"{base}/api/login",
-            data=_json.dumps({"username": user, "password": password}).encode(),
-            headers={"Content-Type": "application/json"})
-        opener.open(login, timeout=10).read()
-        devices = _json.loads(
+        opener = _unifi_session(conf, password)
+        devices = json.loads(
             opener.open(f"{base}/api/s/{site}/stat/device", timeout=15).read())
         # What each access point currently hears. The radios collect this
         # between beacons on their own, so asking costs nothing and — unlike
         # a channel scan on the router — never takes a radio off the air.
-        scan = _json.loads(opener.open(urllib.request.Request(
+        scan = json.loads(opener.open(urllib.request.Request(
             f"{base}/api/s/{site}/stat/rogueap",
-            data=_json.dumps({"within": 1}).encode(),
+            data=json.dumps({"within": 1}).encode(),
             headers={"Content-Type": "application/json"}), timeout=20).read())
     except Exception as exc:
         for host in results:
@@ -1884,12 +1895,67 @@ def poll_unifi_controller(cfg: dict, results: list[dict]) -> None:
         _post_process(host)
 
 
-def unifi_command(cfg: dict, mac: str, command: str) -> tuple[bool, str]:
+# The controller reports a device it is happy with as state 1. Every other
+# value — 0 offline, 4 upgrading, 5 provisioning, 6 heartbeat missed — means
+# the device is busy or has stopped answering, which is what a command that
+# actually landed looks like from the controller's side.
+UNIFI_STATE_CONNECTED = 1
+
+
+def _unifi_restarted(before: dict, after: dict) -> bool:
+    """A rebooted access point either drops off the controller or comes back
+    with less uptime than it had."""
+    if after.get("state") != UNIFI_STATE_CONNECTED:
+        return True
+    was, now = before.get("uptime"), after.get("uptime")
+    return isinstance(was, (int, float)) and isinstance(now, (int, float)) and now < was
+
+
+def _unifi_upgrading(before: dict, after: dict) -> bool:
+    """An upgrade shows up as the device leaving the connected state (it
+    reboots into the new firmware), as the offered upgrade disappearing, or as
+    the version having already changed."""
+    if after.get("state") != UNIFI_STATE_CONNECTED:
+        return True
+    if before.get("upgradable") and not after.get("upgradable"):
+        return True
+    return after.get("version") != before.get("version")
+
+
+# The controller answers rc=ok to any string in `cmd`. On Network 10.2.105
+# {"cmd": "definitely-not-a-command"} came back ok for every MAC tried, while
+# a command the controller does implement, aimed at a MAC it does not manage,
+# came back rc=error with api.err.UnknownDevice — the request only gets as far
+# as the device lookup when the name is real. So rc proves the JSON parsed and
+# nothing more: «restrat» would report a reboot that never happened. The name
+# is checked against this table before anything is sent, and each entry says
+# what the device has to look like afterwards for the command to count.
+UNIFI_DEVMGR_COMMANDS = {
+    "restart": _unifi_restarted,
+    "upgrade": _unifi_upgrading,
+}
+
+# How long to keep re-reading the device before calling the result unconfirmed.
+# A reboot takes the access point off the controller within a heartbeat or two;
+# past that the honest answer is "not confirmed", which is a different thing
+# from "did not happen".
+UNIFI_CONFIRM_SECONDS = 60
+UNIFI_CONFIRM_POLL = 5
+
+
+def unifi_command(cfg: dict, mac: str, command: str,
+                  confirm_seconds: float | None = None) -> tuple[bool, str]:
     """Send a device command through the controller (restart, upgrade).
 
     Access points take orders from the controller, not from us — which is also
     why the controller account has to be an admin rather than view-only:
     reading statistics and rebooting a radio come through the same door.
+
+    Success is read off the device afterwards, never off the reply — see
+    UNIFI_DEVMGR_COMMANDS for why the reply cannot be believed. Pass
+    confirm_seconds=0 when the caller has a better witness of its own: the
+    reboot job pings the access point down and back, which is firmer proof
+    than the controller's heartbeat bookkeeping and happens anyway.
     """
     conf = cfg.get("unifi_controller") or {}
     base = (conf.get("url") or "").rstrip("/")
@@ -1899,32 +1965,47 @@ def unifi_command(cfg: dict, mac: str, command: str) -> tuple[bool, str]:
         return False, "контроллер UniFi не настроен в конфиге"
     if not mac:
         return False, "неизвестен MAC точки (контроллер её не видит)"
-
-    import http.cookiejar
-    import json as _json
-    context = ssl.create_default_context()
-    context.check_hostname = False
-    context.verify_mode = ssl.CERT_NONE
-    jar = http.cookiejar.CookieJar()
-    opener = urllib.request.build_opener(
-        urllib.request.HTTPSHandler(context=context),
-        urllib.request.HTTPCookieProcessor(jar))
+    confirmed = UNIFI_DEVMGR_COMMANDS.get(command)
+    if confirmed is None:
+        return False, (f"контроллер не знает команду «{command}» "
+                       f"и молча ответит на неё «ок»")
 
     site = conf.get("site", "default")
+    mac = mac.lower()
+    if confirm_seconds is None:
+        confirm_seconds = float(conf.get("confirm_seconds", UNIFI_CONFIRM_SECONDS))
+
     try:
-        opener.open(urllib.request.Request(
-            f"{base}/api/login",
-            data=_json.dumps({"username": user, "password": password}).encode(),
-            headers={"Content-Type": "application/json"}), timeout=10).read()
+        opener = _unifi_session(conf, password)
+        # Also the only place a wrong or stale MAC is caught for certain: the
+        # controller's own UnknownDevice needs the command name to be real.
+        before = _unifi_devices(opener, base, site).get(mac)
+        if before is None:
+            return False, f"контроллер не управляет точкой {mac}"
+
         response = opener.open(urllib.request.Request(
             f"{base}/api/s/{site}/cmd/devmgr",
-            data=_json.dumps({"cmd": command, "mac": mac.lower()}).encode(),
+            data=json.dumps({"cmd": command, "mac": mac}).encode(),
             headers={"Content-Type": "application/json"}), timeout=20).read()
-        body = _json.loads(response)
-        ok = (body.get("meta", {}).get("rc") == "ok")
-        return ok, "" if ok else str(body.get("meta", {}).get("msg", "отказ контроллера"))
+        meta = json.loads(response).get("meta", {})
+        if meta.get("rc") != "ok":
+            return False, str(meta.get("msg", "отказ контроллера"))
+        if confirm_seconds <= 0:
+            return True, ""
+
+        deadline = time.time() + confirm_seconds
+        while True:
+            after = _unifi_devices(opener, base, site).get(mac, {})
+            if confirmed(before, after):
+                return True, ""
+            left = deadline - time.time()
+            if left <= 0:
+                break
+            time.sleep(min(UNIFI_CONFIRM_POLL, left))
     except Exception as exc:
         return False, str(exc)
+    return False, (f"контроллер принял «{command}», но точка не изменила "
+                   f"состояние за {int(confirm_seconds)} с — проверьте вручную")
 
 
 # In 2.4 GHz only 1, 6 and 11 do not overlap: the channels are 5 MHz apart

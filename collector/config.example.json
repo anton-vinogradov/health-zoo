@@ -159,6 +159,7 @@
     "url": "https://10.0.10.13:8443",
     "site": "default",
     "username": "health-zoo",
-    "password_credential": "unifi-password"
+    "password_credential": "unifi-password",
+    "confirm_seconds": 60
   }
 }

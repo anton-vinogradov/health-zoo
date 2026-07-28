@@ -585,7 +585,11 @@ class Jobs:
             code = 1
         elif isinstance(command, tuple) and command[0] == "unifi":
             self._log(job_id, "команда идёт через контроллер UniFi")
-            ok, error = probe.unifi_command(self.cfg, command[1], command[2])
+            # No controller-side confirmation here: _await_return below follows
+            # the access point down and back by ping, which is firmer proof
+            # than the controller's heartbeat bookkeeping and runs anyway.
+            ok, error = probe.unifi_command(self.cfg, command[1], command[2],
+                                            confirm_seconds=0)
             if not ok:
                 self._log(job_id, f"! {error}")
             code = 0 if ok else 1

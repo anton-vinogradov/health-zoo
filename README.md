@@ -165,9 +165,16 @@ account means the reboot and firmware buttons cannot work.
   "url": "https://10.0.10.13:8443",
   "site": "default",
   "username": "health-zoo",
-  "password": "…"
+  "password": "…",
+  "confirm_seconds": 60
 }
 ```
+
+The controller answers `rc: ok` to any command name it is given, including one
+that does not exist — so a command is only reported as done once the access
+point itself is read back and seen to have moved. `confirm_seconds` is how long
+that is waited for before the answer becomes "not confirmed", which is not the
+same as "failed".
 
 A router that is also an access point simply declares both roles:
 `"roles": ["router", "ap"]`.
