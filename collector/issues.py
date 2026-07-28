@@ -45,6 +45,14 @@ DEFAULT_THRESHOLDS = {
     "channel_gain_db": 6,
     # Let's Encrypt renews at 30 days; a warning at 21 means renewal has
     # already failed twice, and 7 means it is now urgent.
+    # "Unusual for this host" needs two guards: a floor, below which a multiple
+    # is arithmetic rather than news, and how many times over the habit counts
+    # as a departure from it.
+    # Hardware that comes back on its own: once is an event, three times in a
+    # week is a power supply, a board or a watchdog.
+    "reboots_week_warn": 3, "reboots_week_bad": 5,
+    "baseline_floor": 25,
+    "baseline_factor": 2.0,
     "cert_warn_days": 21,
     "cert_bad_days": 7,
 }
@@ -318,6 +326,24 @@ def host_issues(host: dict, cfg: dict | None = None) -> list[dict]:
             add("warn" if speed >= 100 else "bad", f"link:{link['name']}",
                 f"порт {link['name']}: {_speed(speed)}, хотя умеет {_speed(capable)}")
 
+    # Unusual for this machine, whatever the fixed thresholds say. The whole
+    # point is the range below them: a box that normally idles at 12% and has
+    # been sitting at 55% for half an hour is doing something new, and 55 is
+    # nowhere near any threshold that would suit the fleet.
+    for label, norm in (host.get("baselines") or {}).items():
+        now, usual = norm.get("now"), norm.get("usual")
+        if not isinstance(now, (int, float)) or not isinstance(usual, (int, float)):
+            continue
+        # A floor keeps arithmetic out of it: three times two per cent is six
+        # per cent, and nobody needs to hear about it.
+        if now < limits.get("baseline_floor", 25):
+            continue
+        if usual <= 0 or now / usual < limits.get("baseline_factor", 2.0):
+            continue
+        add("warn", f"unusual:{label}",
+            f"{label}: {now}% последние полчаса против обычных {usual}% "
+            f"({norm.get('samples')} замеров)")
+
     # Hardware that could do more than it is doing. Stated as a finding rather
     # than a fault: none of these stops anything working, they just cost the
     # difference quietly, every day, until somebody looks.
@@ -357,6 +383,18 @@ def host_issues(host: dict, cfg: dict | None = None) -> list[dict]:
             # and now not running has stopped doing its job, whether it
             # crashed or was stopped and forgotten.
             add("bad", f"svc:{svc.get('name')}", f"{name} не работает (включён в автозапуск)")
+
+    # A restart nobody asked for is invisible by the next poll: the host is up,
+    # healthy and identical to one that never went anywhere.
+    if host.get("rebooted") and not host.get("reboot_planned"):
+        add("info", "rebooted",
+            f"перезагрузился между опросами — аптайм "
+            f"{max(1, round((host.get('uptime') or 0) / 60))} мин")
+    weekly = host.get("reboots_week") or 0
+    if weekly >= limits.get("reboots_week_bad", 5):
+        add("bad", "reboots", f"перезагружался {weekly} раз за неделю сам по себе")
+    elif weekly >= limits.get("reboots_week_warn", 3):
+        add("warn", "reboots", f"перезагружался {weekly} раза за неделю сам по себе")
 
     # A unit that dies and is brought back looks healthy at every poll; the
     # restart counter is the only place it shows, and only as a difference.
@@ -796,6 +834,12 @@ def checks_for(host: dict, cfg: dict | None = None) -> list[dict]:
         "ICMP и, где есть доступ, успешный опрос агентом каждые "
         f"{(cfg or {}).get('poll_interval', 180) // 60} мин",
         keys=("down",))
+    add("availability", "Перезагрузки",
+        f"Аптайм, который стал меньше, чем был в прошлый опрос. "
+        f"Предупреждение с {limits.get('reboots_week_warn', 3)} внеплановых "
+        f"перезагрузок за неделю, критично с {limits.get('reboots_week_bad', 5)}. "
+        "Перезагрузки, заказанные с дашборда, не считаются",
+        keys=("rebooted", "reboots"))
     add("availability", "Полнота опроса",
         "Агент отработал и вернул данные; иначе видно только сетевой уровень",
         keys=("noaccess",))
@@ -844,6 +888,13 @@ def checks_for(host: dict, cfg: dict | None = None) -> list[dict]:
                else "порты не сообщают своих возможностей, а истории замеров "
                     "ещё нет — сравнить текущую скорость не с чем"),
         keys=("link",))
+    add("resources", "Отклонение от своей нормы",
+        f"Медиана последнего получаса против медианы месяца: тревога, когда "
+        f"стало вдвое больше обычного и при этом выше {limits.get('baseline_floor', 25)}%. "
+        "Ловит то, что ниже общих порогов: хост, который обычно скучает на 12%, "
+        "а сейчас держит 40%, ничем другим не отличается от здорового",
+        applies=bool(host.get("baselines")),
+        skipped="истории по этому хосту ещё нет", keys=("unusual",))
     add("resources", "Очередь к процессору",
         f"Load average против числа ядер: предупреждение с {limits['load_warn']}%, "
         f"критично с {limits['load_bad']}%. Отвечает не на «сколько занято», а на "

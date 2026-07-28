@@ -103,6 +103,7 @@ class Fleet:
             probe.analyse_wifi(hosts)
             self.attach_channel_history(hosts)
             self.attach_link_history(hosts)
+            self.attach_baselines(hosts)
             probe.check_forwards(hosts)
             # Exposure is measured, not derived: learn the address the site is
             # seen as, knock on every published port from outside, and only then
@@ -117,6 +118,7 @@ class Fleet:
             with self.lock:
                 previous = self.snapshot.get("hosts", [])
             probe.note_service_changes(previous, hosts)
+            self.note_reboots(hosts)
             issues.annotate(hosts, self.cfg, self.suppressions)
             issues.annotate_checks(hosts, self.cfg)
             snap = {
@@ -172,6 +174,61 @@ class Fleet:
                 evidence = self.history.channel_evidence(str(host.get("id", "")), name)
                 if evidence:
                     radio["channel_history"] = evidence
+
+    # What each of these is called in history and what to call it out loud.
+    # Temperature is deliberately absent: it has an absolute threshold that
+    # means something physical, and "twice as hot as usual" is not a number
+    # any board reaches before it stops working.
+    NORMS = (("cpu_load_pct", "процессор занят"),
+             ("load_pct", "очередь к процессору"))
+
+    def note_reboots(self, hosts: list[dict]) -> None:
+        """Separate the restarts somebody asked for from the rest, and count.
+
+        The dashboard reboots hosts itself — on request and, inside its window,
+        on its own — so counting every restart would report its own work as a
+        fault. What matters is the box that keeps coming back without anybody
+        asking, which is a power supply, an overheating board or a watchdog.
+        """
+        for host in hosts:
+            host_id = str(host.get("id", ""))
+            if host.get("rebooted"):
+                asked = self.settings.last_reboot(host_id)
+                # Provisioning, boot and the first successful poll take a few
+                # minutes; a restart inside that window is the one we ordered.
+                host["reboot_planned"] = bool(asked and time.time() - asked < 1800)
+            if self.history.available:
+                unplanned = self.history.total(host_id, "reboot_unplanned", days=7)
+                if unplanned:
+                    host["reboots_week"] = unplanned
+
+    def attach_baselines(self, hosts: list[dict]) -> None:
+        """Give each host its own habits to be judged against.
+
+        A fixed threshold has to suit a router and a transcoding NAS at once, so
+        it ends up suiting neither: 45% airtime is ordinary in the kitchen and
+        remarkable in the hall, and 60% busy is a quiet evening for the box that
+        records four cameras. What is worth saying is rarely "above 80" and
+        usually "twice what this machine normally does".
+        """
+        if not self.history.available:
+            return
+        for host in hosts:
+            host_id = str(host.get("id", ""))
+            found = {}
+            for metric, label in self.NORMS:
+                norm = self.history.norm(host_id, metric)
+                if norm:
+                    found[label] = norm
+            for radio in host.get("radios", []):
+                name = radio.get("name") or radio.get("dev")
+                if not name or radio.get("virtual"):
+                    continue
+                norm = self.history.norm(host_id, f"radio:{name}:airtime")
+                if norm:
+                    found[f"эфир {radio.get('band', '')} ГГц"] = norm
+            if found:
+                host["baselines"] = found
 
     def attach_link_history(self, hosts: list[dict]) -> None:
         """Tell each port the best speed it has ever negotiated.

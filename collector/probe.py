@@ -2483,7 +2483,17 @@ def note_service_changes(previous: list[dict], results: list[dict]) -> None:
         before[host.get("id")] = {
             svc.get("name"): svc for svc in host.get("services") or []}
 
+    was_up = {host.get("id"): host.get("uptime")
+              for host in previous or [] if host.get("uptime")}
+
     for host in results:
+        # A box that restarted has an uptime smaller than the one it had three
+        # minutes ago. Nothing else notices: by the next poll it is up, healthy
+        # and indistinguishable from a machine that never went anywhere.
+        earlier = was_up.get(host.get("id"))
+        if earlier and host.get("uptime") and host["uptime"] < earlier:
+            host["rebooted"] = True
+
         seen = before.get(host.get("id"))
         if seen is None:
             continue  # first poll after a restart: nothing to compare against

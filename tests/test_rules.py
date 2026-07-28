@@ -175,3 +175,47 @@ def test_every_threshold_is_read_by_something():
                  if code.count(f'"{name}"') + code.count(f"'{name}'") <= 1
                  and name.split("_")[-1] not in dynamic]
     assert not forgotten, f"пороги без читателя: {forgotten}"
+
+
+def test_unusual_for_this_host_needs_both_guards():
+    """Twice the habit, and high enough that the multiple means something."""
+    host = host_named(fleet(), lambda h: True)
+    cases = (({"now": 55.0, "usual": 12.0, "samples": 400}, True),   # новое поведение
+             ({"now": 6.0, "usual": 2.0, "samples": 400}, False),    # арифметика, не новость
+             ({"now": 40.0, "usual": 31.0, "samples": 400}, False),  # обычный вечер
+             ({"now": 90.0, "usual": 0.0, "samples": 400}, False))   # делить не на что
+    for norm, expected in cases:
+        probe_host = copy.deepcopy(host)
+        probe_host["baselines"] = {"процессор занят": norm}
+        issues.annotate([probe_host], CFG, None)
+        fired = any(i["key"].startswith("unusual:") for i in probe_host["issues"])
+        assert fired is expected, norm
+
+
+def test_a_restart_between_polls_is_noticed():
+    before = fleet()
+    after = fleet()
+    host_named(before, lambda h: h.get("uptime"))["uptime"] = 900000
+    target = host_named(after, lambda h: h.get("uptime"))
+    target["uptime"] = 120
+    probe.note_service_changes(before, after)
+    assert target.get("rebooted")
+    issues.annotate(after, CFG, None)
+    assert any(i["key"] == "rebooted" for i in target["issues"])
+
+
+def test_a_restart_we_asked_for_is_not_a_finding():
+    hosts = fleet()
+    target = host_named(hosts, lambda h: h.get("uptime"))
+    target.update({"rebooted": True, "reboot_planned": True, "uptime": 120})
+    issues.annotate(hosts, CFG, None)
+    assert not any(i["key"] == "rebooted" for i in target["issues"])
+
+
+def test_repeated_restarts_escalate():
+    for count, expected in ((2, None), (3, "warn"), (5, "bad")):
+        host = host_named(fleet(), lambda h: True)
+        host["reboots_week"] = count
+        issues.annotate([host], CFG, None)
+        found = [i for i in host["issues"] if i["key"] == "reboots"]
+        assert (found[0]["level"] if found else None) == expected, count

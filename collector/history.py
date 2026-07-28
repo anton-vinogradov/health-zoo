@@ -78,6 +78,15 @@ def extract(host: dict) -> dict[str, float]:
         if name and isinstance(link.get("flaps"), (int, float)):
             out[f"link:{name}:flaps"] = float(link["flaps"])
 
+    # Uptime is kept so restarts can be counted later: the fact that a machine
+    # is up says nothing about how many times it has come back today.
+    if isinstance(host.get("uptime"), (int, float)):
+        out["uptime_h"] = round(float(host["uptime"]) / 3600, 2)
+    if host.get("rebooted"):
+        out["reboot"] = 1.0
+        if not host.get("reboot_planned"):
+            out["reboot_unplanned"] = 1.0
+
     temps = host.get("temps") or []
     if temps:
         out["temp_max"] = float(max(t.get("c") or 0 for t in temps))
@@ -219,6 +228,45 @@ class History:
                 "SELECT value FROM samples WHERE host=? AND metric=? "
                 "ORDER BY ts DESC LIMIT 1", (host, metric)).fetchone()
         return float(row[0]) if row else None
+
+    def total(self, host: str, metric: str, days: int = 7) -> int:
+        """How many times something happened lately — restarts, mostly."""
+        if not self._conn:
+            return 0
+        since = int(time.time()) - days * 86400
+        with self.lock:
+            row = self._conn.execute(
+                "SELECT SUM(value) FROM samples WHERE host=? AND metric=? AND ts>=?",
+                (host, metric, since)).fetchone()
+        return int(row[0]) if row and row[0] else 0
+
+    def norm(self, host: str, metric: str, minutes: int = 30,
+             days: int = 30) -> dict | None:
+        """What this metric usually reads here, and what it reads now.
+
+        Two medians, not two readings: airtime on a single poll has been seen
+        swinging from 27% to 49% and back inside three minutes, and a rule that
+        fires on one sample fires on noise. "Now" is the median of the last half
+        hour, "usually" the median of the month behind it — so a threshold can
+        be set on a machine's own habits instead of on a number that has to suit
+        a router and a NAS at once.
+        """
+        if not self._conn:
+            return None
+        now = int(time.time())
+        with self.lock:
+            rows = self._conn.execute(
+                "SELECT ts, value FROM samples WHERE host=? AND metric=? AND ts>=?",
+                (host, metric, now - days * 86400)).fetchall()
+        recent = sorted(value for ts, value in rows if ts >= now - minutes * 60)
+        older = sorted(value for ts, value in rows if ts < now - minutes * 60)
+        # Enough of a month behind it to call anything "usual", and enough of
+        # the last half hour that one spike is not the whole sample.
+        if len(recent) < 3 or len(older) < 15:
+            return None
+        return {"now": round(recent[len(recent) // 2], 1),
+                "usual": round(older[len(older) // 2], 1),
+                "samples": len(older)}
 
     def peak(self, host: str, metric: str, days: int = 30) -> float | None:
         """The highest this metric has read lately — for a port, its best link."""
