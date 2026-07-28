@@ -104,7 +104,8 @@ def _ago(hours: float) -> str:
     return f"{round(hours / 24)} дн назад"
 
 
-def _channel_advice(radio: dict, limits: dict) -> str:
+def _channel_advice(radio: dict, limits: dict) -> tuple:
+    """Returns (text, level). "info" means there is nothing to do about it."""
     """Where this 2.4 GHz radio should sit — or nothing, if nobody can tell.
 
     Silence is a valid answer here and used to be the missing one: the check
@@ -113,10 +114,10 @@ def _channel_advice(radio: dict, limits: dict) -> str:
     failed to hear.
     """
     if radio.get("band") != "2.4":
-        return ""
+        return "", ""
     channel = radio.get("channel")
     if not isinstance(channel, int) or not channel:
-        return ""
+        return "", ""
 
     measured = {}
     for key, entry in (radio.get("channel_history") or {}).items():
@@ -139,7 +140,7 @@ def _channel_advice(radio: dict, limits: dict) -> str:
             return (f"канал {channel}: чужой эфир {here['median']}% по "
                     f"{here['samples']} замерам. На канале {better[0]} было "
                     f"{best['median']}% ({best['samples']} замеров, последний "
-                    f"{_ago(best['age_hours'])}) — стоит перейти туда")
+                    f"{_ago(best['age_hours'])}) — стоит перейти туда", "warn")
 
     # Nothing is provable, so speak only if something is actually hurting —
     # and busy air is not the only way it can. A channel can read as half
@@ -152,7 +153,7 @@ def _channel_advice(radio: dict, limits: dict) -> str:
     losing = (isinstance(retries, (int, float))
               and retries >= limits.get("retries_warn_24", 35))
     if not (busy or losing):
-        return ""
+        return "", ""
     symptom = f"эфир {util}%" if busy else f"{retries}% передач повторно"
 
     known = set(measured) | set(ruled_out) | {channel}
@@ -177,6 +178,10 @@ def _channel_advice(radio: dict, limits: dict) -> str:
         for (essid, signal), channels in from_others.items())
 
     if not untried:
+        # Neither of the answers below asks for anything: the channel is busy
+        # and every alternative was measured and is no better. Amber on a card
+        # is a request to act, and there is no action — so this is a fact, not
+        # a finding, and it says so by its level.
         # "Worse" and "better, but not by enough to be worth every client
         # reconnecting" are different answers, and the check above has already
         # refused the move for the second reason. Reporting it as the first
@@ -190,9 +195,10 @@ def _channel_advice(radio: dict, limits: dict) -> str:
                     f"{here['samples']} замерам. Тише всех канал {best_channel} "
                     f"({level}%), но выигрыш "
                     f"{round(here['median'] - level, 1)} п.п. меньше порога "
-                    f"в {gain} — переезд не окупает переподключение клиентов")
+                    f"в {gain} — переезд не окупает переподключение клиентов",
+                    "info")
         return (f"канал {channel}: {symptom}, но остальные каналы хуже"
-                + (f" — {struck}" if struck else ""))
+                + (f" — {struck}" if struck else ""), "info")
     parts = [f"канал {channel}: {symptom}, а на "
              f"{', '.join(str(c) for c in untried)} это радио не стояло — "
              "сравнить не с чем, нужен перебор с замерами"]
@@ -200,7 +206,7 @@ def _channel_advice(radio: dict, limits: dict) -> str:
         parts.append(struck)
     if elsewhere:
         parts.append(f"с другой точки там слышно {elsewhere}")
-    return ". ".join(parts)
+    return ". ".join(parts), "warn"
 
 
 def _level(value, warn, bad) -> str:
@@ -400,9 +406,9 @@ def host_issues(host: dict, cfg: dict | None = None) -> list[dict]:
         # always too quiet, so it can prove a channel bad and never prove one
         # good. Recommendations therefore come from recorded history; what the
         # radio hears right now is only allowed to rule candidates out.
-        verdict = _channel_advice(radio, limits)
+        verdict, urgency = _channel_advice(radio, limits)
         if verdict:
-            add("warn", f"radioneighbours:{name}", verdict)
+            add(urgency, f"radioneighbours:{name}", verdict)
         elif radio.get("off_grid"):
             add("warn", f"radiogrid:{name}",
                 f"канал {radio.get('channel')} в 2.4 ГГц перекрывается с соседними; "
