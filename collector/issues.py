@@ -736,11 +736,18 @@ def checks_for(host: dict, cfg: dict | None = None) -> list[dict]:
     out: list[dict] = []
 
     def add(category: str, name: str, rule: str, *,
-            applies: bool = True, keys: tuple = (), skipped: str = "") -> None:
+            applies: bool = True, keys: tuple = (), skipped: str = "",
+            blind: str = "") -> None:
         hits = [found[k] for k in found if any(
             k == key or k.startswith(key + ":") for key in keys)]
         if not applies:
             status, detail = "n/a", skipped
+        elif blind and not hits:
+            # The check ran and could not answer: no data, or data that proves
+            # nothing. Green here would be a lie of exactly the kind this
+            # dashboard exists to avoid — "fine" and "nobody could look" are
+            # opposite answers and used to render identically.
+            status, detail = "unknown", blind
         elif hits:
             suppressed = [h for h in hits if h.get("suppressed")]
             live = [h for h in hits if not h.get("suppressed")]
@@ -820,6 +827,10 @@ def checks_for(host: dict, cfg: dict | None = None) -> list[dict]:
         "за последний месяц. Падение гигабита до сотни — это кабель, разъём "
         "или порт, и по трафику оно незаметно: линк поднят, всё работает",
         applies=bool(host.get("links")), skipped="хост не отдаёт состояние портов",
+        blind=("" if any((l.get("capable") or l.get("speed_best"))
+                         for l in host.get("links") or [])
+               else "порты не сообщают своих возможностей, а истории замеров "
+                    "ещё нет — сравнить текущую скорость не с чем"),
         keys=("link",))
     add("resources", "Загрузка процессора",
         f"Доля занятого процессорного времени: предупреждение с {limits['cpu_warn']}%, "
@@ -880,6 +891,11 @@ def checks_for(host: dict, cfg: dict | None = None) -> list[dict]:
         "и годится только чтобы канал вычеркнуть",
         applies=any(r.get("band") == "2.4" for r in host.get("radios", [])),
         skipped="радио 2.4 ГГц нет",
+        blind=("радио не стояло на других каналах достаточно долго — "
+               "сравнивать не с чем, а слышимость с текущего канала врёт в "
+               "одну сторону"
+               if not any((r.get("channel_history") or {})
+                          for r in host.get("radios") or []) else ""),
         keys=("radiooverlap", "radiogrid", "radioneighbours"))
     add("network", "Повторные передачи",
         f"Доля кадров, ушедших повторно: с {limits.get('retries_warn_24', 35)}% "
@@ -966,6 +982,10 @@ def checks_for(host: dict, cfg: dict | None = None) -> list[dict]:
         "указывающее в никуда, не жалуется само — о нём узнают снаружи и не "
         "вовремя.",
         applies=bool(host.get("forwards")), skipped="пробросов нет",
+        blind=("правило ведёт туда, куда дашборд не заглядывает: цель вне флота "
+               "или её UDP-слушателей не видно"
+               if any(r.get("verdict") == "unknown"
+                      for r in host.get("forwards") or []) else ""),
         keys=("fwd",))
 
     add("network", "Туннели IPsec",

@@ -588,13 +588,18 @@ function renderChecks(host, container) {
   checks.forEach(function (c) { (byCategory[c.category] = byCategory[c.category] || []).push(c); });
 
   var active = checks.filter(function (c) { return c.status !== 'n/a'; }).length;
+  var blind = checks.filter(function (c) { return c.status === 'unknown'; }).length;
+  /* "Everything is fine" and "nobody could look" are opposite answers, and the
+     second one used to be drawn as the first. */
   container.appendChild(h('p', { class: 'checks-intro', text:
     'На этом хосте выполняется ' + active + ' из ' + checks.length + ' проверок. ' +
-    'Остальные не применимы — под каждой написано почему.' }));
+    'Остальные не применимы — под каждой написано почему.' +
+    (blind ? ' Ещё ' + blind + ' выполнились, но не смогли ответить (?).' : '') }));
 
   Object.keys(byCategory).forEach(function (category) {
     var rows = byCategory[category].map(function (c) {
-      var mark = { ok: '✓', bad: '✕', warn: '!', info: 'i', muted: '⊘', 'n/a': '—' }[c.status];
+      var mark = { ok: '✓', bad: '✕', warn: '!', info: 'i', muted: '⊘',
+                   unknown: '?', 'n/a': '—' }[c.status];
       var reasons = (c.suppressed || []).map(function (s) {
         return h('div', { class: 'check-rule muted-reason' }, [
           h('span', { text: 'исключено: ' + s.reason }),

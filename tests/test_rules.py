@@ -72,7 +72,8 @@ def test_checks_are_answerable_for_every_host():
     for host in hosts:
         assert host["checks"], host["id"]
         for check in host["checks"]:
-            assert check["status"] in ("ok", "warn", "bad", "info", "muted", "n/a")
+            assert check["status"] in ("ok", "warn", "bad", "info", "muted",
+                                       "unknown", "n/a")
             assert check["name"] and check["rule"]
 
 

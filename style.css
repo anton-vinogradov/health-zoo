@@ -265,6 +265,9 @@ html, body {
 .bar > i.warn { background: var(--warn); }
 .bar > i.bad { background: var(--bad); }
 
+/* A check that ran and could not answer: visible, uncoloured, not alarming. */
+.check-mark.unknown { color: var(--text-faint); }
+
 .chips { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 9px; }
 /* Categories, one row each. The label is a column of its own so the chips of
    every row start at the same place and can be scanned vertically. */
