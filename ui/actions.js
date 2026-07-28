@@ -4,8 +4,16 @@
 /* ---------- suppressions ---------- */
 
 function suppressIssue(host, issue) {
+  suppressKey(host, issue.key, '«' + issue.text + '»');
+}
+
+/* Accepting a finding must not require catching it in the act. Air occupancy
+   and retransmissions come and go with the evening, and the moment somebody
+   decides "this is fine here" is rarely the moment the chip is on screen — so
+   a check can be accepted by its key, firing or not. */
+function suppressKey(host, key, what) {
   var reason = prompt(
-    'Исключить проверку для ' + host.name + ':\n«' + issue.text + '»\n\n' +
+    'Исключить проверку для ' + host.name + ':\n' + what + '\n\n' +
     'Проверка продолжит выполняться, но перестанет красить карточку и слать\n' +
     'алерты. Причина будет показана рядом с проверкой.\n\n' +
     'Причина (обязательно):');
@@ -18,7 +26,7 @@ function suppressIssue(host, issue) {
 
   fetch('/api/suppress', {
     method: 'POST', headers: actionHeaders(),
-    body: JSON.stringify({ host: host.id, key: issue.key, reason: reason.trim(),
+    body: JSON.stringify({ host: host.id, key: key, reason: reason.trim(),
                            days: days.trim() ? parseInt(days, 10) : null })
   }).then(function (r) { return r.json(); }).then(function (res) {
     if (res.error) { if (!actionFailed(res)) alert('Не вышло: ' + res.error); return; }

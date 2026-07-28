@@ -107,7 +107,10 @@ class Suppressions:
         out = []
         for suppression_id, entry in self.active().items():
             host = by_id.get(entry["host"], {})
+            # Same rule as when the suppression is applied: a key recorded
+            # against a check covers the findings that check produces.
             firing = any(issue.get("key") == entry["key"]
+                         or str(issue.get("key", "")).startswith(entry["key"] + ":")
                          for issue in host.get("issues", []))
             out.append({
                 "id": suppression_id,

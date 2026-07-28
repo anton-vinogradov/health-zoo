@@ -597,7 +597,13 @@ def annotate(hosts: list[dict], cfg: dict | None = None,
         issues = host_issues(host, cfg)
         muted = suppressions.for_host(host["id"]) if suppressions else {}
         for issue in issues:
-            entry = muted.get(issue["key"])
+            # A suppression recorded against the check ("radioretry") covers the
+            # findings it produces ("radioretry:ng"). Without that, accepting a
+            # check would only silence the one radio that happened to be firing
+            # when the button was pressed.
+            entry = muted.get(issue["key"]) or next(
+                (value for key, value in muted.items()
+                 if issue["key"].startswith(key + ":")), None)
             if not entry:
                 continue
             issue["suppressed"] = True
@@ -666,7 +672,11 @@ def checks_for(host: dict, cfg: dict | None = None) -> list[dict]:
         else:
             status, detail = "ok", ""
         entry = {"category": category, "name": name, "rule": rule,
-                 "status": status, "detail": detail}
+                 "status": status, "detail": detail,
+                 # The keys let the dashboard accept a check that is not firing
+                 # at this second — which is the only way to accept one that
+                 # comes and goes.
+                 "keys": list(keys)}
         muted_hits = [h for h in hits if h.get("suppressed")]
         if muted_hits:
             entry["suppressed"] = [{

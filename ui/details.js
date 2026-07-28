@@ -582,12 +582,23 @@ function renderChecks(host, container) {
           })
         ]);
       });
+      /* The button lives on the check, not on a finding: a check that is green
+         right now is exactly the one nobody can accept from the issue list, and
+         flapping checks are the ones most worth accepting. */
+      var accept = (c.status === 'n/a' || !(c.keys || []).length || (c.suppressed || []).length)
+        ? null
+        : h('button', {
+            class: 'btn btn-sm', text: 'исключить',
+            title: 'принять эту проверку как известную — с причиной',
+            onclick: function () { suppressKey(host, c.keys[0], 'проверку «' + c.name + '»'); }
+          });
       return h('tr', { class: c.status === 'n/a' ? 'check-na' : '' }, [
         h('td', { class: 'check-mark ' + c.status, text: mark }),
         h('td', null, [h('div', { class: 'check-name', text: c.name }),
                        h('div', { class: 'check-rule', text: c.rule })].concat(reasons)),
         h('td', { class: 'check-detail' + (c.status === 'bad' ? ' bad' : c.status === 'warn' ? ' warn' : ''),
-                  text: c.detail || (c.status === 'ok' ? 'в норме' : '') })
+                  text: c.detail || (c.status === 'ok' ? 'в норме' : '') }),
+        h('td', { class: 'right' }, [accept])
       ]);
     });
     container.appendChild(section(titles[category] || category,
