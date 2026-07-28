@@ -7,11 +7,18 @@
 # both times it was noticed by accident. A deploy that records its own commit
 # turns that into something the dashboard can say out loud.
 #
-#   ./deploy.sh                      # to the host in HEALTH_ZOO_HOST
-#   ./deploy.sh randoom@10.88.88.8   # or somewhere else
+#   HEALTH_ZOO_HOST=user@dashboard ./deploy.sh
+#   ./deploy.sh user@dashboard
+#
+# The host is never written down here: this repository is public, and the CI
+# refuses any commit that names a real address.
 set -euo pipefail
 
-HOST="${1:-${HEALTH_ZOO_HOST:-randoom@10.88.88.8}}"
+HOST="${1:-${HEALTH_ZOO_HOST:-}}"
+if [ -z "$HOST" ]; then
+  echo "куда выкладывать? HEALTH_ZOO_HOST=user@host ./deploy.sh" >&2
+  exit 2
+fi
 DIR="${HEALTH_ZOO_DIR:-/opt/health-zoo}"
 ROOT="$(cd "$(dirname "$0")" && pwd)"
 cd "$ROOT"

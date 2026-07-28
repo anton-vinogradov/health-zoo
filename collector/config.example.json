@@ -161,5 +161,6 @@
     "username": "health-zoo",
     "password_credential": "unifi-password",
     "confirm_seconds": 60
-  }
+  },
+  "repo": "owner/health-zoo"
 }

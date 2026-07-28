@@ -17,6 +17,7 @@ import re
 import shlex
 import subprocess
 import sys
+import urllib.request
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -50,6 +51,18 @@ STATIC_FILES = {
 }
 
 
+def read_version() -> dict:
+    """The note deploy.sh leaves behind: which commit, when, and was it clean."""
+    try:
+        lines = (ROOT / "VERSION").read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return {"commit": "unknown"}
+    first = lines[0].strip() if lines else "unknown"
+    return {"commit": first.split()[0],
+            "dirty": "правки-вне-коммита" in first,
+            "deployed": lines[1].strip() if len(lines) > 1 else ""}
+
+
 def load_config() -> dict:
     for path in CONFIG_PATHS:
         if path and path.is_file():
@@ -71,6 +84,8 @@ class Fleet:
         # Set once the Jobs registry exists; automatic reboots go through the
         # same machinery as the button, so there is one reboot path, not two.
         self.jobs_ref: "Jobs | None" = None
+        self._drift: dict = {}
+        self._drift_at = 0.0
         self.alerts = alerts.Alerts(cfg)
         self.suppressions = suppressions_mod.Suppressions(
             cfg.get("suppressions_file", "/var/lib/health-zoo/suppressions.json"))
@@ -78,6 +93,7 @@ class Fleet:
             cfg.get("settings_file", "/var/lib/health-zoo/settings.json"))
         self.settings.apply_to(cfg)
         probe.configure(cfg)
+        self.version = read_version()
         self.history = history.History(
             cfg.get("history_db", "/var/lib/health-zoo/history.db"),
             cfg.get("history_retention_days", 180))
@@ -131,6 +147,10 @@ class Fleet:
                 "hosts": hosts,
                 "poll_interval": self.cfg.get("poll_interval", 180),
                 "polling": False,
+                # What is running here and how far behind the repository it is.
+                # This dashboard watches every service in the house except the
+                # one it is; this is the smallest honest version of that.
+                "version": dict(self.version, **self.drift()),
             }
             with self.lock:
                 self.snapshot = snap
@@ -181,6 +201,36 @@ class Fleet:
     # any board reaches before it stops working.
     NORMS = (("cpu_load_pct", "процессор занят"),
              ("load_pct", "очередь к процессору"))
+
+    def drift(self) -> dict:
+        """How far the deployed commit is behind the published branch.
+
+        Asked of GitHub once an hour and forgiven entirely when it fails: a
+        dashboard with no way out to the internet is still a dashboard, and this
+        is a nicety rather than a health signal.
+        """
+        commit = self.version.get("commit") or ""
+        now = time.time()
+        if not commit or commit == "unknown":
+            return {}
+        if now - self._drift_at < 3600:
+            return self._drift
+        self._drift_at = now
+        repo = self.cfg.get("repo", "")
+        if not repo:
+            return {}
+        try:
+            request = urllib.request.Request(
+                f"https://api.github.com/repos/{repo}/compare/{commit}...main",
+                headers={"Accept": "application/vnd.github+json",
+                         "User-Agent": "health-zoo"})
+            with urllib.request.urlopen(request, timeout=10) as response:
+                body = json.load(response)
+            self._drift = {"behind": int(body.get("behind_by") or 0),
+                           "ahead": int(body.get("ahead_by") or 0)}
+        except Exception:
+            self._drift = {}
+        return self._drift
 
     def note_reboots(self, hosts: list[dict]) -> None:
         """Separate the restarts somebody asked for from the rest, and count.
