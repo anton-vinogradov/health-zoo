@@ -94,6 +94,7 @@ done
 
 # ---------- listening ports ----------
 common_cpu
+common_links
 common_peer
 common_listeners
 

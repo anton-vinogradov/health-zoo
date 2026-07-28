@@ -182,6 +182,28 @@ function showHost(host) {
       }))));
   }
 
+  /* Ports, with the speed each one negotiated. A card can only afford to shout
+     when something is wrong; this is where "what is it actually running at"
+     lives. */
+  if ((host.links || []).length) {
+    body.appendChild(section('Порты', table(['порт', 'скорость', 'дуплекс', 'ошибки'],
+      host.links.map(function (l) {
+        var down = l.state !== 'up';
+        var slow = !down && l.speed_best && l.speed < l.speed_best;
+        return h('tr', null, [
+          h('td', { text: l.name }),
+          h('td', { class: slow ? 'warn' : '' , text: down ? 'нет линка'
+            : (l.speed >= 1000 ? (l.speed / 1000) + ' Гбит/с' : l.speed + ' Мбит/с') +
+              (slow ? ' (было ' + (l.speed_best >= 1000 ? (l.speed_best / 1000) + ' Гбит/с'
+                                                        : l.speed_best + ' Мбит/с') + ')' : '') }),
+          h('td', { class: l.duplex === 'half' ? 'warn' : '', text: down ? '—' : l.duplex }),
+          h('td', { class: (l.crc || l.errors) ? 'warn' : '',
+                    text: (l.crc || l.errors) ? (l.crc || 0) + ' CRC / ' + (l.errors || 0)
+                                              : 'нет' })
+        ]);
+      }))));
+  }
+
   if ((host.disks || []).length) {
     body.appendChild(section('Диски', table(['точка', 'устройство', 'занято', 'всего', '%'],
       host.disks.map(function (d) {

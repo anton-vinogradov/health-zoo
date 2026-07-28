@@ -159,6 +159,7 @@ emit pkg_manager synology
 # DSM listens on non-standard ports far more often than not (8000/8001 here),
 # so the web link has to be discovered rather than assumed.
 common_cpu
+common_links
 common_peer
 common_listeners
 

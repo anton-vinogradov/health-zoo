@@ -66,6 +66,7 @@ LIST_FIELDS = {
     "smart": ["dev", "health", "temp", "hours", "realloc", "pending", "wear", "model"],
     "radio": ["name", "channel", "clients", "noise", "utilization"],
     "radioiw": ["dev", "ssid", "freq", "clients"],
+    "link": ["name", "speed", "duplex", "state", "errors", "crc", "flaps", "capable"],
     "listen": ["port", "process", "scope"],
     "udp": ["port", "process", "scope"],
     # Same shape the RouterOS parser builds by hand, so both kinds of router
@@ -150,6 +151,10 @@ def _post_process(data: dict) -> dict:
 
     for temp in data.get("temps", []):
         temp["c"] = _num(temp.get("c", 0))
+
+    for link in data.get("links", []):
+        for field in ("speed", "errors", "crc", "flaps", "capable"):
+            link[field] = int(_num(link.get(field, 0)) or 0)
 
     # An agent reports a forward's fields as text, the RouterOS path builds them
     # typed. Left as-is, the string "false" is truthy and every rule collected
@@ -552,6 +557,14 @@ ROUTEROS_CMD = (
     ':put "@@route"; :do {:foreach i in=[/ip route find dst-address="0.0.0.0/0"] do={'
     ':put ([:tostr [/ip route get $i gateway]]."|".[:tostr [/ip route get $i active]])}} '
     'on-error={}; '
+    # `monitor` reports what the port negotiated; the configuration says only
+    # what it was allowed to. A gigabit port sitting at 100Mbps is the symptom
+    # this exists to catch, and it is invisible in the settings.
+    ':put "@@ethernet"; :do {:foreach i in=[/interface ethernet find] do={'
+    ':local m [/interface ethernet monitor $i once as-value]; '
+    ':put ([:tostr [/interface ethernet get $i name]]."|".[:tostr ($m->"status")]'
+    '."|".[:tostr ($m->"rate")]."|".[:tostr ($m->"full-duplex")]'
+    '."|".[:tostr [/interface ethernet get $i disabled]])}} on-error={}; '
     ':put "@@interface"; :foreach i in=[/interface find] do={'
     ':put ([:tostr [/interface get $i name]]."|".[:tostr [/interface get $i running]]'
     '."|".[:tostr [/interface get $i type]]."|".[:tostr [/interface get $i disabled]])}; '
@@ -582,6 +595,20 @@ ROUTEROS_CMD = (
     'where interface=[/interface wifi get $i name]]]]."|"'
     '.[:tostr ($mon->"channel")]."|".$master)}} on-error={}'
 )
+
+
+
+def _rate_mbit(rate: str) -> int:
+    """RouterOS reports "1Gbps"; everything else here counts in megabits."""
+    text = (rate or "").strip().lower()
+    try:
+        if text.endswith("gbps"):
+            return int(float(text[:-4]) * 1000)
+        if text.endswith("mbps"):
+            return int(float(text[:-4]))
+    except ValueError:
+        pass
+    return 0
 
 
 def _routeros_kv(lines: list[str]) -> dict:
@@ -819,6 +846,22 @@ def probe_routeros(host: dict, key: str | None) -> dict:
                 continue
         if data.get("wan_addr"):
             break
+
+    links = []
+    for cells in _routeros_rows(sections.get("ethernet", [])):
+        cells += [""] * (5 - len(cells))
+        name, status, rate, duplex, disabled = cells[:5]
+        if not name or disabled == "true":
+            continue
+        links.append({
+            "name": name,
+            "speed": _rate_mbit(rate),
+            "duplex": "full" if duplex == "true" else "half" if duplex == "false" else "-",
+            "state": "up" if status == "link-ok" else "down",
+            "errors": 0, "crc": 0, "flaps": 0,
+        })
+    if links:
+        data["links"] = links
 
     policies = []
     for cells in _routeros_rows(sections.get("ipsec", [])):
@@ -1831,6 +1874,18 @@ def poll_unifi_controller(cfg: dict, results: list[dict]) -> None:
                                 "new": device.get("upgrade_to_firmware", ""),
                                 "security": "0", "suite": ""}]
             host["update_count"] = 1
+        # An access point on a 100 Mbit uplink throttles every client behind it
+        # and says nothing about it; the controller knows what the port
+        # negotiated.
+        uplink = device.get("uplink") or {}
+        if uplink.get("speed"):
+            host["links"] = [{
+                "name": uplink.get("name") or "uplink",
+                "speed": int(uplink["speed"]),
+                "duplex": "full" if uplink.get("full_duplex", True) else "half",
+                "state": "up" if uplink.get("up", True) else "down",
+                "errors": 0, "crc": 0, "flaps": 0,
+            }]
         load = device.get("sys_stats") or {}
         if load.get("loadavg_1"):
             host["load1"] = float(load["loadavg_1"])

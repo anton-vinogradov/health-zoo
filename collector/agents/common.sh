@@ -76,6 +76,51 @@ common_temps() {
   } | sort -u -t'	' -k1,1 | awk -F'\t' '{print "@temp\t" $1 "\t" $2}'
 }
 
+# ---------- physical links ----------
+# A gigabit port that negotiated 100 Mbit is almost always a cable, a connector
+# or a socket that has started to fail — and nothing on the host complains,
+# because the link is up and traffic flows. What the port *can* do is asked for
+# separately: 100 Mbit is a fault on a gigabit socket and the normal state of a
+# camera's. Only real hardware is reported; bridges and veth pairs have a
+# "speed" too and it means nothing.
+common_links() {
+  eth_cmd=""
+  if command -v ethtool >/dev/null 2>&1; then
+    eth_cmd="ethtool"
+    if [ "$(id -u)" != 0 ] && command -v sudo >/dev/null 2>&1 && sudo -n true 2>/dev/null; then
+      eth_cmd="sudo -n ethtool"
+    fi
+  fi
+  for path in /sys/class/net/*; do
+    [ -e "$path/device" ] || continue
+    name=$(basename "$path")
+    carrier=$(cat "$path/carrier" 2>/dev/null || echo 0)
+    if [ "$carrier" != "1" ]; then
+      row "@link	$name	0	-	down	0	0	0	0"
+      continue
+    fi
+    speed=$(cat "$path/speed" 2>/dev/null || echo 0)
+    # Virtio and some USB adapters report -1 for "cannot say".
+    [ "$speed" -gt 0 ] 2>/dev/null || speed=0
+    capable=0
+    if [ -n "$eth_cmd" ]; then
+      capable=$($eth_cmd "$name" 2>/dev/null | awk '
+        /Supported link modes:/ {grab = 1; sub(/.*Supported link modes:/, "")}
+        /Supported pause frame|Supports auto-negotiation|Advertised link modes/ {grab = 0}
+        grab {
+          n = split($0, parts, /[ \t]+/)
+          for (i = 1; i <= n; i++)
+            if (parts[i] ~ /^[0-9]+base/) {
+              value = parts[i]; sub(/base.*/, "", value)
+              if (value + 0 > max) max = value + 0
+            }
+        }
+        END {print max + 0}')
+    fi
+    row "@link	$name	$speed	$(cat "$path/duplex" 2>/dev/null || echo -)	up	$(cat "$path/statistics/rx_errors" 2>/dev/null || echo 0)	$(cat "$path/statistics/rx_crc_errors" 2>/dev/null || echo 0)	$(cat "$path/carrier_changes" 2>/dev/null || echo 0)	${capable:-0}"
+  done
+}
+
 # ---------- processor busy time ----------
 # Load average answers "how many want the CPU", which on a four-core box reads
 # alarming at 4 and fine at 3.9. Busy time answers "how much is left", which is

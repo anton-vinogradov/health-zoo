@@ -210,6 +210,14 @@ def _channel_advice(radio: dict, limits: dict) -> tuple:
     return ". ".join(parts), "warn"
 
 
+def _speed(mbit: int) -> str:
+    if mbit < 1000:
+        return f"{mbit} Мбит/с"
+    gigabits = mbit / 1000
+    # 2.5GbE exists and rounding it to "2 Гбит/с" would misstate the hardware.
+    return f"{gigabits:g} Гбит/с"
+
+
 def _level(value, warn, bad) -> str:
     if not isinstance(value, (int, float)):
         return ""
@@ -262,6 +270,41 @@ def host_issues(host: dict, cfg: dict | None = None) -> list[dict]:
     level = _level(host.get("swap_pct"), limits["swap_warn"], limits["swap_bad"])
     if level:
         add(level, "swap", f"swap {host['swap_pct']}%")
+
+    # A port that used to run at a gigabit and now negotiates 100 Mbit is a
+    # cable, a connector or a socket on its way out. Nothing on the host
+    # notices: the link is up, traffic flows, and everything is merely eight
+    # times slower than it was. The comparison is against what this port itself
+    # has done before, because 100 Mbit is a fault on one socket and the normal
+    # state of the next.
+    for link in host.get("links", []):
+        if link.get("state") != "up":
+            continue
+        speed, best = link.get("speed") or 0, link.get("speed_best") or 0
+        capable = link.get("capable") or 0
+        if speed and best and speed < best:
+            add("warn" if speed >= 100 else "bad", f"link:{link['name']}",
+                f"порт {link['name']}: {_speed(speed)} вместо {_speed(best)}")
+        elif link.get("duplex") == "half":
+            add("warn", f"link:{link['name']}",
+                f"порт {link['name']}: полудуплекс — договорились не с той стороной")
+        elif link.get("flaps") and link.get("flaps_prev") is not None \
+                and link["flaps"] > link["flaps_prev"]:
+            # The counter only goes up, so any growth happened since the last
+            # poll: the link is dropping and coming back right now.
+            add("warn", f"link:{link['name']}",
+                f"порт {link['name']}: линк оборвался "
+                f"{link['flaps'] - link['flaps_prev']} раз с прошлого опроса")
+        elif link.get("crc"):
+            # CRC errors are the cable telling you before the speed drops.
+            add("warn", f"link:{link['name']}",
+                f"порт {link['name']}: {link['crc']} битых кадров — кабель или разъём")
+        elif speed and capable and speed < capable:
+            # The port itself says what it can do, so this needs no history and
+            # no guessing: a socket that supports a gigabit and agreed on 100
+            # has a cable, a connector or a switch port going bad.
+            add("warn" if speed >= 100 else "bad", f"link:{link['name']}",
+                f"порт {link['name']}: {_speed(speed)}, хотя умеет {_speed(capable)}")
 
     # Only the hottest sensor: a quad-core reports one reading per core plus a
     # package total, and six identical "82°" entries say nothing extra.
@@ -729,6 +772,12 @@ def checks_for(host: dict, cfg: dict | None = None) -> list[dict]:
         f"Предупреждение с {limits['swap_warn']}%: активный swap на слабых машинах "
         "означает нехватку памяти",
         applies=bool(host.get("swap_total")), skipped="swap не настроен", keys=("swap",))
+    add("network", "Скорость линка",
+        "Скорость, на которой договорился порт, против лучшей, что он выдавал "
+        "за последний месяц. Падение гигабита до сотни — это кабель, разъём "
+        "или порт, и по трафику оно незаметно: линк поднят, всё работает",
+        applies=bool(host.get("links")), skipped="хост не отдаёт состояние портов",
+        keys=("link",))
     add("resources", "Загрузка процессора",
         f"Доля занятого процессорного времени: предупреждение с {limits['cpu_warn']}%, "
         f"критично с {limits['cpu_bad']}%. Считается по занятости, а не по load "

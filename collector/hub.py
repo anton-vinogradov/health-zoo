@@ -102,6 +102,7 @@ class Fleet:
             probe.poll_unifi_controller(self.cfg, hosts)
             probe.analyse_wifi(hosts)
             self.attach_channel_history(hosts)
+            self.attach_link_history(hosts)
             probe.check_forwards(hosts)
             # Exposure is measured, not derived: learn the address the site is
             # seen as, knock on every published port from outside, and only then
@@ -168,6 +169,27 @@ class Fleet:
                 evidence = self.history.channel_evidence(str(host.get("id", "")), name)
                 if evidence:
                     radio["channel_history"] = evidence
+
+    def attach_link_history(self, hosts: list[dict]) -> None:
+        """Tell each port the best speed it has ever negotiated.
+
+        Whether 100 Mbit is a fault or simply what that socket is depends
+        entirely on what it used to do, and only the record knows.
+        """
+        if not self.history.available:
+            return
+        for host in hosts:
+            for link in host.get("links", []):
+                name = link.get("name")
+                if not name:
+                    continue
+                host_id = str(host.get("id", ""))
+                best = self.history.peak(host_id, f"link:{name}:speed")
+                if best:
+                    link["speed_best"] = int(best)
+                seen = self.history.last(host_id, f"link:{name}:flaps")
+                if seen is not None:
+                    link["flaps_prev"] = int(seen)
 
     def apply_camera_limits(self, hosts: list[dict]) -> None:
         """Attach each camera its own silence thresholds, where one was set."""

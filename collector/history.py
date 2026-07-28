@@ -68,6 +68,16 @@ def extract(host: dict) -> dict[str, float]:
         if isinstance(channel, int) and channel and isinstance(foreign, (int, float)):
             out[f"radio:{name}:ch{channel}:foreign"] = float(foreign)
 
+    # The speed a port negotiated, kept per port. "It used to be a gigabit" is
+    # not something a snapshot can answer, and it is the whole question when a
+    # cable starts to fail.
+    for link in host.get("links", []):
+        name, speed = link.get("name"), link.get("speed")
+        if name and isinstance(speed, (int, float)) and speed > 0:
+            out[f"link:{name}:speed"] = float(speed)
+        if name and isinstance(link.get("flaps"), (int, float)):
+            out[f"link:{name}:flaps"] = float(link["flaps"])
+
     temps = host.get("temps") or []
     if temps:
         out["temp_max"] = float(max(t.get("c") or 0 for t in temps))
@@ -199,6 +209,27 @@ class History:
                 "span_hours": round((max(stamps) - min(stamps)) / 3600.0, 1),
             }
         return out
+
+    def last(self, host: str, metric: str) -> float | None:
+        """The previous reading — for counters, where the delta is the news."""
+        if not self._conn:
+            return None
+        with self.lock:
+            row = self._conn.execute(
+                "SELECT value FROM samples WHERE host=? AND metric=? "
+                "ORDER BY ts DESC LIMIT 1", (host, metric)).fetchone()
+        return float(row[0]) if row else None
+
+    def peak(self, host: str, metric: str, days: int = 30) -> float | None:
+        """The highest this metric has read lately — for a port, its best link."""
+        if not self._conn:
+            return None
+        since = int(time.time()) - days * 86400
+        with self.lock:
+            row = self._conn.execute(
+                "SELECT MAX(value) FROM samples WHERE host=? AND metric=? AND ts>=?",
+                (host, metric, since)).fetchone()
+        return float(row[0]) if row and row[0] is not None else None
 
     def metrics(self, host: str) -> list[str]:
         if not self._conn:

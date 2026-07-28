@@ -333,6 +333,7 @@ emit_vhosts | sort -u | head -40
 
 # ---------- listening ports ----------
 common_cpu
+common_links
 common_peer
 common_listeners
 if command -v ss >/dev/null 2>&1; then
