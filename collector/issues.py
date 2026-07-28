@@ -337,6 +337,22 @@ def host_issues(host: dict, cfg: dict | None = None) -> list[dict]:
             # crashed or was stopped and forgotten.
             add("bad", f"svc:{svc.get('name')}", f"{name} не работает (включён в автозапуск)")
 
+    # A unit that dies and is brought back looks healthy at every poll; the
+    # restart counter is the only place it shows, and only as a difference.
+    for svc in host.get("services", []):
+        if svc.get("restarts_delta"):
+            name = svc.get("name", "").removesuffix(".service")
+            add("warn" if svc.get("scope") != "system" else "info",
+                f"svcflap:{svc.get('name')}",
+                f"{name} перезапускался {svc['restarts_delta']} раз с прошлого опроса")
+
+    for name in host.get("services_gone") or []:
+        # Removing a service is a normal thing to do — and doing it by accident
+        # looks exactly the same, which is why it gets said out loud once.
+        add("warn", f"svcgone:{name}",
+            f"{name.removesuffix('.service')} исчез: юнит работал в прошлый опрос, "
+            "сейчас его нет в системе")
+
     for container in host.get("containers", []):
         if container.get("state") != "running":
             add("bad", f"container:{container.get('name')}",
@@ -772,6 +788,18 @@ def checks_for(host: dict, cfg: dict | None = None) -> list[dict]:
         f"Предупреждение с {limits['swap_warn']}%: активный swap на слабых машинах "
         "означает нехватку памяти",
         applies=bool(host.get("swap_total")), skipped="swap не настроен", keys=("swap",))
+    add("services", "Перезапуски юнитов",
+        "Счётчик рестартов systemd сравнивается с прошлым опросом: юнит, который "
+        "падает и поднимается заново, в каждый отдельный момент выглядит "
+        "работающим",
+        applies=host.get("agent") == "linux",
+        skipped="только для systemd", keys=("svcflap",))
+    add("services", "Юнит исчез",
+        "Юнит работал в прошлый опрос, а сейчас его нет в системе — файл юнита "
+        "удалён или переименован. Снимок сам по себе такого не замечает: "
+        "пропавшее не с чем сравнить",
+        applies=host.get("agent") == "linux",
+        skipped="только для systemd", keys=("svcgone",))
     add("network", "Скорость линка",
         "Скорость, на которой договорился порт, против лучшей, что он выдавал "
         "за последний месяц. Падение гигабита до сотни — это кабель, разъём "

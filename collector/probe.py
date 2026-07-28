@@ -2421,6 +2421,42 @@ def _public(addr: str) -> bool:
                 or ip.is_multicast or ip.is_reserved or ip.is_unspecified)
 
 
+def note_service_changes(previous: list[dict], results: list[dict]) -> None:
+    """Compare this poll's units against the last one.
+
+    Two failures are invisible to a snapshot on its own. A unit that crashes and
+    is restarted by systemd is "active (running)" every time anybody looks — the
+    restart counter is the only trace, and it means nothing without the number
+    it had before. A unit whose file is removed does not turn red either: it
+    simply stops being in the report, and absence is not something a rule over
+    the current list can see.
+    """
+    before = {}
+    for host in previous or []:
+        before[host.get("id")] = {
+            svc.get("name"): svc for svc in host.get("services") or []}
+
+    for host in results:
+        seen = before.get(host.get("id"))
+        if seen is None:
+            continue  # first poll after a restart: nothing to compare against
+        for svc in host.get("services") or []:
+            was = seen.get(svc.get("name"))
+            if not was:
+                continue
+            grew = (svc.get("restarts") or 0) - (was.get("restarts") or 0)
+            if grew > 0:
+                svc["restarts_delta"] = grew
+        # Only the operator's own units: the distribution installs and removes
+        # its plumbing on every upgrade, and that is not news.
+        host["services_gone"] = sorted(
+            name for name, svc in seen.items()
+            if name and name not in {s.get("name") for s in host.get("services") or []}
+            and svc.get("scope") != "system"
+            and ("running" in (svc.get("state") or "")
+                 or svc.get("state") == "active/exited"))
+
+
 def link_egress(results: list[dict], cfg: dict) -> None:
     """Give the site's edge the address the internet sees it as.
 
