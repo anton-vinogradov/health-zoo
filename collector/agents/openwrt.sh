@@ -93,6 +93,7 @@ for init in /etc/init.d/*; do
 done
 
 # ---------- listening ports ----------
+common_cpu
 common_peer
 common_listeners
 

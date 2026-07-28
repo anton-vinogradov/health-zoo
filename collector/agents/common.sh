@@ -76,6 +76,23 @@ common_temps() {
   } | sort -u -t'	' -k1,1 | awk -F'\t' '{print "@temp\t" $1 "\t" $2}'
 }
 
+# ---------- processor busy time ----------
+# Load average answers "how many want the CPU", which on a four-core box reads
+# alarming at 4 and fine at 3.9. Busy time answers "how much is left", which is
+# the question a threshold can be set on. Two reads of /proc/stat a second
+# apart; the idle delta is what the machine did not spend.
+common_cpu() {
+  [ -r /proc/stat ] || return 0
+  set -- $(awk '/^cpu /{print $2+$3+$4+$6+$7+$8, $5; exit}' /proc/stat)
+  busy1=$1; idle1=$2
+  sleep 1
+  set -- $(awk '/^cpu /{print $2+$3+$4+$6+$7+$8, $5; exit}' /proc/stat)
+  busy2=$1; idle2=$2
+  total=$((busy2 - busy1 + idle2 - idle1))
+  [ "$total" -gt 0 ] 2>/dev/null || return 0
+  emit cpu_load_pct "$(( (busy2 - busy1) * 100 / total ))"
+}
+
 # ---------- how we look from here ----------
 # On a host out on the internet this is the site's own public address, observed
 # rather than asked of a third party: the only witness to what our packets look

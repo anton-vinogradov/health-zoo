@@ -2,8 +2,8 @@
 
 /* ---------- card ---------- */
 
-function bar(label, pct, kind, valueText, cls) {
-  var fill = h('i', { class: cls === undefined ? pctClass(pct, kind) : cls });
+function bar(label, pct, kind, valueText, cls, host) {
+  var fill = h('i', { class: cls === undefined ? pctClass(pct, kind, host) : cls });
   fill.style.width = Math.max(0, Math.min(100, pct)) + '%';
   return h('div', { class: 'metric' }, [
     h('span', { class: 'metric-label', text: label }),
@@ -256,23 +256,31 @@ function hostCard(host) {
 
   var metrics = [];
   if (host.reachable) {
-    if (host.load1 !== undefined && host.cpus) {
+    /* The bar shows busy time where it is known — that is the number with a
+       ceiling, and the one the threshold is set on. Load average keeps its
+       place beside it: it says how much work is queued, which busy time cannot
+       tell you once the processor is full. */
+    if (host.cpu_load_pct !== undefined) {
+      metrics.push(bar('CPU', host.cpu_load_pct, 'cpu',
+        host.cpu_load_pct + '%' +
+        (host.load1 !== undefined && host.cpus
+          ? ' · ' + host.load1 + ' / ' + host.cpus : ''), undefined, host));
+    } else if (host.load1 !== undefined && host.cpus) {
       var loadPct = (host.load1 / host.cpus) * 100;
-      metrics.push(bar('CPU', loadPct, 'load', host.load1 + ' / ' + host.cpus));
-    } else if (host.cpu_load_pct !== undefined) {
-      metrics.push(bar('CPU', host.cpu_load_pct, 'cpu', host.cpu_load_pct + '%'));
+      metrics.push(bar('CPU', loadPct, 'load', host.load1 + ' / ' + host.cpus,
+        undefined, host));
     }
     if (host.mem_pct !== undefined) {
       metrics.push(bar('ОЗУ', host.mem_pct, 'mem',
-        bytes(host.mem_used) + ' / ' + bytes(host.mem_total)));
+        bytes(host.mem_used) + ' / ' + bytes(host.mem_total), undefined, host));
     }
     var disk = biggestDisk(host);
     if (disk) {
       metrics.push(bar('диск', disk.pct, 'disk', disk.pct + '% ' + shortMount(disk.mount),
-        diskClass(disk.pct, host)));
+        diskClass(disk.pct, host), host));
     }
     var temp = hottest(host);
-    if (temp) metrics.push(bar('темп.', temp.c, 'temp', temp.c + ' °C'));
+    if (temp) metrics.push(bar('темп.', temp.c, 'temp', temp.c + ' °C', undefined, host));
   }
 
   var subtitle;

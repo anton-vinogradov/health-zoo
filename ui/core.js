@@ -112,9 +112,17 @@ function shortMount(path) {
   return '…/' + parts.slice(-2).join('/');
 }
 
-function pctClass(value, kind) {
-  if (value >= BAD[kind]) return 'bad';
-  if (value >= WARN[kind]) return 'warn';
+/* The hub sends every host its own limits, including per-role and per-host
+   overrides. Colouring by the copy below instead meant a bar could stay green
+   while the same number raised an issue on the server — which is exactly the
+   drift this file's constants were supposed to prevent. They stay only as the
+   answer for a host whose thresholds have not arrived yet. */
+function pctClass(value, kind, host) {
+  var limits = (host && host.thresholds) || {};
+  var bad = limits[kind + '_bad'] !== undefined ? limits[kind + '_bad'] : BAD[kind];
+  var warn = limits[kind + '_warn'] !== undefined ? limits[kind + '_warn'] : WARN[kind];
+  if (value >= bad) return 'bad';
+  if (value >= warn) return 'warn';
   return '';
 }
 

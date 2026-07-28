@@ -20,7 +20,7 @@ DEFAULT_THRESHOLDS = {
     # 105. Warning earlier would mean a permanently amber dashboard.
     "temp_warn": 88, "temp_bad": 96,
     "load_warn": 150, "load_bad": 300,
-    "cpu_warn": 85, "cpu_bad": 96,
+    "cpu_warn": 80, "cpu_bad": 90,
     # HyperBackup here runs nightly; two days without a run means it stopped.
     "backup_stale_days": 2,
     # Motion detection that has produced nothing all night is suspicious;
@@ -105,8 +105,9 @@ def _ago(hours: float) -> str:
 
 
 def _channel_advice(radio: dict, limits: dict) -> tuple:
-    """Returns (text, level). "info" means there is nothing to do about it."""
     """Where this 2.4 GHz radio should sit — or nothing, if nobody can tell.
+
+    Returns (text, level); "info" means there is nothing to be done about it.
 
     Silence is a valid answer here and used to be the missing one: the check
     this replaced compared the channel it was on against what it thought the
@@ -246,6 +247,14 @@ def host_issues(host: dict, cfg: dict | None = None) -> list[dict]:
         if level:
             add(level, f"disk:{disk.get('mount')}",
                 f"диск {disk.get('mount')} {disk.get('pct')}%")
+
+    # Busy time, not load average: a load of 4 on four cores is a box doing its
+    # job, while 90% busy is one with nothing left to give whatever the queue
+    # length says. The two answer different questions and only this one is
+    # asked here.
+    level = _level(host.get("cpu_load_pct"), limits["cpu_warn"], limits["cpu_bad"])
+    if level:
+        add(level, "cpu", f"процессор занят на {host['cpu_load_pct']}%")
 
     level = _level(host.get("mem_pct"), limits["mem_warn"], limits["mem_bad"])
     if level:
@@ -720,6 +729,12 @@ def checks_for(host: dict, cfg: dict | None = None) -> list[dict]:
         f"Предупреждение с {limits['swap_warn']}%: активный swap на слабых машинах "
         "означает нехватку памяти",
         applies=bool(host.get("swap_total")), skipped="swap не настроен", keys=("swap",))
+    add("resources", "Загрузка процессора",
+        f"Доля занятого процессорного времени: предупреждение с {limits['cpu_warn']}%, "
+        f"критично с {limits['cpu_bad']}%. Считается по занятости, а не по load "
+        "average — очередь может быть длинной на незагруженной машине и наоборот",
+        applies=host.get("cpu_load_pct") is not None,
+        skipped="хост не отдаёт занятость процессора", keys=("cpu",))
     add("resources", "Температура",
         f"По самому горячему датчику: предупреждение с {limits['temp_warn']}°, "
         f"проблема с {limits['temp_bad']}°",
