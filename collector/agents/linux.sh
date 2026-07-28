@@ -332,6 +332,7 @@ emit_vhosts() {
 emit_vhosts | sort -u | head -40
 
 # ---------- listening ports ----------
+common_peer
 common_listeners
 if command -v ss >/dev/null 2>&1; then
   ss -tlnH 2>/dev/null | awk '{

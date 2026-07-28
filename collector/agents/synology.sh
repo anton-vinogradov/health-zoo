@@ -158,6 +158,7 @@ emit pkg_manager synology
 # ---------- listening ports ----------
 # DSM listens on non-standard ports far more often than not (8000/8001 here),
 # so the web link has to be discovered rather than assumed.
+common_peer
 common_listeners
 
 # ---------- Surveillance Station: cameras this NAS records ----------

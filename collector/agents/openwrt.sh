@@ -93,6 +93,7 @@ for init in /etc/init.d/*; do
 done
 
 # ---------- listening ports ----------
+common_peer
 common_listeners
 
 # ---------- WAN / interface state ----------
@@ -116,7 +117,13 @@ if command -v uci >/dev/null 2>&1; then
     if [ "$(uci -q get "firewall.@redirect[$i].target")" = DNAT ]; then
       off=false
       [ "$(uci -q get "firewall.@redirect[$i].enabled")" = "0" ] && off=true
-      row "@forward	$(uci -q get "firewall.@redirect[$i].src")	dst-nat	$(uci -q get "firewall.@redirect[$i].src_dport")	$(uci -q get "firewall.@redirect[$i].dest_ip")	$(uci -q get "firewall.@redirect[$i].dest_port")	$off	$(uci -q get "firewall.@redirect[$i].name")	0	$(uci -q get "firewall.@redirect[$i].proto")"
+      # A rule with no destination address sends the traffic to the router
+      # itself — the NTP hijack that keeps clients on the right clock. Naming
+      # that "dst-nat" would send the check looking for a host called "".
+      to_ip=$(uci -q get "firewall.@redirect[$i].dest_ip")
+      how=dst-nat
+      [ -z "$to_ip" ] && how=redirect
+      row "@forward	$(uci -q get "firewall.@redirect[$i].src")	$how	$(uci -q get "firewall.@redirect[$i].src_dport")	$to_ip	$(uci -q get "firewall.@redirect[$i].dest_port")	$off	$(uci -q get "firewall.@redirect[$i].name")	0	$(uci -q get "firewall.@redirect[$i].proto")"
     fi
     i=$((i + 1))
   done

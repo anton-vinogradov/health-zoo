@@ -2117,11 +2117,28 @@ def check_forwards(results: list[dict]) -> None:
     """
     listeners: dict[str, set] = {}
     reachable: dict[str, bool] = {}
+    named: dict[str, str] = {}
+    udp_seen: dict[str, bool] = {}
     for host in results:
         addr = host.get("addr")
         if not addr:
             continue
-        reachable[addr] = bool(host.get("reachable"))
+        # A forward from the uplink names the next router by its WAN-side
+        # address, which is not the address the fleet knows it by. Without the
+        # alias every rule between two routers reads as "points at something we
+        # do not poll" — the honest answer to the wrong question.
+        for alias in (addr, host.get("wan_addr")):
+            if alias:
+                reachable.setdefault(alias, bool(host.get("reachable")))
+                named.setdefault(alias, host.get("name") or host.get("id") or alias)
+                if alias != addr:
+                    listeners.setdefault(alias, listeners.setdefault(addr, set()))
+        # Whether this host can report UDP listeners at all. Where it cannot —
+        # BusyBox without `ss` falls back to netstat, which lists TCP only — a
+        # missing UDP port is our blind spot rather than a missing service, and
+        # calling that "leads nowhere" is a false alarm on every VPN forward.
+        udp_seen[addr] = bool(host.get("udps")) or any(
+            e.get("proto") == "udp" for e in host.get("endpoints") or [])
         ports = listeners.setdefault(addr, set())
         for source in ("listens", "udps"):
             for entry in host.get(source) or []:
@@ -2137,6 +2154,21 @@ def check_forwards(results: list[dict]) -> None:
             if open_ and str(port).isdigit():
                 ports.add(int(port))
 
+    # A hop that hands the port on again is not a dead end. Two routers in a row
+    # is the normal shape here — uplink to site router to host — and judging the
+    # middle one by its own listeners flags a working chain as broken.
+    passes_on: dict[str, set] = {}
+    for host in results:
+        for rule in host.get("forwards") or []:
+            if rule.get("disabled"):
+                continue
+            port = str(rule.get("port") or "")
+            if not port.isdigit():
+                continue
+            for alias in (host.get("addr"), host.get("wan_addr")):
+                if alias:
+                    passes_on.setdefault(alias, set()).add(int(port))
+
     for host in results:
         for rule in host.get("forwards") or []:
             target = rule.get("to")
@@ -2149,6 +2181,9 @@ def check_forwards(results: list[dict]) -> None:
                 # A redirect with no destination sends traffic to the router
                 # itself — the NTP hijack that keeps cameras on the right clock.
                 target = host.get("addr")
+            # The card names the destination; an address alone makes the reader
+            # resolve it in their head every time.
+            rule["to_name"] = named.get(target, "")
             if not target or target not in reachable:
                 # Points outside the fleet, or at something health-zoo does not
                 # poll. Silence is the honest answer, not a guess.
@@ -2160,8 +2195,84 @@ def check_forwards(results: list[dict]) -> None:
                 continue
             if int(port) in listeners.get(target, set()):
                 rule["verdict"] = "ok"
+            elif target != host.get("addr") and int(port) in passes_on.get(target, set()):
+                rule["verdict"] = "transit"
+            elif ((rule.get("proto") or "").lower() in ("", "udp", "tcpudp")
+                  and not udp_seen.get(target, False)):
+                rule["verdict"] = "unknown"   # no UDP visibility on that host
             else:
                 rule["verdict"] = "no-listener"
+
+
+def verify_forward_targets(results: list[dict]) -> None:
+    """Knock on the far end of every forward, from inside the perimeter.
+
+    A port in the listener list is a claim the host made about itself while the
+    agent ran; it survives a process that has since wedged, and it says nothing
+    about ports on devices that run no agent at all. Opening the connection is
+    the difference between "was configured to listen" and "answers now".
+
+    UDP cannot be proven this way — nothing is obliged to answer — so those
+    forwards keep the evidence they have: a listening socket and the name of the
+    process holding it.
+    """
+    by_addr = {}
+    for host in results:
+        for alias in (host.get("addr"), host.get("wan_addr")):
+            if alias:
+                by_addr.setdefault(alias, host)
+
+    jobs = []
+    for host in results:
+        for rule in host.get("forwards") or []:
+            if rule.get("disabled") or rule.get("verdict") in ("host-down", "transit"):
+                continue
+            target = rule.get("to") or (host.get("addr") if
+                                        rule.get("action") == "redirect" else "")
+            port = str(rule.get("to_port") or rule.get("port") or "")
+            if not target or not port.isdigit():
+                continue
+            # A rule usually does not say which protocol it carries — uci leaves
+            # it empty for "both" — so the answer comes from what the far end is
+            # actually listening with. Getting this wrong turns every VPN
+            # forward into an alarm, because nothing answers a TCP knock on 500.
+            want = (rule.get("proto") or "").lower()
+            heard = {entry.get("proto") for entry in
+                     (by_addr.get(target) or {}).get("endpoints") or []
+                     if str(entry.get("port")) == port}
+            if want == "udp" or (want in ("", "tcpudp") and heard == {"udp"}):
+                rule["live"] = None
+                for entry in (by_addr.get(target) or {}).get("endpoints") or []:
+                    if str(entry.get("port")) == port:
+                        rule["live_by"] = entry.get("process") or entry.get("label") or ""
+                continue
+            jobs.append((rule, target, int(port), want == "tcp" or "tcp" in heard))
+
+    def knock(job: tuple) -> tuple:
+        _, addr, port, _ = job
+        try:
+            with socket.create_connection((addr, port), timeout=3):
+                return job, True
+        except OSError:
+            return job, False
+
+    if not jobs:
+        return
+    with concurrent.futures.ThreadPoolExecutor(max_workers=8) as pool:
+        for (rule, _, _, certain), answered in pool.map(knock, jobs):
+            if answered:
+                rule["live"] = True
+                rule["verdict"] = "ok"
+            elif certain:
+                # The far end is known to listen on TCP and refuses the
+                # connection anyway: configuration intact, service gone — which
+                # a listener list reports as healthy.
+                rule["live"] = False
+                if rule.get("verdict") == "ok":
+                    rule["verdict"] = "no-answer"
+            else:
+                # Silence over TCP proves nothing when the service may be UDP.
+                rule["live"] = None
 
 
 def _public(addr: str) -> bool:
@@ -2172,6 +2283,108 @@ def _public(addr: str) -> bool:
         return False
     return not (ip.is_private or ip.is_loopback or ip.is_link_local
                 or ip.is_multicast or ip.is_reserved or ip.is_unspecified)
+
+
+def link_egress(results: list[dict], cfg: dict) -> None:
+    """Give the site's edge the address the internet sees it as.
+
+    The address on the WAN interface answers a different question. A provider
+    can hand out a private one and still map a public address onto it — which is
+    exactly what happens here — so deriving "nothing is reachable" from
+    `10.188.16.186` was wrong by construction. The only witness to what our
+    packets look like after the provider is done with them is a host outside:
+    every agent reports the address its ssh session arrives from, and on a host
+    with a public address of its own that is our own way out.
+    """
+    egress = ""
+    for host in results:
+        if not _public(host.get("addr") or ""):
+            continue
+        peer = host.get("ssh_peer") or ""
+        if _public(peer):
+            egress = peer
+            break
+    if not egress:
+        return
+
+    # The observation belongs to the site the collector polls from, and its edge
+    # is the last router before the internet in the configured tree.
+    local = next((h for h in cfg.get("hosts", []) if h.get("local")), None)
+    if not local:
+        return
+    subnets = {s.get("cidr"): s for s in cfg.get("subnets", [])}
+    node = subnets.get(local.get("subnet"))
+    edge_addr = ""
+    while node:
+        if node.get("router"):
+            edge_addr = node["router"]
+        parent = node.get("parent")
+        if not parent or parent == "0.0.0.0/0":
+            break
+        node = subnets.get(parent)
+    for host in results:
+        if host.get("addr") == edge_addr:
+            host["egress_addr"] = egress
+
+
+def verify_exposure(results: list[dict], cfg: dict, key: str | None) -> None:
+    """Knock on every published port from the outside and record who answers.
+
+    A forwarding rule is an intention; this is the only step that turns it into
+    a fact. It runs from a host on the internet, because from inside the
+    perimeter every one of these ports answers whether or not the world can
+    reach it.
+    """
+    # The login details live in the configuration, not in a probe result — the
+    # snapshot deliberately carries no credentials.
+    up = {h.get("addr") for h in results if h.get("reachable")}
+    prober = next((h for h in cfg.get("hosts", [])
+                   if h.get("addr") in up and _public(h.get("addr") or "")
+                   and h.get("user")), None)
+    if not prober:
+        return
+
+    jobs = []
+    for host in results:
+        entrance = host.get("egress_addr") or host.get("wan_addr") or ""
+        if not _public(entrance) or entrance == prober.get("addr"):
+            continue
+        for rule in host.get("forwards") or []:
+            port = str(rule.get("port") or "")
+            if rule.get("disabled") or not port.isdigit():
+                continue
+            if (rule.get("proto") or "").lower() == "udp":
+                # Nothing answers a UDP probe by contract; silence would be
+                # reported as "closed" and that is worse than saying nothing.
+                rule["verified"] = None
+                continue
+            jobs.append((rule, entrance, int(port)))
+
+    def knock(job: tuple) -> tuple:
+        _, addr, port = job
+        remote = (f"timeout 8 bash -c '</dev/tcp/{addr}/{port}' >/dev/null 2>&1 "
+                  f"&& echo 0 || echo 1")
+        cmd = list(SSH_BASE)
+        if key:
+            cmd += ["-i", os.path.expanduser(key)]
+        if prober.get("port"):
+            cmd += ["-p", str(prober["port"])]
+        target = prober["addr"]
+        if prober.get("user"):
+            target = f"{prober['user']}@{target}"
+        try:
+            res = subprocess.run(cmd + [target, remote],
+                                 capture_output=True, timeout=25, text=True)
+            return job, res.stdout.strip().endswith("0")
+        except (subprocess.SubprocessError, OSError):
+            return job, False
+
+    if not jobs:
+        return
+    with concurrent.futures.ThreadPoolExecutor(max_workers=6) as pool:
+        for (rule, _, _), answered in pool.map(knock, jobs):
+            rule["verified"] = answered
+            rule["verified_from"] = prober.get("name", "")
 
 
 def link_exposure(results: list[dict]) -> None:
@@ -2190,23 +2403,32 @@ def link_exposure(results: list[dict]) -> None:
                 by_addr.setdefault(addr, host)
 
     def arrive(host: dict, port: int, public: str, wan_port: int,
-               path: list, seen: set) -> None:
+               path: list, seen: set, checked) -> None:
         """Traffic reached `host:port`. Note it, then keep following."""
         for entry in host.get("endpoints") or []:
             if str(entry.get("port")) == str(port):
                 entry["exposed"] = {"wan_port": wan_port, "addr": public,
-                                    "via": " → ".join(path)}
+                                    "via": " → ".join(path), "verified": checked}
         # The hop may itself be a router that forwards this port further in.
-        forward(host, public, path, seen, only_port=port, wan_port=wan_port)
+        forward(host, public, path, seen, only_port=port, wan_port=wan_port,
+                checked=checked)
 
     def forward(host: dict, public: str, path: list, seen: set,
-                only_port: int | None = None, wan_port: int | None = None) -> None:
+                only_port: int | None = None, wan_port: int | None = None,
+                checked=None) -> None:
         key = (host.get("id"), only_port)
         if key in seen or len(path) > 4:
             return
         seen.add(key)
         for rule in host.get("forwards") or []:
             if rule.get("disabled"):
+                continue
+            # A shell agent reports the zone the rule listens in; a redirect
+            # scoped to the LAN is not an entrance from the internet, however
+            # public the router's other side is. RouterOS names its chains
+            # instead and its rules are not zone-scoped.
+            zone = (rule.get("chain") or "").lower()
+            if zone and zone not in ("wan", "dstnat", "srcnat"):
                 continue
             outside = str(rule.get("port") or "")
             if not outside.isdigit():
@@ -2215,11 +2437,22 @@ def link_exposure(results: list[dict]) -> None:
                 continue
             target = by_addr.get(rule.get("to") or "")
             inside = str(rule.get("to_port") or outside)
+            # The rule itself is worth marking: a card can then say which of a
+            # router's forwards the internet can use and which are internal
+            # plumbing that happens to look identical in the config.
+            rule["public_addr"] = public
+            rule["wan_port"] = wan_port if wan_port is not None else int(outside)
+            # Only the edge is knocked on; a hop behind it carries the same
+            # packet, so it carries the same verdict rather than "unknown".
+            rule.setdefault("verified", checked)
             if not target or not inside.isdigit():
                 continue
+            # Only the rule at the edge is knocked on from outside; the hops
+            # behind it inherit that verdict, because they are the same packet.
             arrive(target, int(inside), public,
                    wan_port if wan_port is not None else int(outside),
-                   path + [host.get("name") or host.get("id") or ""], seen)
+                   path + [host.get("name") or host.get("id") or ""], seen,
+                   rule.get("verified") if checked is None else checked)
 
     for host in results:
         # A host on a public address is its own edge: everything it listens on
@@ -2228,8 +2461,11 @@ def link_exposure(results: list[dict]) -> None:
         if _public(own):
             for entry in host.get("endpoints") or []:
                 entry.setdefault("exposed", {"wan_port": entry.get("port"),
-                                             "addr": own, "via": ""})
-        edge = host.get("wan_addr") or ""
+                                             "addr": own, "via": "",
+                                             "verified": None})
+        # What the world dials, which is not always what sits on the interface:
+        # a provider can NAT a public address onto a private WAN.
+        edge = host.get("egress_addr") or host.get("wan_addr") or ""
         if not _public(edge):
             continue
         # An input policy of ACCEPT means the edge answers on its own ports too.

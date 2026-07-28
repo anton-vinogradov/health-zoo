@@ -187,16 +187,27 @@ html, body {
 .subnet-cidr { font-family: var(--mono); font-size: 12px; color: var(--text-dim); }
 .subnet-count { margin-left: auto; font-size: 12px; color: var(--text-faint); }
 
+/* Cards take the width of what they hold, not the width of a column. A camera
+   with three chips has no reason to be as wide as a NAS with twenty, and a row
+   of narrow cards fits more of the fleet on the screen. The bounds are what
+   keeps it readable: narrower than the minimum and the metric bars stop saying
+   anything, wider than the maximum and the chips spread into a rake. */
 .cards {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(330px, 1fr));
+  display: flex;
+  flex-wrap: wrap;
   gap: 10px;
-  align-items: start;   /* a card with many links grows alone, not the whole row */
+  align-items: flex-start;   /* a card with many links grows alone, not the row */
 }
-/* Grid items default to min-width:auto, so one nowrap chip was widening the
-   whole column past the viewport — on a phone that clipped every value on
-   the right-hand side. */
-.cards > * { min-width: 0; }
+.cards > * {
+  flex: 0 1 auto;
+  min-width: 272px;
+  max-width: 560px;
+}
+/* On a phone there is nothing to pack side by side, and a card narrower than
+   the screen only wastes the margin. */
+@media (max-width: 620px) {
+  .cards > * { min-width: 100%; max-width: 100%; }
+}
 
 /* ---------- host card ---------- */
 

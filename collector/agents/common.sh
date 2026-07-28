@@ -76,6 +76,15 @@ common_temps() {
   } | sort -u -t'	' -k1,1 | awk -F'\t' '{print "@temp\t" $1 "\t" $2}'
 }
 
+# ---------- how we look from here ----------
+# On a host out on the internet this is the site's own public address, observed
+# rather than asked of a third party: the only witness to what our packets look
+# like after the provider is done with them is somebody outside.
+common_peer() {
+  [ -n "${SSH_CLIENT:-}" ] && emit ssh_peer "${SSH_CLIENT%% *}"
+  return 0
+}
+
 # ---------- listening ports ----------
 # The bind address matters: a backend on 127.0.0.1 is reachable only through
 # whatever proxies it, so a link to it would go nowhere. UDP is collected too —

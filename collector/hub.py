@@ -103,6 +103,13 @@ class Fleet:
             probe.analyse_wifi(hosts)
             self.attach_channel_history(hosts)
             probe.check_forwards(hosts)
+            # Exposure is measured, not derived: learn the address the site is
+            # seen as, knock on every published port from outside, and only then
+            # decide what "open to the internet" means on a card.
+            probe.verify_forward_targets(hosts)
+            probe.link_egress(hosts, self.cfg)
+            probe.verify_exposure(hosts, self.cfg, self.cfg.get("ssh_key"))
+            probe.link_exposure(hosts)
             for host in hosts:
                 probe.endpoints_from_probed_ports(host)
             self.apply_camera_limits(hosts)
@@ -225,6 +232,19 @@ class Fleet:
         if not wanted:
             return 0
         fresh = probe.probe_all(wanted, self.cfg.get("ssh_key"))
+        # An access point is described by the controller, not by an agent: since
+        # UniFi Network 10 the device itself refuses ssh, so probing it alone
+        # yields "нет доступа" and a card stripped of its radios. Refreshing one
+        # host has to ask the same source a full cycle would.
+        if any(h.get("agent") == "unifi" for h in wanted):
+            probe.poll_unifi_controller(self.cfg, fresh)
+            # Interference is judged against the other radios on the site, so
+            # the comparison needs the hosts that were not refreshed as well.
+            with self.lock:
+                fresh_ids = {h.get("id") for h in fresh}
+                others = [h for h in self.snapshot.get("hosts", [])
+                          if h.get("id") not in fresh_ids]
+            probe.analyse_wifi(fresh + others)
         self.apply_camera_limits(fresh)
         issues.annotate(fresh, self.cfg, self.suppressions)
         issues.annotate_checks(fresh, self.cfg)
@@ -238,6 +258,7 @@ class Fleet:
             # over the merged set.
             probe.link_cameras(hosts)
             probe.check_forwards(hosts)
+            probe.link_exposure(hosts)
             self.snapshot["hosts"] = hosts
             # Suppressions are derived from the hosts, so they have to be
             # recomputed here too: adding one and not seeing it take effect
