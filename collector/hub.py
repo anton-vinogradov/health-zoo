@@ -128,6 +128,7 @@ class Fleet:
             probe.link_egress(hosts, self.cfg)
             probe.verify_exposure(hosts, self.cfg, self.cfg.get("ssh_key"))
             probe.link_exposure(hosts)
+            probe.observe_outside(hosts, self.cfg, self.cfg.get("ssh_key"))
             for host in hosts:
                 probe.endpoints_from_probed_ports(host)
             self.apply_camera_limits(hosts)

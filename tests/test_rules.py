@@ -219,3 +219,23 @@ def test_repeated_restarts_escalate():
         issues.annotate([host], CFG, None)
         found = [i for i in host["issues"] if i["key"] == "reboots"]
         assert (found[0]["level"] if found else None) == expected, count
+
+
+def test_an_expired_certificate_reads_as_expired():
+    """"Expires in -19 days" is not a sentence anybody should have to parse."""
+    host = host_named(fleet(), lambda h: True)
+    host["outside"] = [{"port": 2053, "tls": True, "days": -18.6,
+                        "subject": "CN = panel", "from": "сосед"}]
+    issues.annotate([host], CFG, None)
+    found = [i for i in host["issues"] if i["key"] == "certout:2053"]
+    assert found and found[0]["level"] == "bad"
+    assert "истёк 19 дн назад" in found[0]["text"]
+
+
+def test_a_certificate_that_differs_from_outside_is_a_finding():
+    host = host_named(fleet(), lambda h: True)
+    host["web"] = [{"port": 443, "cert": {"subject": "CN = свой"}}]
+    host["outside"] = [{"port": 443, "tls": True, "days": 100,
+                        "subject": "CN = чужой", "from": "сосед"}]
+    issues.annotate([host], CFG, None)
+    assert any(i["key"] == "certdiff:443" for i in host["issues"])

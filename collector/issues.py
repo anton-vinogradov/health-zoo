@@ -344,6 +344,32 @@ def host_issues(host: dict, cfg: dict | None = None) -> list[dict]:
             f"{label}: {now}% последние полчаса против обычных {usual}% "
             f"({norm.get('samples')} замеров)")
 
+    # What a stranger is served. The local view reads the certificate from the
+    # host that offers it; this one reads what actually comes back over the
+    # internet, which is a different claim and occasionally a different
+    # certificate.
+    local_subjects = {link.get("port"): (link.get("cert") or {}).get("subject")
+                      for link in host.get("web") or [] if link.get("cert")}
+    for seen in host.get("outside") or []:
+        if not seen.get("tls"):
+            continue
+        days = seen.get("days")
+        if isinstance(days, (int, float)):
+            level = ("bad" if days < limits["cert_bad_days"]
+                     else "warn" if days < limits["cert_warn_days"] else "")
+            if level:
+                # An expiry in the past is not an expiry "in -19 days".
+                when = (f"истёк {abs(round(days))} дн назад" if days < 0
+                        else f"истекает через {round(days)} дн")
+                add("bad" if days < 0 else level, f"certout:{seen['port']}",
+                    f"сертификат на порту {seen['port']} {when} — "
+                    f"так его видно снаружи (смотрел {seen.get('from')})")
+        here = local_subjects.get(seen["port"])
+        if here and seen.get("subject") and here != seen["subject"]:
+            add("warn", f"certdiff:{seen['port']}",
+                f"порт {seen['port']}: снаружи отдаётся «{seen['subject']}», "
+                f"а сам хост показывает «{here}»")
+
     # Hardware that could do more than it is doing. Stated as a finding rather
     # than a fault: none of these stops anything working, they just cost the
     # difference quietly, every day, until somebody looks.
@@ -878,6 +904,13 @@ def checks_for(host: dict, cfg: dict | None = None) -> list[dict]:
         "пропавшее не с чем сравнить",
         applies=host.get("agent") == "linux",
         skipped="только для systemd", keys=("svcgone",))
+    add("network", "Взгляд снаружи",
+        "Сертификаты и TLS на портах, до которых достаёт интернет, прочитанные "
+        "не с самого хоста, а с другой машины в сети. Локальный вид отвечает "
+        "«что хост отдаёт», этот — «что получает чужой»",
+        applies=bool(host.get("outside")),
+        skipped="снаружи до этого хоста ничего не открыто",
+        keys=("certout", "certdiff"))
     add("network", "Скорость линка",
         "Скорость, на которой договорился порт, против лучшей, что он выдавал "
         "за последний месяц. Падение гигабита до сотни — это кабель, разъём "

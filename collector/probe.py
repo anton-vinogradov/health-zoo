@@ -2514,6 +2514,83 @@ def note_service_changes(previous: list[dict], results: list[dict]) -> None:
                  or svc.get("state") == "active/exited"))
 
 
+def observe_outside(results: list[dict], cfg: dict, key: str | None) -> None:
+    """Ask what the world is actually served on the ports it can reach.
+
+    Everything else about a certificate is read from inside the perimeter, where
+    the host hands it to whoever asks. What matters is what a stranger gets: an
+    expiry the local view never sees because it looks at a different listener,
+    or a certificate that is not the one this host believes it serves.
+
+    Runs from a public host that is not the target — a VPS checking itself is
+    not an outside view — and says nothing where nothing can be concluded: a
+    port that answers without TLS, or one that refuses a connection carrying no
+    hostname, is not a finding.
+    """
+    public = [h for h in cfg.get("hosts", [])
+              if _public(h.get("addr") or "") and h.get("user")]
+    if len(public) < 2:
+        return
+    up = {h.get("addr") for h in results if h.get("reachable")}
+
+    for host in results:
+        targets = sorted({
+            (entry["exposed"]["addr"], int(entry["exposed"]["wan_port"]))
+            for entry in host.get("endpoints") or []
+            if entry.get("exposed") and entry.get("proto") == "tcp"
+            and str(entry["exposed"].get("wan_port", "")).isdigit()})
+        if not targets:
+            continue
+        prober = next((p for p in public
+                       if p["addr"] in up and p["addr"] != host.get("addr")), None)
+        if not prober:
+            continue
+
+        pairs = " ".join(f"{addr}:{port}" for addr, port in targets)
+        remote = (
+            f"for pair in {pairs}; do "
+            "addr=${pair%:*}; port=${pair##*:}; "
+            "out=$(echo | timeout 8 openssl s_client -connect \"$addr:$port\" "
+            "2>/dev/null | openssl x509 -noout -enddate -subject 2>/dev/null "
+            "| tr '\\n' ' '); "
+            "[ -n \"$out\" ] && echo \"$pair $out\" || echo \"$pair no-tls\"; "
+            "done")
+        cmd = list(SSH_BASE)
+        if key:
+            cmd += ["-i", os.path.expanduser(key)]
+        if prober.get("port"):
+            cmd += ["-p", str(prober["port"])]
+        try:
+            res = subprocess.run(
+                cmd + [f"{prober['user']}@{prober['addr']}", remote],
+                capture_output=True, timeout=60, text=True)
+        except (subprocess.SubprocessError, OSError):
+            continue
+
+        seen = []
+        for line in res.stdout.splitlines():
+            pair, _, rest = line.partition(" ")
+            port = pair.rpartition(":")[2]
+            if not port.isdigit():
+                continue
+            entry = {"port": int(port), "from": prober.get("name", prober["addr"])}
+            expires = re.search(r"notAfter=(.*?) subject=", rest)
+            subject = re.search(r"subject=(.*)$", rest)
+            if expires:
+                try:
+                    when = time.strptime(expires.group(1).strip(),
+                                         "%b %d %H:%M:%S %Y %Z")
+                    entry["days"] = round((time.mktime(when) - time.time()) / 86400, 1)
+                except ValueError:
+                    pass
+            if subject:
+                entry["subject"] = subject.group(1).strip()
+            entry["tls"] = "days" in entry
+            seen.append(entry)
+        if seen:
+            host["outside"] = seen
+
+
 def link_egress(results: list[dict], cfg: dict) -> None:
     """Give the site's edge the address the internet sees it as.
 
