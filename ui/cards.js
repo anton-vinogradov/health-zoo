@@ -655,8 +655,19 @@ function render() {
   btn.disabled = updatable.length === 0;
   btn.textContent = updatable.length ? 'Обновить всё (' + updatable.length + ')' : 'Всё обновлено';
 
+  /* The dashboard watches every service in the house except itself. Saying
+     which commit is running — and whether the repository has moved on since —
+     is the smallest version of watching itself that is worth anything. */
+  var version = state.version || {};
+  var build = version.commit && version.commit !== 'unknown'
+    ? ' · версия ' + version.commit +
+      (version.dirty ? ' (с правками вне коммита)' : '') +
+      (version.behind ? ', отстала на ' + version.behind +
+        plural(version.behind, ' коммит', ' коммита', ' коммитов') : '')
+    : '';
   document.getElementById('foot-note').textContent =
     'опрос занял ' + ((state.duration_ms || 0) / 1000).toFixed(1) + ' с · ' +
-    'автообновление каждые ' + Math.round((state.poll_interval || 180) / 60) + ' мин';
+    'автообновление каждые ' + Math.round((state.poll_interval || 180) / 60) + ' мин' +
+    build;
 }
 
