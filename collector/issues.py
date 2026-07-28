@@ -177,6 +177,20 @@ def _channel_advice(radio: dict, limits: dict) -> str:
         for (essid, signal), channels in from_others.items())
 
     if not untried:
+        # "Worse" and "better, but not by enough to be worth every client
+        # reconnecting" are different answers, and the check above has already
+        # refused the move for the second reason. Reporting it as the first
+        # sends the reader hunting for an error in numbers that are correct.
+        rivals = sorted((entry["median"], c) for c, entry in measured.items()
+                        if c != channel and c not in ruled_out
+                        and entry.get("samples", 0) >= enough)
+        if here and rivals and rivals[0][0] < here["median"]:
+            level, best_channel = rivals[0]
+            return (f"канал {channel}: {symptom}, чужого {here['median']}% по "
+                    f"{here['samples']} замерам. Тише всех канал {best_channel} "
+                    f"({level}%), но выигрыш "
+                    f"{round(here['median'] - level, 1)} п.п. меньше порога "
+                    f"в {gain} — переезд не окупает переподключение клиентов")
         return (f"канал {channel}: {symptom}, но остальные каналы хуже"
                 + (f" — {struck}" if struck else ""))
     parts = [f"канал {channel}: {symptom}, а на "
