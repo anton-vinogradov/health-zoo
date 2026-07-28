@@ -264,6 +264,18 @@ def host_issues(host: dict, cfg: dict | None = None) -> list[dict]:
     if level:
         add(level, "cpu", f"процессор занят на {host['cpu_load_pct']}%")
 
+    # Load average answers the other half of the question: how many processes
+    # want the machine, including the ones stuck on a disk. A box can be 40%
+    # busy with a queue six deep — that is I/O, not idleness, and busy time
+    # alone reports it as healthy.
+    if isinstance(host.get("load1"), (int, float)) and host.get("cpus"):
+        queued = round(host["load1"] * 100.0 / host["cpus"])
+        level = _level(queued, limits["load_warn"], limits["load_bad"])
+        if level:
+            add(level, "load",
+                f"очередь к процессору: {host['load1']} на {host['cpus']} "
+                f"ядра — {queued}% от их числа")
+
     level = _level(host.get("mem_pct"), limits["mem_warn"], limits["mem_bad"])
     if level:
         add(level, "mem", f"память {host['mem_pct']}%")
@@ -832,6 +844,12 @@ def checks_for(host: dict, cfg: dict | None = None) -> list[dict]:
                else "порты не сообщают своих возможностей, а истории замеров "
                     "ещё нет — сравнить текущую скорость не с чем"),
         keys=("link",))
+    add("resources", "Очередь к процессору",
+        f"Load average против числа ядер: предупреждение с {limits['load_warn']}%, "
+        f"критично с {limits['load_bad']}%. Отвечает не на «сколько занято», а на "
+        "«сколько ждёт» — в очередь попадают и процессы, застрявшие на диске",
+        applies=host.get("load1") is not None and bool(host.get("cpus")),
+        skipped="хост не отдаёт load average", keys=("load",))
     add("resources", "Загрузка процессора",
         f"Доля занятого процессорного времени: предупреждение с {limits['cpu_warn']}%, "
         f"критично с {limits['cpu_bad']}%. Считается по занятости, а не по load "

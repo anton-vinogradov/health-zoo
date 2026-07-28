@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import copy
 import json
+import re
 import sys
 from pathlib import Path
 
@@ -155,3 +156,22 @@ def test_a_deliberate_cap_is_not_coloured():
     issues.annotate([host], CFG, None)
     found = [i for i in host["issues"] if i["key"].startswith("capped:")]
     assert found and found[0]["level"] == "info"
+
+
+def test_every_threshold_is_read_by_something():
+    """A threshold nobody consults is a promise the dashboard does not keep.
+
+    `cpu_warn` sat in the table from the first commit with no rule reading it,
+    and a machine pinned at 100% stayed green for as long as that lasted.
+    """
+    root = Path(__file__).resolve().parent.parent
+    code = "\n".join(
+        (root / "collector" / name).read_text(encoding="utf-8")
+        for name in ("issues.py", "alerts.py", "hub.py"))
+    code += "\n".join(path.read_text(encoding="utf-8")
+                      for path in (root / "ui").glob("*.js"))
+    dynamic = set(re.findall(r"['\"]_(\w+)['\"]", code))
+    forgotten = [name for name in issues.DEFAULT_THRESHOLDS
+                 if code.count(f'"{name}"') + code.count(f"'{name}'") <= 1
+                 and name.split("_")[-1] not in dynamic]
+    assert not forgotten, f"пороги без читателя: {forgotten}"
