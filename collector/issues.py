@@ -11,6 +11,8 @@ Each issue carries a stable `key`, which is what alerting deduplicates on —
 
 from __future__ import annotations
 
+import time
+
 # Defaults; every value can be overridden per role or per host from the config.
 DEFAULT_THRESHOLDS = {
     "disk_warn": 90, "disk_bad": 96,
@@ -48,6 +50,8 @@ DEFAULT_THRESHOLDS = {
     # "Unusual for this host" needs two guards: a floor, below which a multiple
     # is arithmetic rather than news, and how many times over the habit counts
     # as a departure from it.
+    # A week is enough to notice and pay; two days is enough to panic.
+    "paid_warn_days": 7, "paid_bad_days": 2,
     # Hardware that comes back on its own: once is an event, three times in a
     # week is a power supply, a board or a watchdog.
     "reboots_week_warn": 3, "reboots_week_bad": 5,
@@ -409,6 +413,26 @@ def host_issues(host: dict, cfg: dict | None = None) -> list[dict]:
             # and now not running has stopped doing its job, whether it
             # crashed or was stopped and forgotten.
             add("bad", f"svc:{svc.get('name')}", f"{name} не работает (включён в автозапуск)")
+
+    # Rent, counted down. A server that vanishes because nobody topped up the
+    # balance looks exactly like a server that died, and costs a great deal
+    # more to work out at two in the morning.
+    paid = str(host.get("paid_until") or "").strip()
+    if paid:
+        try:
+            until = time.mktime(time.strptime(paid, "%Y-%m-%d"))
+            days = round((until - time.time()) / 86400)
+            if days < 0:
+                add("bad", "paid", f"оплачен по {paid} — срок прошёл "
+                                   f"{abs(days)} дн назад")
+            elif days <= limits.get("paid_bad_days", 2):
+                add("bad", "paid", f"оплачен по {paid} — остался"
+                                   f"{'' if days == 1 else 'ось'} {days} дн")
+            elif days <= limits.get("paid_warn_days", 7):
+                add("warn", "paid", f"оплачен по {paid} — осталось {days} дн")
+        except ValueError:
+            add("warn", "paid", f"не разобрал дату оплаты «{paid}», "
+                                "ожидается ГГГГ-ММ-ДД")
 
     # A restart nobody asked for is invisible by the next poll: the host is up,
     # healthy and identical to one that never went anywhere.
@@ -860,6 +884,14 @@ def checks_for(host: dict, cfg: dict | None = None) -> list[dict]:
         "ICMP и, где есть доступ, успешный опрос агентом каждые "
         f"{(cfg or {}).get('poll_interval', 180) // 60} мин",
         keys=("down",))
+    add("availability", "Оплата",
+        f"Дата, до которой хост оплачен, записана в конфиге: предупреждение за "
+        f"{limits.get('paid_warn_days', 7)} дней, критично за "
+        f"{limits.get('paid_bad_days', 2)}. Провайдер про это не спрашивается — "
+        "выключенный за неуплату сервер выглядит как умерший, и разбираться с "
+        "этим ночью дороже, чем раз в год поправить дату",
+        applies=bool(host.get("paid_until")),
+        skipped="срок оплаты не указан в конфиге", keys=("paid",))
     add("availability", "Перезагрузки",
         f"Аптайм, который стал меньше, чем был в прошлый опрос. "
         f"Предупреждение с {limits.get('reboots_week_warn', 3)} внеплановых "

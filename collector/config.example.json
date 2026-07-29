@@ -82,7 +82,8 @@
       "agent": "linux",
       "role": "server",
       "subnet": "0.0.0.0/0",
-      "updatable": true
+      "updatable": true,
+      "paid_until": "2026-12-31"
     },
     {
       "id": "nas",

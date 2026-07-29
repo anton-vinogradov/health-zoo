@@ -239,3 +239,24 @@ def test_a_certificate_that_differs_from_outside_is_a_finding():
                         "subject": "CN = чужой", "from": "сосед"}]
     issues.annotate([host], CFG, None)
     assert any(i["key"] == "certdiff:443" for i in host["issues"])
+
+
+def test_rent_is_counted_down():
+    """A host switched off for non-payment looks exactly like a dead one."""
+    import time as _time
+    host = host_named(fleet(), lambda h: True)
+    for offset, expected in ((30, None), (5, "warn"), (1, "bad"), (-3, "bad")):
+        probe_host = copy.deepcopy(host)
+        probe_host["paid_until"] = _time.strftime(
+            "%Y-%m-%d", _time.localtime(_time.time() + offset * 86400))
+        issues.annotate([probe_host], CFG, None)
+        found = [i for i in probe_host["issues"] if i["key"] == "paid"]
+        assert (found[0]["level"] if found else None) == expected, offset
+
+
+def test_an_unparseable_date_says_so():
+    host = host_named(fleet(), lambda h: True)
+    host["paid_until"] = "первого сентября"
+    issues.annotate([host], CFG, None)
+    assert any(i["key"] == "paid" and "не разобрал" in i["text"]
+               for i in host["issues"])
