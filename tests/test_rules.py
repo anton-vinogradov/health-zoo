@@ -260,3 +260,14 @@ def test_an_unparseable_date_says_so():
     issues.annotate([host], CFG, None)
     assert any(i["key"] == "paid" and "не разобрал" in i["text"]
                for i in host["issues"])
+
+
+def test_provider_forecast_drives_the_balance_warning():
+    """The provider computes when the money runs out; we only count the days."""
+    host = host_named(fleet(), lambda h: True)
+    for days, expected in ((40, None), (8, "warn"), (2, "bad"), (-1, "bad")):
+        probe_host = copy.deepcopy(host)
+        probe_host["billing"] = {"days_left": days, "forecast": "2026-08-10"}
+        issues.annotate([probe_host], CFG, None)
+        found = [i for i in probe_host["issues"] if i["key"] == "balance"]
+        assert (found[0]["level"] if found else None) == expected, days

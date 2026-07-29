@@ -50,6 +50,9 @@ DEFAULT_THRESHOLDS = {
     # "Unusual for this host" needs two guards: a floor, below which a multiple
     # is arithmetic rather than news, and how many times over the habit counts
     # as a departure from it.
+    # Ten days is enough to notice a bill and pay it without hurrying; three is
+    # enough to hurry.
+    "balance_warn_days": 10, "balance_bad_days": 3,
     # A week is enough to notice and pay; two days is enough to panic.
     "paid_warn_days": 7, "paid_bad_days": 2,
     # Hardware that comes back on its own: once is an event, three times in a
@@ -413,6 +416,20 @@ def host_issues(host: dict, cfg: dict | None = None) -> list[dict]:
             # and now not running has stopped doing its job, whether it
             # crashed or was stopped and forgotten.
             add("bad", f"svc:{svc.get('name')}", f"{name} не работает (включён в автозапуск)")
+
+    # What the money is doing. A prepaid server that stops is indistinguishable
+    # from a dead one, and the difference costs an hour to work out at the worst
+    # possible time.
+    money = host.get("billing") or {}
+    days = money.get("days_left")
+    if isinstance(days, (int, float)):
+        note = f"по расчёту провайдера средств хватает до {money.get('forecast')}"
+        if days < 0:
+            add("bad", "balance", f"средства кончились {abs(round(days))} дн назад — {note}")
+        elif days <= limits.get("balance_bad_days", 3):
+            add("bad", "balance", f"денег на {round(days)} дн — {note}")
+        elif days <= limits.get("balance_warn_days", 10):
+            add("warn", "balance", f"денег на {round(days)} дн — {note}")
 
     # Rent, counted down. A server that vanishes because nobody topped up the
     # balance looks exactly like a server that died, and costs a great deal
@@ -884,6 +901,14 @@ def checks_for(host: dict, cfg: dict | None = None) -> list[dict]:
         "ICMP и, где есть доступ, успешный опрос агентом каждые "
         f"{(cfg or {}).get('poll_interval', 180) // 60} мин",
         keys=("down",))
+    add("availability", "Баланс у провайдера",
+        f"Остаток на счету, делённый на суточную стоимость серверов: "
+        f"предупреждение за {limits.get('balance_warn_days', 10)} дней, критично "
+        f"за {limits.get('balance_bad_days', 3)}. Спрашивается у провайдера по API",
+        applies=bool(host.get("billing")),
+        skipped="биллинг для этого хоста не настроен",
+        blind=((host.get("billing") or {}).get("error") or ""),
+        keys=("balance",))
     add("availability", "Оплата",
         f"Дата, до которой хост оплачен, записана в конфиге: предупреждение за "
         f"{limits.get('paid_warn_days', 7)} дней, критично за "

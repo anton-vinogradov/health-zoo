@@ -2520,6 +2520,77 @@ def note_service_changes(previous: list[dict], results: list[dict]) -> None:
                  or svc.get("state") == "active/exited"))
 
 
+def poll_billing(cfg: dict, results: list[dict]) -> None:
+    """How long the money lasts, asked of the provider that holds it.
+
+    A prepaid VPS does not have a date it is paid until — it has a balance and
+    a daily rate, and the useful number is the quotient. Only providers with a
+    documented API are asked: reading a balance out of a control panel by
+    scraping breaks silently, which is the one failure this dashboard exists to
+    avoid.
+    """
+    for host in results:
+        billing = next((h.get("billing") for h in cfg.get("hosts", [])
+                        if h.get("id") == host.get("id") and h.get("billing")), None)
+        if not billing:
+            continue
+        token = secrets.load(billing, "token")
+        if not token:
+            host["billing"] = {"error": "токен не задан: "
+                                        f"{secrets.describe(billing, 'token')}"}
+            continue
+        if billing.get("provider") != "vdsina":
+            host["billing"] = {"error": f"провайдер {billing.get('provider')} "
+                                        "не поддерживается"}
+            continue
+        try:
+            host["billing"] = _vdsina_balance(
+                token, billing.get("api") or "https://userapi.vdsina.com/v1")
+        except Exception as exc:
+            host["billing"] = {"error": f"биллинг не ответил: {exc}"}
+
+
+def _vdsina_balance(token: str, base: str) -> dict:
+    """Ask vdsina when the money runs out.
+
+    The provider computes this itself — `forecast` is the date until which the
+    balance covers every service on the account — and its own answer beats
+    dividing a balance by a rate we would have to guess at. Balances come along
+    for the display; the account may hold several (main, bonus, partner) and
+    reports only the ones that have seen activity.
+    """
+    # vdsina.com and vdsina.ru are separate installations with separate
+    # accounts: a token from one is "Incorrect token" to the other, which is
+    # indistinguishable from a bad token unless you know to look.
+    def ask(path: str):
+        request = urllib.request.Request(
+            f"{base.rstrip('/')}/{path}",
+            headers={"Authorization": token, "Accept": "application/json"})
+        with urllib.request.urlopen(request, timeout=15) as response:
+            return json.load(response)
+
+    account = (ask("account") or {}).get("data") or {}
+    out: dict = {"forecast": account.get("forecast", "")}
+    if out["forecast"]:
+        try:
+            until = time.mktime(time.strptime(out["forecast"], "%Y-%m-%d"))
+            out["days_left"] = round((until - time.time()) / 86400, 1)
+        except ValueError:
+            pass
+    try:
+        balances = (ask("account.balance") or {}).get("data") or {}
+    except Exception:
+        return out
+    # The shape varies with which accounts have been used; take the numbers and
+    # let the card show them rather than insisting on a field name.
+    if isinstance(balances, dict):
+        money = {name: _num(value) for name, value in balances.items()
+                 if isinstance(value, (int, float, str)) and _num(value) != value}
+        if money:
+            out["balance"] = money
+    return out
+
+
 def observe_outside(results: list[dict], cfg: dict, key: str | None) -> None:
     """Ask what the world is actually served on the ports it can reach.
 

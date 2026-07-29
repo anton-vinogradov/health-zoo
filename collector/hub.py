@@ -116,6 +116,7 @@ class Fleet:
             probe.run_external_checks(self.cfg.get("external_checks", []),
                                       self.hosts(), self.cfg.get("ssh_key"), hosts)
             probe.poll_unifi_controller(self.cfg, hosts)
+            probe.poll_billing(self.cfg, hosts)
             probe.analyse_wifi(hosts)
             self.attach_channel_history(hosts)
             self.attach_link_history(hosts)

@@ -83,7 +83,12 @@
       "role": "server",
       "subnet": "0.0.0.0/0",
       "updatable": true,
-      "paid_until": "2026-12-31"
+      "paid_until": "2026-12-31",
+      "billing": {
+        "provider": "vdsina",
+        "token_credential": "vdsina-token",
+        "api": "https://userapi.vdsina.com/v1"
+      }
     },
     {
       "id": "nas",
