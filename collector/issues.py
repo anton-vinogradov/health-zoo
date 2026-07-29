@@ -404,6 +404,17 @@ def host_issues(host: dict, cfg: dict | None = None) -> list[dict]:
         # (e2scrub_reap, remount-fs) sit at "failed" on a healthy machine and
         # would otherwise drown out everything that matters.
         own = svc.get("scope") != "system"
+        # A transient unit is a one-off command somebody ran (systemd-run
+        # names them run-uNNNN), not a service that stopped doing its job. It
+        # stays visible — a failed job is still worth seeing — but as a note:
+        # "run-u6525 упал" as a fleet problem sends the reader hunting for a
+        # service that never existed.
+        if svc.get("name", "").startswith("run-"):
+            if "failed" in state:
+                add("info", f"svc:{svc.get('name')}",
+                    f"разовая задача {name} завершилась с ошибкой "
+                    "(запущена вручную через systemd-run, не сервис)")
+            continue
         if "failed" in state:
             add("bad" if own else "warn", f"svc:{svc.get('name')}",
                 f"{name} упал" + ("" if own else " (системный)"))
@@ -452,11 +463,15 @@ def host_issues(host: dict, cfg: dict | None = None) -> list[dict]:
                                 "ожидается ГГГГ-ММ-ДД")
 
     # A restart nobody asked for is invisible by the next poll: the host is up,
-    # healthy and identical to one that never went anywhere.
+    # healthy and identical to one that never went anywhere. It also needs to
+    # reach the operator rather than just the screen — a power cut, a watchdog,
+    # a crash and somebody at the keyboard all look like this, and the last two
+    # are worth hearing about the same minute. Our own reboots stay a note.
     if host.get("rebooted") and not host.get("reboot_planned"):
-        add("info", "rebooted",
-            f"перезагрузился между опросами — аптайм "
-            f"{max(1, round((host.get('uptime') or 0) / 60))} мин")
+        minutes = max(1, round((host.get("uptime") or 0) / 60))
+        add("bad", "rebooted",
+            f"перезагрузился {minutes} мин назад, и не с дашборда — "
+            "питание, сбой или перезагрузка вручную")
     weekly = host.get("reboots_week") or 0
     if weekly >= limits.get("reboots_week_bad", 5):
         add("bad", "reboots", f"перезагружался {weekly} раз за неделю сам по себе")

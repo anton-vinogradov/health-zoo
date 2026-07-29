@@ -271,3 +271,31 @@ def test_provider_forecast_drives_the_balance_warning():
         issues.annotate([probe_host], CFG, None)
         found = [i for i in probe_host["issues"] if i["key"] == "balance"]
         assert (found[0]["level"] if found else None) == expected, days
+
+
+def test_an_unplanned_restart_reaches_the_operator():
+    """A power cut, a watchdog, a crash and somebody at the keyboard all look
+    the same by the next poll — and all four are worth a message, not a note on
+    a screen nobody is watching at 03:00."""
+    hosts = fleet()
+    target = host_named(hosts, lambda h: h.get("uptime"))
+    target.update({"rebooted": True, "reboot_planned": False, "uptime": 240})
+    issues.annotate(hosts, CFG, None)
+
+    found = [i for i in target["issues"] if i["key"] == "rebooted"]
+    assert found and found[0]["level"] == "bad", "иначе алерт не уйдёт: info не алертит"
+    assert "не с дашборда" in found[0]["text"]
+
+
+def test_a_one_off_command_is_not_a_broken_service():
+    """systemd-run leaves run-uNNNN behind; that is a finished job, not a
+    service that stopped doing its job."""
+    hosts = fleet()
+    target = host_named(hosts, lambda h: h.get("services"))
+    target["services"] = [{"name": "run-u6525.service", "state": "failed",
+                           "scope": "system"}]
+    issues.annotate(hosts, CFG, None)
+
+    found = [i for i in target["issues"] if i["key"].startswith("svc:run-")]
+    assert found and found[0]["level"] == "info"
+    assert target["level"] != "bad"
