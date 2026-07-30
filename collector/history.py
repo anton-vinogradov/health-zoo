@@ -37,7 +37,8 @@ CREATE TABLE IF NOT EXISTS snapshots (
 def extract(host: dict) -> dict[str, float]:
     out: dict[str, float] = {}
     for field in ("mem_pct", "swap_pct", "update_count", "security_count",
-                  "cpu_load_pct", "channel_utilization"):
+                  "cpu_load_pct", "cpu_iowait_pct", "cpu_steal_pct",
+                  "channel_utilization"):
         value = host.get(field)
         if isinstance(value, (int, float)):
             out[field] = float(value)

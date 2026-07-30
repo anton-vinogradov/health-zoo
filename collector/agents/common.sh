@@ -172,26 +172,36 @@ common_links() {
   done
 }
 
-# ---------- processor busy time ----------
+# ---------- processor: busy, waiting, stolen ----------
 # Load average answers "how many want the CPU", which on a four-core box reads
 # alarming at 4 and fine at 3.9. Busy time answers "how much is left", which is
-# the question a threshold can be set on. Two reads of /proc/stat a second
-# apart; the idle delta is what the machine did not spend.
+# the question a threshold can be set on.
+#
+# Three numbers, not one, because they mean different things and the first
+# version of this reported all of them as "busy": a VPS whose storage stalled
+# for twenty minutes was announced as a processor pegged at 100%, when the
+# processor was doing nothing at all — it was waiting on a disk that answered
+# four operations a second. iowait is not work, and stolen time is not even
+# ours: the hypervisor took it.
 common_cpu() {
   [ -r /proc/stat ] || return 0
   # shellcheck disable=SC2046  # word splitting is the point: busy and idle
-  set -- $(awk '/^cpu /{print $2+$3+$4+$6+$7+$8, $5; exit}' /proc/stat)
-  busy1=$1; idle1=$2
+  # /proc/stat: user nice system idle iowait irq softirq steal
+  # busy is the first three plus both interrupt columns; the rest are not work.
+  set -- $(awk '/^cpu /{print $2+$3+$4+$7+$8, $5, $6, $9; exit}' /proc/stat)
+  busy1=$1; idle1=$2; wait1=$3; steal1=$4
   # A third of a second is enough to divide two counters and costs every host
   # in the fleet two thirds of a second less per poll. BusyBox without fancy
   # sleep takes the whole second instead of failing.
   sleep 0.3 2>/dev/null || sleep 1
   # shellcheck disable=SC2046  # same two fields, a second later
-  set -- $(awk '/^cpu /{print $2+$3+$4+$6+$7+$8, $5; exit}' /proc/stat)
-  busy2=$1; idle2=$2
-  total=$((busy2 - busy1 + idle2 - idle1))
+  set -- $(awk '/^cpu /{print $2+$3+$4+$7+$8, $5, $6, $9; exit}' /proc/stat)
+  busy2=$1; idle2=$2; wait2=$3; steal2=$4
+  total=$(( busy2 - busy1 + idle2 - idle1 + wait2 - wait1 + steal2 - steal1 ))
   [ "$total" -gt 0 ] 2>/dev/null || return 0
   emit cpu_load_pct "$(( (busy2 - busy1) * 100 / total ))"
+  emit cpu_iowait_pct "$(( (wait2 - wait1) * 100 / total ))"
+  emit cpu_steal_pct "$(( (steal2 - steal1) * 100 / total ))"
 }
 
 # ---------- how we look from here ----------

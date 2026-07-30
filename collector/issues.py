@@ -23,6 +23,11 @@ DEFAULT_THRESHOLDS = {
     "temp_warn": 88, "temp_bad": 96,
     "load_warn": 150, "load_bad": 300,
     "cpu_warn": 80, "cpu_bad": 90,
+    # Waiting on a disk is normal in bursts and a fault when sustained; a
+    # quarter of the time gone to the hypervisor means the neighbours are
+    # louder than the tenant.
+    "iowait_warn": 50, "iowait_bad": 80,
+    "steal_warn": 10, "steal_bad": 25,
     # HyperBackup here runs nightly; two days without a run means it stopped.
     "backup_stale_days": 2,
     # Motion detection that has produced nothing all night is suspicious;
@@ -278,6 +283,25 @@ def host_issues(host: dict, cfg: dict | None = None) -> list[dict]:
     level = _level(host.get("cpu_load_pct"), limits["cpu_warn"], limits["cpu_bad"])
     if level:
         add(level, "cpu", f"процессор занят на {host['cpu_load_pct']}%")
+
+    # Waiting on storage is the opposite of busy, and saying "processor at 100%"
+    # about it sends everybody looking in the wrong place. This host spent
+    # twenty minutes at 94% iowait while its disk answered four operations a
+    # second: nothing to optimise, something to complain to the provider about.
+    level = _level(host.get("cpu_iowait_pct"),
+                   limits["iowait_warn"], limits["iowait_bad"])
+    if level:
+        add(level, "iowait",
+            f"процессор ждёт диск {host['cpu_iowait_pct']}% времени")
+
+    # Stolen time is not ours at all: the hypervisor gave the core to somebody
+    # else. Nothing inside the guest can fix it and nothing inside the guest
+    # shows it except this counter.
+    level = _level(host.get("cpu_steal_pct"),
+                   limits["steal_warn"], limits["steal_bad"])
+    if level:
+        add(level, "steal",
+            f"гипервизор забирает {host['cpu_steal_pct']}% процессорного времени")
 
     # Load average answers the other half of the question: how many processes
     # want the machine, including the ones stuck on a disk. A box can be 40%
@@ -993,6 +1017,19 @@ def checks_for(host: dict, cfg: dict | None = None) -> list[dict]:
                else "порты не сообщают своих возможностей, а истории замеров "
                     "ещё нет — сравнить текущую скорость не с чем"),
         keys=("link",))
+    add("resources", "Ожидание диска",
+        f"Доля времени, которую процессор простоял в ожидании диска: "
+        f"предупреждение с {limits.get('iowait_warn', 50)}%, критично с "
+        f"{limits.get('iowait_bad', 80)}%. Это не занятость — считать одним "
+        "числом с ней значит искать проблему не там",
+        applies=host.get("cpu_iowait_pct") is not None,
+        skipped="хост не отдаёт разбивку процессорного времени", keys=("iowait",))
+    add("resources", "Украденное время",
+        f"Сколько процессорного времени забрал гипервизор: предупреждение с "
+        f"{limits.get('steal_warn', 10)}%, критично с {limits.get('steal_bad', 25)}%. "
+        "Изнутри гостя ни исправить, ни увидеть иначе",
+        applies=host.get("cpu_steal_pct") is not None,
+        skipped="не виртуальная машина или счётчик недоступен", keys=("steal",))
     add("resources", "Отклонение от своей нормы",
         f"Медиана последнего получаса против медианы месяца: тревога, когда "
         f"стало вдвое больше обычного и при этом выше {limits.get('baseline_floor', 25)}%. "

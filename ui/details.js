@@ -143,6 +143,18 @@ function showHost(host) {
   }
   if ((host.backs_up_to || []).length) fact('бэкапится на', host.backs_up_to.join(', '));
   if ((host.receives_from || []).length) fact('принимает бэкапы от', host.receives_from.join(', '));
+  var money = host.billing || {};
+  if (money.forecast) {
+    fact('средств хватает до', money.forecast +
+      ' (' + Math.round(money.days_left) + ' дн по расчёту провайдера)');
+  }
+  if (money.balance) {
+    fact('на счету', Object.keys(money.balance)
+      .filter(function (k) { return money.balance[k]; })
+      .map(function (k) { return k + ': ' + money.balance[k]; }).join(', ') || '0');
+  }
+  if (money.error) fact('биллинг', money.error);
+  if (host.paid_until) fact('оплачен до', host.paid_until);
   if (host.note) fact('заметка', host.note);
   body.appendChild(section('Общее', h('dl', { class: 'kv' }, facts)));
 

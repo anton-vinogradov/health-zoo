@@ -273,6 +273,7 @@ def test_provider_forecast_drives_the_balance_warning():
         assert (found[0]["level"] if found else None) == expected, days
 
 
+
 def test_an_unplanned_restart_reaches_the_operator():
     """A power cut, a watchdog, a crash and somebody at the keyboard all look
     the same by the next poll — and all four are worth a message, not a note on
@@ -299,3 +300,20 @@ def test_a_one_off_command_is_not_a_broken_service():
     found = [i for i in target["issues"] if i["key"].startswith("svc:run-")]
     assert found and found[0]["level"] == "info"
     assert target["level"] != "bad"
+
+def test_waiting_on_a_disk_is_not_being_busy():
+    """The alert that started this: 94% iowait announced as a pegged CPU."""
+    host = host_named(fleet(), lambda h: h.get("cpu_load_pct") is not None)
+    host.update({"cpu_load_pct": 6, "cpu_iowait_pct": 94, "cpu_steal_pct": 0})
+    issues.annotate([host], CFG, None)
+    keys = {i["key"]: i["level"] for i in host["issues"]}
+    assert keys.get("iowait") == "bad", "ожидание диска должно быть находкой"
+    assert "cpu" not in keys, "занятость 6% не должна ни о чём сообщать"
+
+
+def test_stolen_time_is_reported_separately():
+    host = host_named(fleet(), lambda h: h.get("cpu_load_pct") is not None)
+    host.update({"cpu_load_pct": 5, "cpu_iowait_pct": 0, "cpu_steal_pct": 30})
+    issues.annotate([host], CFG, None)
+    assert any(i["key"] == "steal" and i["level"] == "bad" for i in host["issues"])
+

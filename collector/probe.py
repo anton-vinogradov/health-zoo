@@ -96,7 +96,8 @@ NUMERIC = {
     "mem_total", "mem_available", "mem_free", "swap_total", "swap_free",
     "pkg_list_mtime", "reboot_required", "zoneminder", "surveillance",
     "zm_events_count", "zm_last_event", "zm_events_bytes", "zm_oldest_event", "ok",
-    "cpu_load_pct", "free_flash", "total_flash",
+    "cpu_load_pct", "cpu_iowait_pct", "cpu_steal_pct",
+    "free_flash", "total_flash",
 }
 
 

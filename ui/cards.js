@@ -153,6 +153,29 @@ function hostCard(host) {
   if ((host.receives_from || []).length) {
     chips.push(chip('💾 ← ' + host.receives_from.join(', '), 'ok'));
   }
+  /* Money is a fact about the host like any other, and the only one that turns
+     a working server off on a schedule. Shown whenever it is known — not only
+     when it is nearly out — because "paid until when?" is a question people
+     ask long before it is a problem. */
+  var money = host.billing || {};
+  if (typeof money.days_left === 'number') {
+    var left = Math.round(money.days_left);
+    chips.push(chipFor(host, 'balance', '💳 денег на ' + left +
+      plural(left, ' день', ' дня', ' дней'),
+      left <= 3 ? 'bad' : left <= 10 ? 'warn' : ''));
+    chips[chips.length - 1].title = 'по расчёту провайдера средств хватает до ' +
+      money.forecast + (money.balance && money.balance.real !== undefined
+        ? '; на счету ' + money.balance.real : '');
+  } else if (money.error) {
+    chips.push(chip('💳 биллинг: ' + money.error, ''));
+  }
+  if (host.paid_until) {
+    var days = Math.round((Date.parse(host.paid_until) - Date.now()) / 86400000);
+    chips.push(chipFor(host, 'paid', '💳 оплачен на ' + days +
+      plural(days, ' день', ' дня', ' дней'),
+      days <= 2 ? 'bad' : days <= 7 ? 'warn' : ''));
+    chips[chips.length - 1].title = 'оплачен до ' + host.paid_until;
+  }
   if (host.backup_orphan) chips.push(chipFor(host, 'no_backup', '💾 без бэкапа', 'bad'));
   if (host.orphan_count) {
     chips.push(chipFor(host, 'orphans', '🧹 лишних пакетов: ' + host.orphan_count, 'warn'));
@@ -263,6 +286,10 @@ function hostCard(host) {
     if (host.cpu_load_pct !== undefined) {
       metrics.push(bar('CPU', host.cpu_load_pct, 'cpu',
         host.cpu_load_pct + '%' +
+        /* Waiting on a disk is not work: shown next to the number, never
+           folded into it. */
+        (host.cpu_iowait_pct >= 20 ? ' · ждёт диск ' + host.cpu_iowait_pct + '%' : '') +
+        (host.cpu_steal_pct >= 5 ? ' · украдено ' + host.cpu_steal_pct + '%' : '') +
         (host.load1 !== undefined && host.cpus
           ? ' · ' + host.load1 + ' / ' + host.cpus : ''), undefined, host));
     } else if (host.load1 !== undefined && host.cpus) {
