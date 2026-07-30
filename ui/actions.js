@@ -59,10 +59,15 @@ function showSuppressions() {
     return;
   }
 
-  var stale = list.filter(function (s) { return !s.still_firing; }).length;
+  /* Stale means "has had nothing to hide for a fortnight", not "is quiet right
+     now": a finding that fires for twenty minutes a day would otherwise be
+     offered for removal for the remaining twenty-three hours. */
+  var stale = list.filter(function (s) {
+    return !s.still_firing && (s.quiet_days === null || s.quiet_days >= 14);
+  }).length;
   root.appendChild(h('p', { class: 'checks-intro', text:
     'Проверки продолжают выполняться; исключение лишь снимает влияние на статус и алерты.' +
-    (stale ? ' У ' + stale + ' исключений проблема уже не воспроизводится — их можно снять.' : '') }));
+    (stale ? ' У ' + stale + ' исключений проблема не воспроизводилась две недели — их можно снять.' : '') }));
 
   root.appendChild(table(['хост', 'проверка', 'обоснование', 'возраст', 'состояние', ''],
     list.map(function (s) {
@@ -74,7 +79,12 @@ function showSuppressions() {
                   (s.days_left !== null ? ' / ещё ' + Math.round(s.days_left) : '') }),
         h('td', null, [
           h('span', { class: 'dot ' + (s.still_firing ? 'warn' : 'ok') }),
-          h('span', { text: s.still_firing ? 'скрывает проблему' : 'проблемы больше нет' })
+          h('span', { text: s.still_firing ? 'скрывает проблему'
+            : s.quiet_days === null ? 'пока не срабатывало'
+            : s.quiet_days < 14 ? 'срабатывало ' + (s.quiet_days < 1
+                ? Math.round(s.quiet_days * 24) + ' ч назад'
+                : Math.round(s.quiet_days) + ' сут назад')
+            : 'проблемы больше нет' })
         ]),
         h('td', { class: 'right' }, [h('button', {
           class: 'btn btn-sm', text: 'снять',

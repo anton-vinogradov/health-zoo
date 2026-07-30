@@ -139,6 +139,7 @@ class Fleet:
             self.note_reboots(hosts)
             issues.annotate(hosts, self.cfg, self.suppressions)
             issues.annotate_checks(hosts, self.cfg)
+            self.suppressions.note_firing(hosts)
             snap = {
                 "suppressions": self.suppressions.listing(hosts),
                 "unmanaged": probe.find_unmanaged(hosts, self.hosts()),

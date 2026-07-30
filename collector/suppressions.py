@@ -95,6 +95,35 @@ class Suppressions:
         return {k[len(prefix):]: v for k, v in self.active().items()
                 if k.startswith(prefix)}
 
+    def note_firing(self, hosts: list[dict]) -> None:
+        """Remember when each suppression last had something to suppress.
+
+        Judging that by the current poll misreads anything intermittent: the
+        disk on the cheap VPS stalls for twenty minutes a day, so for the other
+        twenty-three hours the dashboard would offer to remove the suppression
+        that is doing the work. What matters is when it last fired, not whether
+        it is firing this second.
+        """
+        by_id = {h.get("id"): h for h in hosts}
+        now = int(time.time())
+        changed = False
+        with self.lock:
+            for suppression_id, entry in self.items.items():
+                host = by_id.get(entry.get("host"))
+                if not host:
+                    continue
+                key = entry.get("key", "")
+                firing = any(issue.get("key") == key
+                             or str(issue.get("key", "")).startswith(key + ":")
+                             for issue in host.get("issues", []))
+                # Written at most once every ten minutes: this is bookkeeping,
+                # not a metric, and the file is read on every page load.
+                if firing and now - int(entry.get("last_fired") or 0) > 600:
+                    entry["last_fired"] = now
+                    changed = True
+            if changed:
+                self._save()
+
     def listing(self, hosts: list[dict]) -> list[dict]:
         """Fleet-wide view, annotated with whether it is still doing anything.
 
@@ -127,5 +156,10 @@ class Suppressions:
                 # False means the underlying finding is gone: the suppression
                 # is no longer hiding anything and can probably be dropped.
                 "still_firing": firing,
+                # …unless it is simply between episodes. Something that fires
+                # for twenty minutes a day is not stale at minute twenty-one.
+                "last_fired": entry.get("last_fired", 0),
+                "quiet_days": (round((now - entry["last_fired"]) / 86400, 1)
+                               if entry.get("last_fired") else None),
             })
         return sorted(out, key=lambda item: (not item["still_firing"], -item["created"]))
