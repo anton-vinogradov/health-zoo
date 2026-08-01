@@ -174,6 +174,7 @@ class Fleet:
             # a single-host refresh after an action would look like everything
             # else vanished.
             self.alerts.process(hosts)
+            self.maybe_auto_update(hosts)
             self.maybe_auto_reboot(hosts)
         except Exception as exc:  # keep the loop alive whatever happens
             with self.lock:
@@ -319,6 +320,49 @@ class Fleet:
                     str(host.get("id", "")), str(cam.get("id", "")))
                 if limits:
                     cam["limits"] = limits
+
+    def maybe_auto_update(self, hosts: list[dict]) -> None:
+        """Install security updates as soon as they appear.
+
+        Every other automatic action here waits for a window, because rebooting
+        or cleaning at the wrong moment costs something. A published fix that is
+        not installed costs from the moment it is published, and the machine
+        that needs it most is the one nobody has looked at this week.
+
+        Deliberately narrow, like the reboot path: only hosts the config allows
+        updating, only when the packages waiting are security ones, one host at
+        a time through the same job machinery as the button, and never the same
+        host twice inside the interval — an update that fails would otherwise be
+        retried every three minutes for ever.
+        """
+        conf = self.settings.auto_security()
+        if not conf.get("enabled"):
+            return
+        excluded = set(conf.get("exclude") or [])
+        gap = int(conf.get("min_interval_hours", 6)) * 3600
+        now = int(time.time())
+        for host in hosts:
+            host_id = host.get("id")
+            if not host.get("security_count") or host_id in excluded:
+                continue
+            source = next((h for h in self.hosts() if h.get("id") == host_id), None)
+            if not source or not source.get("updatable"):
+                continue
+            if now - self.settings.last_update(str(host_id)) < gap:
+                continue
+            if not self.jobs_ref:
+                return
+            job_id, _ = self.jobs_ref.start([source], self)
+            if not job_id:
+                # Another job holds the slot; the next poll will try again
+                # rather than queueing updates behind one another.
+                return
+            self.settings.note_update(str(host_id), now)
+            self.alerts.notify(
+                f"ставлю обновления на {host.get('name', host_id)}: "
+                f"{host['security_count']} из {host.get('update_count', 0)} "
+                "пакетов закрывают уязвимости")
+            return
 
     def maybe_auto_reboot(self, hosts: list[dict]) -> None:
         """Reboot hosts that asked for it, if the operator turned this on.
@@ -1022,6 +1066,7 @@ class Handler(BaseHTTPRequestHandler):
                 "by_role": issues.ROLE_THRESHOLDS,
                 "auto_reboot": self.fleet.settings.auto_reboot(),
                 "auto_cleanup": self.fleet.settings.auto_cleanup(),
+            "auto_security": self.fleet.settings.auto_security(),
                 "hosts": [{"id": h.get("id"), "name": h.get("name")}
                           for h in self.fleet.hosts()],
                 # Cameras come from the snapshot rather than the config: they
@@ -1111,6 +1156,8 @@ class Handler(BaseHTTPRequestHandler):
                 self.fleet.settings.set_cameras(req["cameras"])
             if isinstance(req.get("auto_cleanup"), dict):
                 self.fleet.settings.set_auto_cleanup(req["auto_cleanup"])
+            if isinstance(req.get("auto_security"), dict):
+                self.fleet.settings.set_auto_security(req["auto_security"])
             # Applied to the live config and the current snapshot at once: a
             # threshold changed in the browser has to recolour the fleet now,
             # not at the next poll — otherwise it reads as having been ignored.
@@ -1122,7 +1169,8 @@ class Handler(BaseHTTPRequestHandler):
             self._json({"ok": True,
                         "thresholds": self.fleet.settings.thresholds(),
                         "auto_reboot": self.fleet.settings.auto_reboot(),
-                        "auto_cleanup": self.fleet.settings.auto_cleanup()})
+                        "auto_cleanup": self.fleet.settings.auto_cleanup(),
+                        "auto_security": self.fleet.settings.auto_security()})
             return
 
         if path == "/api/refresh":

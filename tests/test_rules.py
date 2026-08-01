@@ -373,3 +373,101 @@ def test_only_findings_about_events_can_be_dismissed():
     by_key = {i["key"]: i for i in target["issues"]}
     assert by_key["reboots"].get("episodic"), "перезагрузки — событие"
     assert not by_key["link:eth0"].get("episodic"), "скорость линка — состояние"
+
+
+# ---------- automatic security updates ----------
+
+class FakeSettings:
+    """Only what the decision reads: the toggle and the per-host stamp."""
+
+    def __init__(self, **conf):
+        self.conf = {"enabled": True, "exclude": [], "min_interval_hours": 6}
+        self.conf.update(conf)
+        self.stamps = {}
+
+    def auto_security(self):
+        return self.conf
+
+    def last_update(self, host_id):
+        return self.stamps.get(host_id, 0)
+
+    def note_update(self, host_id, when):
+        self.stamps[host_id] = when
+
+
+class FakeJobs:
+    def __init__(self, busy=False):
+        self.busy = busy
+        self.started = []
+
+    def start(self, targets, fleet):
+        if self.busy:
+            return None, "занято"
+        self.started.append([t["id"] for t in targets])
+        return "job1", ""
+
+
+class FakeAlerts:
+    def __init__(self):
+        self.said = []
+
+    def notify(self, text):
+        self.said.append(text)
+
+
+def auto_update(hosts, config, settings=None, jobs=None):
+    """Run the decision with everything it touches stubbed out."""
+    import hub
+
+    class FakeFleet:
+        pass
+
+    fleet = FakeFleet()
+    fleet.settings = settings or FakeSettings()
+    fleet.jobs_ref = jobs or FakeJobs()
+    fleet.alerts = FakeAlerts()
+    fleet.hosts = lambda: config
+    hub.Fleet.maybe_auto_update(fleet, hosts)
+    return fleet
+
+
+def test_a_security_update_starts_by_itself():
+    hosts = [{"id": "srv", "name": "srv", "security_count": 2, "update_count": 7}]
+    fleet = auto_update(hosts, [{"id": "srv", "updatable": True}])
+    assert fleet.jobs_ref.started == [["srv"]]
+    assert "закрывают уязвимости" in fleet.alerts.said[0]
+
+
+def test_updates_that_are_not_security_wait_for_a_human():
+    hosts = [{"id": "srv", "name": "srv", "security_count": 0, "update_count": 40}]
+    fleet = auto_update(hosts, [{"id": "srv", "updatable": True}])
+    assert fleet.jobs_ref.started == []
+
+
+def test_a_host_the_config_does_not_allow_is_left_alone():
+    hosts = [{"id": "nas", "name": "nas", "security_count": 5, "update_count": 5}]
+    fleet = auto_update(hosts, [{"id": "nas", "updatable": False}])
+    assert fleet.jobs_ref.started == []
+
+
+def test_a_failed_update_is_not_retried_every_poll():
+    hosts = [{"id": "srv", "name": "srv", "security_count": 2, "update_count": 2}]
+    settings = FakeSettings()
+    settings.stamps["srv"] = int(__import__("time").time()) - 600  # 10 минут назад
+    fleet = auto_update(hosts, [{"id": "srv", "updatable": True}], settings)
+    assert fleet.jobs_ref.started == []
+
+
+def test_one_host_at_a_time():
+    hosts = [{"id": "a", "name": "a", "security_count": 1, "update_count": 1},
+             {"id": "b", "name": "b", "security_count": 1, "update_count": 1}]
+    config = [{"id": "a", "updatable": True}, {"id": "b", "updatable": True}]
+    fleet = auto_update(hosts, config)
+    assert fleet.jobs_ref.started == [["a"]], "второй хост ждёт следующего опроса"
+
+
+def test_switching_it_off_stops_it():
+    hosts = [{"id": "srv", "name": "srv", "security_count": 9, "update_count": 9}]
+    fleet = auto_update(hosts, [{"id": "srv", "updatable": True}],
+                        FakeSettings(enabled=False))
+    assert fleet.jobs_ref.started == []

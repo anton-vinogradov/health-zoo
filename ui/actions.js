@@ -467,8 +467,26 @@ function showSettings() {
         return h('label', { class: 'set-check' }, [box, h('span', { text: host.name })]);
       }));
 
+    /* The one action that does not wait for a window. Everything else here is
+       scheduled because doing it at the wrong moment costs something; a
+       published fix costs from the moment it is published. */
+    var security = h('input', { type: 'checkbox' });
+    security.checked = !(cfg.auto_security && cfg.auto_security.enabled === false);
+
     var cleanup = h('input', { type: 'checkbox' });
     cleanup.checked = !(cfg.auto_cleanup && cfg.auto_cleanup.enabled === false);
+    root.appendChild(section('Обновления безопасности', h('div', { class: 'set-block' }, [
+      h('label', { class: 'set-check' }, [security,
+        h('span', { text: 'ставить сразу, как только появятся' })]),
+      h('p', { class: 'set-hint', text:
+        'Как только среди ожидающих пакетов появляется закрывающий уязвимость, ' +
+        'хост обновляется тем же способом, что и по кнопке — то есть ставятся ' +
+        'все обновления, а не только security: apt не умеет обновлять пакет в ' +
+        'отрыве от зависимостей. Только хосты, которым обновление разрешено в ' +
+        'конфиге, по одному за раз и не чаще раза в 6 часов на хост — иначе ' +
+        'неудачное обновление повторялось бы каждые три минуты. Перезагрузка, ' +
+        'если она понадобится, остаётся отдельным решением ниже.' })
+    ])));
     root.appendChild(section('Чистка ненужных пакетов', h('div', { class: 'set-block' }, [
       h('label', { class: 'set-check' }, [cleanup,
         h('span', { text: 'убирать пакеты, которые больше никому не нужны (apt autoremove)' })]),
@@ -525,6 +543,7 @@ function showSettings() {
               return acc;
             }, {}),
             auto_cleanup: { enabled: cleanup.checked },
+      auto_security: { enabled: security.checked },
             auto_reboot: { enabled: enabled.checked, from_hour: Number(fromHour.value),
                            to_hour: Number(toHour.value), exclude: exclude }
           })

@@ -105,6 +105,12 @@ AUTO_REBOOT_DEFAULT = {
 # consequence of upgrading, not an event.
 AUTO_CLEANUP_DEFAULT = {"enabled": True}
 
+# Security updates install themselves unless somebody says otherwise. A machine
+# left unpatched because nobody looked at the dashboard that week is the exact
+# failure a dashboard is supposed to prevent, and "there is a fix, and it is
+# not applied" is the one finding where waiting has a cost and acting does not.
+AUTO_SECURITY_DEFAULT = {"enabled": True, "exclude": [], "min_interval_hours": 6}
+
 
 class Settings:
     def __init__(self, path: str):
@@ -259,6 +265,39 @@ class Settings:
             self.data["auto_cleanup"] = current
             self._save()
             return current
+
+    # ---------- automatic security updates ----------
+
+    def auto_security(self) -> dict:
+        out = dict(AUTO_SECURITY_DEFAULT)
+        out.update(self.data.get("auto_security") or {})
+        return out
+
+    def set_auto_security(self, values: dict) -> dict:
+        with self.lock:
+            current = self.auto_security()
+            if "enabled" in values:
+                current["enabled"] = bool(values["enabled"])
+            if "min_interval_hours" in values:
+                try:
+                    current["min_interval_hours"] = max(1, int(values["min_interval_hours"]))
+                except (TypeError, ValueError):
+                    pass
+            if isinstance(values.get("exclude"), list):
+                current["exclude"] = [str(x) for x in values["exclude"]]
+            self.data["auto_security"] = current
+            self._save()
+            return current
+
+    def last_update(self, host_id: str) -> int:
+        return int((self.data.get("last_update") or {}).get(host_id, 0))
+
+    def note_update(self, host_id: str, when: int) -> None:
+        with self.lock:
+            stamps = dict(self.data.get("last_update") or {})
+            stamps[host_id] = int(when)
+            self.data["last_update"] = stamps
+            self._save()
 
     # ---------- automatic reboots ----------
 
