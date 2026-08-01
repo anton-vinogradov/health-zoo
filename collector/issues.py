@@ -253,8 +253,23 @@ def host_issues(host: dict, cfg: dict | None = None) -> list[dict]:
     limits = thresholds_for(host, cfg)
     out: list[dict] = []
 
-    def add(level: str, key: str, text: str) -> None:
-        out.append({"level": level, "key": key, "text": text})
+    def add(level: str, key: str, text: str, episodic: bool = False) -> None:
+        """`episodic` marks a finding about something that happened.
+
+        A restart counted over a week, a unit that came back three times, half
+        an hour spent above this machine's habits: those are events. They can be
+        read once and dismissed, because the next occurrence writes a different
+        sentence and speaks again.
+
+        Everything else describes a state that is still true — a port that
+        negotiated 100 Mbit, an expired certificate, a full disk. Dismissing
+        those "until next time" would be a lie: there is no next time, only now,
+        and accepting them takes a reason in writing.
+        """
+        entry = {"level": level, "key": key, "text": text}
+        if episodic:
+            entry["episodic"] = True
+        out.append(entry)
 
     if not host.get("reachable"):
         # An unreachable host is a problem, full stop. "This one is usually
@@ -373,7 +388,7 @@ def host_issues(host: dict, cfg: dict | None = None) -> list[dict]:
             continue
         add("warn", f"unusual:{label}",
             f"{label}: {now}% последние полчаса против обычных {usual}% "
-            f"({norm.get('samples')} замеров)")
+            f"({norm.get('samples')} замеров)", episodic=True)
 
     # What a stranger is served. The local view reads the certificate from the
     # host that offers it; this one reads what actually comes back over the
@@ -495,12 +510,14 @@ def host_issues(host: dict, cfg: dict | None = None) -> list[dict]:
         minutes = max(1, round((host.get("uptime") or 0) / 60))
         add("bad", "rebooted",
             f"перезагрузился {minutes} мин назад, и не с дашборда — "
-            "питание, сбой или перезагрузка вручную")
+            "питание, сбой или перезагрузка вручную", episodic=True)
     weekly = host.get("reboots_week") or 0
     if weekly >= limits.get("reboots_week_bad", 5):
-        add("bad", "reboots", f"перезагружался {weekly} раз за неделю сам по себе")
+        add("bad", "reboots",
+            f"перезагружался {weekly} раз за неделю сам по себе", episodic=True)
     elif weekly >= limits.get("reboots_week_warn", 3):
-        add("warn", "reboots", f"перезагружался {weekly} раза за неделю сам по себе")
+        add("warn", "reboots",
+            f"перезагружался {weekly} раза за неделю сам по себе", episodic=True)
 
     # A unit that dies and is brought back looks healthy at every poll; the
     # restart counter is the only place it shows, and only as a difference.
@@ -509,14 +526,14 @@ def host_issues(host: dict, cfg: dict | None = None) -> list[dict]:
             name = svc.get("name", "").removesuffix(".service")
             add("warn" if svc.get("scope") != "system" else "info",
                 f"svcflap:{svc.get('name')}",
-                f"{name} перезапускался {svc['restarts_delta']} раз с прошлого опроса")
+                f"{name} перезапускался {svc['restarts_delta']} раз с прошлого опроса", episodic=True)
 
     for name in host.get("services_gone") or []:
         # Removing a service is a normal thing to do — and doing it by accident
         # looks exactly the same, which is why it gets said out loud once.
         add("warn", f"svcgone:{name}",
             f"{name.removesuffix('.service')} исчез: юнит работал в прошлый опрос, "
-            "сейчас его нет в системе")
+            "сейчас его нет в системе", episodic=True)
 
     for container in host.get("containers", []):
         if container.get("state") != "running":

@@ -194,13 +194,14 @@ function showHost(host) {
                     title: 'снова показывать это замечание',
                     onclick: function () { unack(host.id + '/' + i.key); } })
                 : h('span', null, [
-                    /* Two different decisions, two buttons: "прочитал" costs
-                       one click and lasts until the wording changes, "принято
-                       навсегда" costs a reason and goes into the list. */
-                    h('button', { class: 'btn btn-sm', text: 'принято',
+                    /* Two different decisions, two buttons — but the first only
+                       where it means anything. "Прочитал" lasts until the
+                       wording changes, which needs the wording to be able to
+                       change: a state that is still true has no next time. */
+                    i.episodic ? h('button', { class: 'btn btn-sm', text: 'принято',
                       title: 'скрыть до следующего раза — без причины, ' +
                              'вернётся, когда изменится',
-                      onclick: function () { ackIssue(host, i); } }),
+                      onclick: function () { ackIssue(host, i); } }) : null,
                     h('button', { class: 'btn btn-sm', text: 'исключить',
                       title: 'принять как известное — с причиной',
                       onclick: function () { suppressIssue(host, i); } })

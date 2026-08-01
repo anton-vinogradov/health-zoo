@@ -1208,11 +1208,20 @@ class Handler(BaseHTTPRequestHandler):
                 return
             # The wording is the fingerprint: "3 раза за неделю" acknowledged
             # stays quiet, "4 раза" is a different sentence and speaks again.
-            said = next((i["text"] for i in host.get("issues", [])
-                         if i["key"] == key), "")
-            if not said:
+            finding = next((i for i in host.get("issues", [])
+                             if i["key"] == key), None)
+            if not finding:
                 self._json({"error": "это замечание сейчас не горит"}, 404)
                 return
+            # Only findings about something that happened. A state that is
+            # still true has no "next time" to come back at, and dismissing it
+            # would hide it for good without anybody writing down why.
+            if not finding.get("episodic"):
+                self._json({"error": "это не разовое замечание — состояние "
+                                     "никуда не денется само, ему нужно "
+                                     "исключение с причиной"}, 400)
+                return
+            said = finding["text"]
             self.fleet.acks.add(host_id, key, said)
             self.fleet.refresh_hosts([host_id])
             self._json({"ok": True})

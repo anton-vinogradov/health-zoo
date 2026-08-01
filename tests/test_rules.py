@@ -360,3 +360,16 @@ def test_it_speaks_again_when_the_fact_changes():
                     FakeAcks({target["id"]: {"reboots": {"said": said, "at": 1}}}))
     found = [i for i in target["issues"] if i["key"] == "reboots"]
     assert found and not found[0].get("acked") and found[0]["level"] == "warn"
+
+
+def test_only_findings_about_events_can_be_dismissed():
+    """A state that is still true has no next time to come back at."""
+    hosts = fleet()
+    target = host_named(hosts, lambda h: True)
+    target["reboots_week"] = 3
+    target["links"] = [{"name": "eth0", "state": "up", "speed": 100,
+                        "capable": 1000, "duplex": "full", "crc": 0, "flaps": 0}]
+    issues.annotate(hosts, CFG, None)
+    by_key = {i["key"]: i for i in target["issues"]}
+    assert by_key["reboots"].get("episodic"), "перезагрузки — событие"
+    assert not by_key["link:eth0"].get("episodic"), "скорость линка — состояние"

@@ -568,11 +568,15 @@ function renderAlert(hosts) {
     /* Read-and-move-on belongs where the finding is read, not three clicks
        away inside the host. One press, no reason asked: it comes back when the
        finding says something different. */
-    var dismiss = h('button', {
+    /* Only where there is a next time. A port that negotiated 100 Mbit will go
+       on saying so until somebody changes the cable, and a button that hides it
+       "until it happens again" would hide it for good. Those take a reason, in
+       the host's own list. */
+    var dismiss = entry.issue && entry.issue.episodic ? h('button', {
       class: 'alert-dismiss', text: '✓',
       title: 'принято — скрыть до следующего раза; вернётся, если изменится',
       onclick: function (e) { e.stopPropagation(); ackIssue(entry.host, entry.issue); }
-    });
+    }) : null;
     return h('span', {
       class: 'alert-item ' + (isBad ? 'bad' : 'warn'),
       onclick: function () { showHost(entry.host); }
