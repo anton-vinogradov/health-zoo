@@ -122,6 +122,20 @@ html, body {
   cursor: pointer;
 }
 .alert-item:hover { border-color: var(--accent); }
+/* Dismissing is a second action on the same row, so it looks like a second
+   action: quiet until the row is under the cursor. */
+.alert-dismiss {
+  margin-left: 7px;
+  padding: 0 3px;
+  border: 0;
+  background: none;
+  color: var(--text-faint);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+  opacity: .55;
+}
+.alert-item:hover .alert-dismiss { opacity: 1; color: var(--ok); }
 .alert-item b { font-weight: 600; }
 .alert-item.bad b { color: var(--bad); }
 .alert-item.warn b { color: var(--warn); }

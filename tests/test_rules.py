@@ -317,3 +317,46 @@ def test_stolen_time_is_reported_separately():
     issues.annotate([host], CFG, None)
     assert any(i["key"] == "steal" and i["level"] == "bad" for i in host["issues"])
 
+
+
+class FakeAcks:
+    """The store as the rules see it: what was said, and for which finding."""
+
+    def __init__(self, items):
+        self.items = items
+
+    def for_host(self, host_id):
+        return self.items.get(host_id, {})
+
+
+def test_an_acknowledged_finding_goes_quiet():
+    hosts = fleet()
+    target = host_named(hosts, lambda h: True)
+    target["reboots_week"] = 3
+    issues.annotate(hosts, CFG, None)
+    said = next(i["text"] for i in target["issues"] if i["key"] == "reboots")
+
+    hosts = fleet()
+    target = host_named(hosts, lambda h: True)
+    target["reboots_week"] = 3
+    issues.annotate(hosts, CFG, None,
+                    FakeAcks({target["id"]: {"reboots": {"said": said, "at": 1}}}))
+    found = [i for i in target["issues"] if i["key"] == "reboots"]
+    assert found and found[0]["acked"] and found[0]["level"] == "info"
+
+
+def test_it_speaks_again_when_the_fact_changes():
+    """Three restarts acknowledged is not four restarts acknowledged."""
+    hosts = fleet()
+    target = host_named(hosts, lambda h: True)
+    target["reboots_week"] = 3
+    issues.annotate(hosts, CFG, None)
+    said = next(i["text"] for i in target["issues"] if i["key"] == "reboots")
+
+    hosts = fleet()
+    target = host_named(hosts, lambda h: True)
+    target["reboots_week"] = 4
+    issues.annotate(hosts, CFG, None,
+                    FakeAcks({target["id"]: {"reboots": {"said": said, "at": 1}}}))
+    found = [i for i in target["issues"] if i["key"] == "reboots"]
+    assert found and not found[0].get("acked") and found[0]["level"] == "warn"

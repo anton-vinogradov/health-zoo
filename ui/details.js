@@ -180,15 +180,31 @@ function showHost(host) {
           h('td', null, [
             h('div', { text: i.text }),
             i.suppressed ? h('div', { class: 'check-rule',
-              text: 'исключено: ' + i.suppress_reason }) : null
+              text: 'исключено: ' + i.suppress_reason }) : null,
+            i.acked ? h('div', { class: 'check-rule',
+              text: 'принято к сведению ' + ago(i.acked_at) +
+                    ' — вернётся, если изменится' }) : null
           ]),
           h('td', { class: 'right' }, [
             i.suppressed
               ? h('button', { class: 'btn btn-sm', text: 'вернуть',
                   onclick: function () { unsuppress(host.id + '/' + i.key); } })
-              : h('button', { class: 'btn btn-sm', text: 'исключить',
-                  title: 'принять как известное — с причиной',
-                  onclick: function () { suppressIssue(host, i); } })
+              : i.acked
+                ? h('button', { class: 'btn btn-sm', text: 'вернуть',
+                    title: 'снова показывать это замечание',
+                    onclick: function () { unack(host.id + '/' + i.key); } })
+                : h('span', null, [
+                    /* Two different decisions, two buttons: "прочитал" costs
+                       one click and lasts until the wording changes, "принято
+                       навсегда" costs a reason and goes into the list. */
+                    h('button', { class: 'btn btn-sm', text: 'принято',
+                      title: 'скрыть до следующего раза — без причины, ' +
+                             'вернётся, когда изменится',
+                      onclick: function () { ackIssue(host, i); } }),
+                    h('button', { class: 'btn btn-sm', text: 'исключить',
+                      title: 'принять как известное — с причиной',
+                      onclick: function () { suppressIssue(host, i); } })
+                  ])
           ])
         ]);
       }))));

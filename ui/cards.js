@@ -535,8 +535,10 @@ function renderAlert(hosts) {
       // exactly where it must not appear. It carries level "info", and
       // "anything not bad is a warning" quietly put it back on the banner.
       if (issue.suppressed) return;
-      if (issue.level === 'bad') bad.push({ host: host, text: issue.text });
-      else if (issue.level === 'warn') warn.push({ host: host, text: issue.text });
+      // The issue travels with the row: the dismiss button needs to name the
+      // finding it is dismissing, not the text it happens to show.
+      if (issue.level === 'bad') bad.push({ host: host, text: issue.text, issue: issue });
+      else if (issue.level === 'warn') warn.push({ host: host, text: issue.text, issue: issue });
     });
   });
 
@@ -563,10 +565,19 @@ function renderAlert(hosts) {
 
   var items = bad.concat(warn).slice(0, 40).map(function (entry) {
     var isBad = bad.indexOf(entry) >= 0;
+    /* Read-and-move-on belongs where the finding is read, not three clicks
+       away inside the host. One press, no reason asked: it comes back when the
+       finding says something different. */
+    var dismiss = h('button', {
+      class: 'alert-dismiss', text: '✓',
+      title: 'принято — скрыть до следующего раза; вернётся, если изменится',
+      onclick: function (e) { e.stopPropagation(); ackIssue(entry.host, entry.issue); }
+    });
     return h('span', {
       class: 'alert-item ' + (isBad ? 'bad' : 'warn'),
       onclick: function () { showHost(entry.host); }
-    }, [h('b', { text: entry.host.name }), document.createTextNode(': ' + entry.text)]);
+    }, [h('b', { text: entry.host.name }),
+        document.createTextNode(': ' + entry.text), dismiss]);
   });
 
   box.innerHTML = '';

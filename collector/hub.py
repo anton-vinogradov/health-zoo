@@ -24,6 +24,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+import acks as acks_mod  # noqa: E402
 import alerts  # noqa: E402
 import history  # noqa: E402
 import issues  # noqa: E402
@@ -87,6 +88,8 @@ class Fleet:
         self._drift: dict = {}
         self._drift_at = 0.0
         self.alerts = alerts.Alerts(cfg)
+        self.acks = acks_mod.Acks(
+            cfg.get("acks_file", "/var/lib/health-zoo/acks.json"))
         self.suppressions = suppressions_mod.Suppressions(
             cfg.get("suppressions_file", "/var/lib/health-zoo/suppressions.json"))
         self.settings = settings_mod.Settings(
@@ -137,11 +140,15 @@ class Fleet:
                 previous = self.snapshot.get("hosts", [])
             probe.note_service_changes(previous, hosts)
             self.note_reboots(hosts)
-            issues.annotate(hosts, self.cfg, self.suppressions)
+            issues.annotate(hosts, self.cfg, self.suppressions, self.acks)
             issues.annotate_checks(hosts, self.cfg)
             self.suppressions.note_firing(hosts)
+            # An acknowledgement outliving its sentence would silence the next
+            # occurrence too, so it is dropped the moment the wording moves.
+            self.acks.forget_stale(hosts)
             snap = {
                 "suppressions": self.suppressions.listing(hosts),
+                "acks": self.acks.listing(hosts),
                 "unmanaged": probe.find_unmanaged(hosts, self.hosts()),
                 "generated": int(time.time()),
                 "duration_ms": int((time.time() - started) * 1000),
@@ -381,7 +388,14 @@ class Fleet:
                           if h.get("id") not in fresh_ids]
             probe.analyse_wifi(fresh + others)
         self.apply_camera_limits(fresh)
-        issues.annotate(fresh, self.cfg, self.suppressions)
+        # Derived facts have to be derived again, or a targeted refresh hands
+        # back a host with half its findings missing — and anything keyed on a
+        # finding that vanished (an acknowledgement, for one) evaporates with
+        # it. This is the same failure the access points had.
+        self.note_reboots(fresh)
+        self.attach_baselines(fresh)
+        self.attach_link_history(fresh)
+        issues.annotate(fresh, self.cfg, self.suppressions, self.acks)
         issues.annotate_checks(fresh, self.cfg)
         by_id = {h["id"]: h for h in fresh}
         with self.lock:
@@ -1165,6 +1179,43 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/alerts/test":
             ok, message = self.fleet.alerts.test()
             self._json({"ok": ok, "message": message}, 200 if ok else 400)
+            return
+
+        if path in ("/api/ack", "/api/ack/remove"):
+            # Reading a finding is not the same as accepting it: no reason, no
+            # expiry, no entry in a list to review. It holds only while the
+            # finding says what it said, and the finding decides when that ends.
+            length = int(self.headers.get("Content-Length") or 0)
+            try:
+                req = json.loads(self.rfile.read(length).decode("utf-8") or "{}")
+            except json.JSONDecodeError:
+                self._json({"error": "bad json"}, 400)
+                return
+
+            if path.endswith("/remove"):
+                removed = self.fleet.acks.remove(req.get("id", ""))
+                if removed:
+                    self.fleet.refresh_hosts([req.get("id", "").split("/", 1)[0]])
+                self._json({"ok": removed} if removed else {"error": "не найдено"},
+                           200 if removed else 404)
+                return
+
+            host_id, key = req.get("host"), (req.get("key") or "").strip()
+            host = next((h for h in self.fleet.get().get("hosts", [])
+                         if h.get("id") == host_id), None)
+            if not host or not key:
+                self._json({"error": "не найден хост или проверка"}, 404)
+                return
+            # The wording is the fingerprint: "3 раза за неделю" acknowledged
+            # stays quiet, "4 раза" is a different sentence and speaks again.
+            said = next((i["text"] for i in host.get("issues", [])
+                         if i["key"] == key), "")
+            if not said:
+                self._json({"error": "это замечание сейчас не горит"}, 404)
+                return
+            self.fleet.acks.add(host_id, key, said)
+            self.fleet.refresh_hosts([host_id])
+            self._json({"ok": True})
             return
 
         if path in ("/api/suppress", "/api/suppress/remove"):

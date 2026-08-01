@@ -35,6 +35,26 @@ function suppressKey(host, key, what) {
   }).catch(function (e) { alert('Ошибка запроса: ' + e); });
 }
 
+/* One click, no prompt, no record to review: the finding is read and goes
+   quiet until the fact behind it changes. Anything worth explaining in writing
+   is a suppression instead. */
+function ackIssue(host, issue) {
+  fetch('/api/ack', {
+    method: 'POST', headers: actionHeaders(),
+    body: JSON.stringify({ host: host.id, key: issue.key })
+  }).then(function (r) { return r.json(); }).then(function (res) {
+    if (res.error) { if (!actionFailed(res)) alert('Не вышло: ' + res.error); return; }
+    load();
+  }).catch(function (e) { alert('Ошибка запроса: ' + e); });
+}
+
+function unack(id) {
+  fetch('/api/ack/remove', {
+    method: 'POST', headers: actionHeaders(), body: JSON.stringify({ id: id })
+  }).then(function (r) { return r.json(); }).then(function () { load(); })
+    .catch(function (e) { alert('Ошибка запроса: ' + e); });
+}
+
 function unsuppress(id, onDone) {
   if (!confirm('Снять исключение? Проверка снова будет влиять на статус и алерты.')) return;
   fetch('/api/suppress/remove', {

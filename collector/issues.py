@@ -825,7 +825,7 @@ def host_issues(host: dict, cfg: dict | None = None) -> list[dict]:
 
 
 def annotate(hosts: list[dict], cfg: dict | None = None,
-             suppressions=None) -> None:
+             suppressions=None, acks=None) -> None:
     """Attach issues and an overall level to every host in place.
 
     A suppressed finding keeps its place in the list — the check still ran and
@@ -835,6 +835,17 @@ def annotate(hosts: list[dict], cfg: dict | None = None,
     for host in hosts:
         issues = host_issues(host, cfg)
         muted = suppressions.for_host(host["id"]) if suppressions else {}
+        # Read once, and only while it still says the same thing. Unlike a
+        # suppression this carries no reason and no expiry: the finding itself
+        # decides when the silence ends, by changing.
+        read = acks.for_host(host["id"]) if acks else {}
+        for issue in issues:
+            seen = read.get(issue["key"])
+            if seen and seen.get("said") == issue["text"]:
+                issue["acked"] = True
+                issue["acked_at"] = seen.get("at", 0)
+                issue["original_level"] = issue["level"]
+                issue["level"] = "info"
         for issue in issues:
             # A suppression recorded against the check ("radioretry") covers the
             # findings it produces ("radioretry:ng"). Without that, accepting a
