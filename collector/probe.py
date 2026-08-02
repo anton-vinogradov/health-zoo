@@ -70,7 +70,11 @@ LIST_FIELDS = {
     "smart": ["dev", "health", "temp", "hours", "realloc", "pending", "wear", "model"],
     "radio": ["name", "channel", "clients", "noise", "utilization"],
     "radioiw": ["dev", "ssid", "freq", "clients"],
-    "link": ["name", "speed", "duplex", "state", "errors", "crc", "flaps", "capable"],
+    # "capable" is what the port can do, "offered" what it actually advertises
+    # and "partner" what the other end advertises back. The three together tell
+    # a configured limit from a cable going bad: see _link_verdict in issues.py.
+    "link": ["name", "speed", "duplex", "state", "errors", "crc", "flaps",
+             "capable", "offered", "partner", "autoneg"],
     # Hardware running below what it can do: the agent phrases its own case,
     # because what counts as a cap is platform knowledge. The parser makes
     # the key plural, so the row is "@cap" and the field is "caps".
@@ -162,8 +166,14 @@ def _post_process(data: dict) -> dict:
         temp["c"] = _num(temp.get("c", 0))
 
     for link in data.get("links", []):
-        for field in ("speed", "errors", "crc", "flaps", "capable"):
+        for field in ("speed", "errors", "crc", "flaps", "capable",
+                      "offered", "partner"):
             link[field] = int(_num(link.get(field, 0)) or 0)
+        # Agents say on/off, RouterOS says true/false, and a port that never
+        # reported either is assumed to negotiate: silence must not read as a
+        # pinned speed.
+        link["autoneg"] = "off" if str(link.get("autoneg") or "on").strip().lower() \
+            in ("off", "no", "false", "0") else "on"
 
     # An agent reports a forward's fields as text, the RouterOS path builds them
     # typed. Left as-is, the string "false" is truthy and every rule collected
@@ -584,9 +594,16 @@ ROUTEROS_CMD = (
     '.[:tostr [/interface bridge port get $i bridge]])}} on-error={}; '
     ':put "@@ethernet"; :do {:foreach i in=[/interface ethernet find] do={'
     ':local m [/interface ethernet monitor $i once as-value]; '
+    # Its own on-error: a port that does not carry auto-negotiation must cost
+    # this one field, not the whole loop and with it every link on the router.
+    ':local an ""; :do {:set an [/interface ethernet get $i auto-negotiation]} '
+    'on-error={}; '
     ':put ([:tostr [/interface ethernet get $i name]]."|".[:tostr ($m->"status")]'
     '."|".[:tostr ($m->"rate")]."|".[:tostr ($m->"full-duplex")]'
-    '."|".[:tostr [/interface ethernet get $i disabled]])}} on-error={}; '
+    '."|".[:tostr [/interface ethernet get $i disabled]]'
+    '."|".[:tostr $an]'
+    '."|".[:tostr ($m->"advertising")]'
+    '."|".[:tostr ($m->"link-partner-advertising")])}} on-error={}; '
     ':put "@@interface"; :foreach i in=[/interface find] do={'
     ':put ([:tostr [/interface get $i name]]."|".[:tostr [/interface get $i running]]'
     '."|".[:tostr [/interface get $i type]]."|".[:tostr [/interface get $i disabled]])}; '
@@ -615,7 +632,21 @@ ROUTEROS_CMD = (
     '.[:tostr [/interface wifi get $i running]]."|"'
     '.[:tostr [:len [/interface wifi registration-table find '
     'where interface=[/interface wifi get $i name]]]]."|"'
-    '.[:tostr ($mon->"channel")]."|".$master)}} on-error={}'
+    '.[:tostr ($mon->"channel")]."|".$master)}} on-error={}; '
+    # A device that keeps trying to join and never gets in leaves no trace
+    # anywhere else: no lease, no ARP entry, no registration. The radio log is
+    # the only place it exists at all, which is why nothing on the dashboard
+    # could see it before — somebody knocking every twenty seconds looked
+    # exactly like silence.
+    ':put "@@authfail"; :do {:local n 0; :foreach l in=[/log find where '
+    'message~"reauthenticating|handshake|authentication failed|rejected"] do={'
+    ':if ($n < 300) do={:put ([:tostr [/log get $l time]]."|"'
+    '.[:tostr [/log get $l message]]); :set n ($n + 1)}}} on-error={}; '
+    # Who did get in, so that a client merely re-keying is not reported as one
+    # who cannot.
+    ':put "@@wifimac"; :do {:foreach r in=[/interface wifi registration-table find] '
+    'do={:put [:tostr [/interface wifi registration-table get $r mac-address]]}} '
+    'on-error={}'
 )
 
 
@@ -631,6 +662,18 @@ def _rate_mbit(rate: str) -> int:
     except ValueError:
         pass
     return 0
+
+
+def _modes_mbit(modes: str) -> int:
+    """Fastest mode in a list like "100M-baseT-full;1G-baseT-full".
+
+    RouterOS writes 2.5 gigabit as "2.5G-baseT-full", so the number has to be
+    read as a decimal: matching digits alone turns 2.5G into 5000.
+    """
+    best = 0.0
+    for value, unit in re.findall(r"(\d+(?:\.\d+)?)([MG])", (modes or "").upper()):
+        best = max(best, float(value) * (1000 if unit == "G" else 1))
+    return int(best)
 
 
 def _routeros_kv(lines: list[str]) -> dict:
@@ -897,8 +940,8 @@ def probe_routeros(host: dict, key: str | None) -> dict:
 
     links = []
     for cells in _routeros_rows(sections.get("ethernet", [])):
-        cells += [""] * (5 - len(cells))
-        name, status, rate, duplex, disabled = cells[:5]
+        cells += [""] * (8 - len(cells))
+        name, status, rate, duplex, disabled, autoneg, offered, partner = cells[:8]
         if not name or disabled == "true":
             continue
         links.append({
@@ -907,6 +950,12 @@ def probe_routeros(host: dict, key: str | None) -> dict:
             "duplex": "full" if duplex == "true" else "half" if duplex == "false" else "-",
             "state": "up" if status == "link-ok" else "down",
             "errors": 0, "crc": 0, "flaps": 0,
+            # RouterOS has no "supported modes" to read, so what the port
+            # advertises stands in for what it can do.
+            "capable": _modes_mbit(offered),
+            "offered": _modes_mbit(offered),
+            "partner": _modes_mbit(partner),
+            "autoneg": "off" if autoneg == "false" else "on",
         })
     if links:
         data["links"] = links
@@ -981,6 +1030,32 @@ def probe_routeros(host: dict, key: str | None) -> dict:
         })
     if leases:
         data["leases"] = leases
+
+    # Devices that tried to authenticate and are nowhere to be found afterwards.
+    # The registration table and the leases are what separate the two cases that
+    # look identical in the log: a client re-keying (it is associated, this is
+    # routine) and a client that cannot get in at all (it is in no table).
+    # One address per line, so this one is not a table: _routeros_rows drops
+    # anything without a separator and would quietly return nothing.
+    associated = {line.strip().lower() for line in sections.get("wifimac", [])
+                  if line.strip()}
+    leased = {(lease.get("mac") or "").lower() for lease in leases}
+    tries: dict[str, dict] = {}
+    for cells in _routeros_rows(sections.get("authfail", [])):
+        message = cells[1] if len(cells) > 1 else ""
+        hit = re.search(r"([0-9A-Fa-f]{2}(?::[0-9A-Fa-f]{2}){5})@[^\s(]*\(([^)]*)\)", message)
+        if not hit:
+            continue
+        mac = hit.group(1).lower()
+        entry = tries.setdefault(mac, {"attempts": 0, "ssid": hit.group(2), "last": ""})
+        entry["attempts"] += 1
+        entry["last"] = cells[0]
+    knocking = [{"mac": mac.upper(), "ssid": info["ssid"],
+                 "attempts": info["attempts"], "last": info["last"]}
+                for mac, info in sorted(tries.items())
+                if mac not in associated and mac not in leased]
+    if knocking:
+        data["knocking"] = knocking
 
     radios = []
     for cells in _routeros_rows(sections.get("wifi", [])):
@@ -2475,7 +2550,8 @@ def _public(addr: str) -> bool:
                 or ip.is_multicast or ip.is_reserved or ip.is_unspecified)
 
 
-def note_service_changes(previous: list[dict], results: list[dict]) -> None:
+def note_service_changes(previous: list[dict], results: list[dict],
+                         since: float | None = None) -> None:
     """Compare this poll's units against the last one.
 
     Two failures are invisible to a snapshot on its own. A unit that crashes and
@@ -2493,13 +2569,22 @@ def note_service_changes(previous: list[dict], results: list[dict]) -> None:
     was_up = {host.get("id"): host.get("uptime")
               for host in previous or [] if host.get("uptime")}
 
+    # A restart cannot be older than the gap between the two readings: a host
+    # reporting six days of uptime did not reboot since the last poll, whatever
+    # the comparison says. Without this, any reading that arrives out of order —
+    # a targeted refresh landing while a full cycle is still walking the fleet,
+    # and splicing a newer uptime into the snapshot this cycle then compares
+    # against — reads as a reboot on every host it touched.
+    gap = max(0.0, time.time() - since) if since else None
+
     for host in results:
         # A box that restarted has an uptime smaller than the one it had three
         # minutes ago. Nothing else notices: by the next poll it is up, healthy
         # and indistinguishable from a machine that never went anywhere.
         earlier = was_up.get(host.get("id"))
         if earlier and host.get("uptime") and host["uptime"] < earlier:
-            host["rebooted"] = True
+            if gap is None or host["uptime"] <= gap + 600:
+                host["rebooted"] = True
 
         seen = before.get(host.get("id"))
         if seen is None:

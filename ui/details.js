@@ -201,7 +201,9 @@ function showHost(host) {
                     i.episodic ? h('button', { class: 'btn btn-sm', text: 'принято',
                       title: 'скрыть до следующего раза — без причины, ' +
                              'вернётся, когда изменится',
-                      onclick: function () { ackIssue(host, i); } }) : null,
+                      onclick: function (e) {
+                        ackIssue(host, i, e.currentTarget.closest('tr'));
+                      } }) : null,
                     h('button', { class: 'btn btn-sm', text: 'исключить',
                       title: 'принять как известное — с причиной',
                       onclick: function () { suppressIssue(host, i); } })
@@ -215,17 +217,30 @@ function showHost(host) {
      when something is wrong; this is where "what is it actually running at"
      lives. */
   if ((host.links || []).length) {
-    body.appendChild(section('Порты', table(['порт', 'скорость', 'дуплекс', 'ошибки'],
+    var mbit = function (v) {
+      return v >= 1000 ? (v / 1000) + ' Гбит/с' : v + ' Мбит/с';
+    };
+    /* What each end asked for, side by side. A port at 100 Mbit means one thing
+       when the neighbour only offers 100 and quite another when both offered a
+       gigabit, and this column is what makes the two distinguishable at a
+       glance instead of by reading the finding. */
+    var offers = function (l) {
+      var ours = l.offered || l.capable || 0;
+      if (!ours && !l.partner) { return '—'; }
+      return (ours ? mbit(ours) : '?') + ' ↔ ' + (l.partner ? mbit(l.partner) : '?') +
+             (l.autoneg === 'off' ? ', фиксировано' : '');
+    };
+    body.appendChild(section('Порты',
+      table(['порт', 'скорость', 'дуплекс', 'объявлено', 'ошибки'],
       host.links.map(function (l) {
         var down = l.state !== 'up';
         var slow = !down && l.speed_best && l.speed < l.speed_best;
         return h('tr', null, [
           h('td', { text: l.name }),
           h('td', { class: slow ? 'warn' : '' , text: down ? 'нет линка'
-            : (l.speed >= 1000 ? (l.speed / 1000) + ' Гбит/с' : l.speed + ' Мбит/с') +
-              (slow ? ' (было ' + (l.speed_best >= 1000 ? (l.speed_best / 1000) + ' Гбит/с'
-                                                        : l.speed_best + ' Мбит/с') + ')' : '') }),
+            : mbit(l.speed) + (slow ? ' (было ' + mbit(l.speed_best) + ')' : '') }),
           h('td', { class: l.duplex === 'half' ? 'warn' : '', text: down ? '—' : l.duplex }),
+          h('td', { text: down ? '—' : offers(l) }),
           h('td', { class: (l.crc || l.errors) ? 'warn' : '',
                     text: (l.crc || l.errors) ? (l.crc || 0) + ' CRC / ' + (l.errors || 0)
                                               : 'нет' })

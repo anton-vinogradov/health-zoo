@@ -154,6 +154,38 @@ def _routeros(monkeypatch_result):
         probe.subprocess.run = original
 
 
+KNOCKING_OUTPUT = ROUTEROS_OUTPUT + """
+@@lease
+10.0.0.5||AA:BB:CC:DD:EE:01|bound
+
+@@wifimac
+AA:BB:CC:DD:EE:02
+
+@@authfail
+17:39:18|38:A5:C9:11:22:33@wifi2-fclegacy(fclegacy) reauthenticating
+17:40:05|38:A5:C9:11:22:33@wifi2-fclegacy(fclegacy) reauthenticating
+17:40:25|38:A5:C9:11:22:33@wifi2-fclegacy(fclegacy) reauthenticating
+17:41:08|38:A5:C9:11:22:33@wifi2-fclegacy(fclegacy) reauthenticating
+17:41:13|38:A5:C9:11:22:33@wifi2-fclegacy(fclegacy) reauthenticating
+17:41:43|38:A5:C9:11:22:33@wifi2-fclegacy(fclegacy) reauthenticating
+17:41:50|AA:BB:CC:DD:EE:02@wifi2(ferretclub) reauthenticating
+17:41:55|AA:BB:CC:DD:EE:01@wifi2(ferretclub) reauthenticating
+"""
+
+
+def test_routeros_counts_a_device_that_cannot_authenticate():
+    entries = {k["mac"]: k for k in _routeros(KNOCKING_OUTPUT).get("knocking") or []}
+    guest = entries.get("38:A5:C9:11:22:33")
+    assert guest and guest["attempts"] == 6 and guest["ssid"] == "fclegacy"
+
+
+def test_a_client_that_did_get_in_is_not_reported_as_knocking():
+    """Re-keying looks the same in the log; the tables are what tell them apart."""
+    entries = {k["mac"] for k in _routeros(KNOCKING_OUTPUT).get("knocking") or []}
+    assert "AA:BB:CC:DD:EE:02" not in entries  # в таблице регистраций
+    assert "AA:BB:CC:DD:EE:01" not in entries  # держит аренду
+
+
 def test_routeros_basic_facts():
     data = _routeros(ROUTEROS_OUTPUT)
     assert data["os_name"] == "RouterOS 7.23.2 (stable)"

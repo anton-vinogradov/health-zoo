@@ -63,6 +63,10 @@ DEFAULT_THRESHOLDS = {
     # Hardware that comes back on its own: once is an event, three times in a
     # week is a power supply, a board or a watchdog.
     "reboots_week_warn": 3, "reboots_week_bad": 5,
+    # Attempts to authenticate from a device that never gets in. One or two are
+    # a neighbour's phone brushing past; a device retrying every twenty seconds
+    # is either yours with an outdated password or somebody guessing.
+    "authfail_warn": 5,
     "baseline_floor": 25,
     "baseline_factor": 2.0,
     "cert_warn_days": 21,
@@ -248,6 +252,44 @@ def _level(value, warn, bad) -> str:
     return ""
 
 
+def _link_verdict(link: dict) -> tuple[str, str]:
+    """Is a slow port configured that way, or is the line failing?
+
+    Both ends of an ethernet link say out loud what they are willing to run at,
+    and the port itself says what it is able to run at. A gigabit port that
+    offers only 100 was told to; a port that offers a gigabit to a neighbour
+    offering a gigabit and still settles for 100 is losing the signal somewhere
+    between them. Returns the verdict and the evidence behind it, or a pair of
+    empty strings when the port did not report enough to tell.
+    """
+    speed = link.get("speed") or 0
+    capable = link.get("capable") or 0
+    offered = link.get("offered") or 0
+    partner = link.get("partner") or 0
+    best = link.get("speed_best") or 0
+
+    if link.get("autoneg") == "off":
+        return "настройка", ("настройка: автосогласование выключено, "
+                             "скорость закреплена вручную")
+    if capable and offered and offered < capable:
+        return "настройка", (f"настройка: порт объявляет только {_speed(offered)}, "
+                             f"хотя умеет {_speed(capable)}")
+    if not partner:
+        return "", ""
+    if partner > speed:
+        # Both sides asked for more than they got: whatever refused is between
+        # them, and that is the cable, the connectors or the sockets.
+        return "линия", (f"кабель или разъём: обе стороны объявляют "
+                         f"{_speed(partner)}, а договорились на {_speed(speed)}")
+    if best > speed:
+        # The neighbour asks for no more than it has, but this port has run
+        # faster before, so the neighbour is not a 100 Mbit device: it dropped
+        # to 100 and stayed there. That is the classic downshift.
+        return "линия", (f"кабель или разъём: сосед объявляет {_speed(partner)}, "
+                         f"а раньше линк поднимался на {_speed(best)}")
+    return "сосед", f"предел соседа: он объявляет только {_speed(partner)}"
+
+
 def host_issues(host: dict, cfg: dict | None = None) -> list[dict]:
     """Everything wrong with one host, worst first."""
     limits = thresholds_for(host, cfg)
@@ -348,9 +390,17 @@ def host_issues(host: dict, cfg: dict | None = None) -> list[dict]:
             continue
         speed, best = link.get("speed") or 0, link.get("speed_best") or 0
         capable = link.get("capable") or 0
+        verdict, evidence = _link_verdict(link)
+        # A port running at its neighbour's maximum is not a fault. Saying so
+        # is what the advertised modes are for: without them every camera on a
+        # gigabit socket read as a broken cable.
+        slow = (speed and best and speed < best) or (speed and capable and speed < capable)
+        if slow and verdict == "сосед":
+            continue
+        tail = f" — {evidence}" if evidence else ""
         if speed and best and speed < best:
             add("warn" if speed >= 100 else "bad", f"link:{link['name']}",
-                f"порт {link['name']}: {_speed(speed)} вместо {_speed(best)}")
+                f"порт {link['name']}: {_speed(speed)} вместо {_speed(best)}{tail}")
         elif link.get("duplex") == "half":
             add("warn", f"link:{link['name']}",
                 f"порт {link['name']}: полудуплекс — договорились не с той стороной")
@@ -370,7 +420,7 @@ def host_issues(host: dict, cfg: dict | None = None) -> list[dict]:
             # no guessing: a socket that supports a gigabit and agreed on 100
             # has a cable, a connector or a switch port going bad.
             add("warn" if speed >= 100 else "bad", f"link:{link['name']}",
-                f"порт {link['name']}: {_speed(speed)}, хотя умеет {_speed(capable)}")
+                f"порт {link['name']}: {_speed(speed)}, хотя умеет {_speed(capable)}{tail}")
 
     # Unusual for this machine, whatever the fixed thresholds say. The whole
     # point is the range below them: a box that normally idles at 12% and has
@@ -518,6 +568,20 @@ def host_issues(host: dict, cfg: dict | None = None) -> list[dict]:
     elif weekly >= limits.get("reboots_week_warn", 3):
         add("warn", "reboots",
             f"перезагружался {weekly} раза за неделю сам по себе", episodic=True)
+
+    # Somebody trying the door. A device that authenticates and fails leaves
+    # nothing behind — no lease, no ARP entry, no name — so until this rule it
+    # was invisible: the only trace is the radio log, and nobody reads that
+    # until they already suspect something. Whose door it is matters: this is
+    # usually the owner's own gadget still holding last year's password, and
+    # occasionally it is not.
+    for guest in host.get("knocking") or []:
+        if (guest.get("attempts") or 0) < limits.get("authfail_warn", 5):
+            continue
+        where = f" «{guest['ssid']}»" if guest.get("ssid") else ""
+        add("warn", f"authfail:{guest['mac']}",
+            f"{guest['mac']} не проходит авторизацию в сети{where} — "
+            f"{guest['attempts']} попыток, устройства нет ни в арендах, ни в ARP")
 
     # A unit that dies and is brought back looks healthy at every poll; the
     # restart counter is the only place it shows, and only as a difference.
@@ -1037,14 +1101,30 @@ def checks_for(host: dict, cfg: dict | None = None) -> list[dict]:
         keys=("certout", "certdiff"))
     add("network", "Скорость линка",
         "Скорость, на которой договорился порт, против лучшей, что он выдавал "
-        "за последний месяц. Падение гигабита до сотни — это кабель, разъём "
-        "или порт, и по трафику оно незаметно: линк поднят, всё работает",
+        "за последний месяц, и против того, что объявляют обе стороны. По "
+        "трафику падение гигабита до сотни незаметно — линк поднят, всё "
+        "работает — поэтому проверка сразу пишет вердикт: настройка (порт "
+        "объявляет меньше, чем умеет, или согласование выключено), линия "
+        "(объявляют оба, а договорились ниже) или предел соседа, и последнее "
+        "не считается поломкой",
         applies=bool(host.get("links")), skipped="хост не отдаёт состояние портов",
         blind=("" if any((l.get("capable") or l.get("speed_best"))
                          for l in host.get("links") or [])
                else "порты не сообщают своих возможностей, а истории замеров "
                     "ещё нет — сравнить текущую скорость не с чем"),
         keys=("link",))
+    add("network", "Стучатся в сеть",
+        "Устройства, которые раз за разом пытаются авторизоваться и не "
+        "проходят. Такого устройства нет ни в арендах DHCP, ни в ARP — оно "
+        "существует только в журнале радио, поэтому заметить его иначе можно "
+        "было лишь вручную. Обычно это своя железка со старым паролем, но "
+        f"не всегда. Предупреждение с {limits.get('authfail_warn', 5)} попыток",
+        applies=bool(host.get("radios")),
+        skipped="у хоста нет радио",
+        blind=("" if host.get("agent") == "routeros"
+               else "точками управляет контроллер UniFi, а он неудачные "
+                    "авторизации наружу не отдаёт — здесь проверка слепа"),
+        keys=("authfail",))
     add("resources", "Ожидание диска",
         f"Доля времени, которую процессор простоял в ожидании диска: "
         f"предупреждение с {limits.get('iowait_warn', 50)}%, критично с "

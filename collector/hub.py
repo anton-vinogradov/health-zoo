@@ -114,6 +114,12 @@ class Fleet:
         started = time.time()
         with self.lock:
             self.snapshot["polling"] = True
+            # Taken before the fleet is walked, not after: a targeted refresh
+            # can land mid-cycle and splice a newer reading into the snapshot,
+            # and comparing this cycle's older readings against that reads as
+            # every refreshed host having gone backwards in time.
+            previous = self.snapshot.get("hosts", [])
+            previous_at = self.snapshot.get("generated")
         try:
             hosts = probe.probe_all(self.hosts(), self.cfg.get("ssh_key"))
             probe.run_external_checks(self.cfg.get("external_checks", []),
@@ -136,9 +142,7 @@ class Fleet:
             for host in hosts:
                 probe.endpoints_from_probed_ports(host)
             self.apply_camera_limits(hosts)
-            with self.lock:
-                previous = self.snapshot.get("hosts", [])
-            probe.note_service_changes(previous, hosts)
+            probe.note_service_changes(previous, hosts, previous_at)
             self.note_reboots(hosts)
             issues.annotate(hosts, self.cfg, self.suppressions, self.acks)
             issues.annotate_checks(hosts, self.cfg)
@@ -459,6 +463,27 @@ class Fleet:
             self.snapshot["suppressions"] = self.suppressions.listing(hosts)
             self.snapshot["generated"] = int(time.time())
         return len(fresh)
+
+    def reannotate(self, host_ids: list[str]) -> None:
+        """Re-run the rules over the snapshot as it stands, without re-probing.
+
+        Acknowledging a finding changes what the rules say about a host, not
+        what the host is doing. Re-polling the box over ssh to answer one click
+        costs seconds, collects nothing new, and makes a button that should feel
+        instant feel broken. What does have to be redone is the annotation —
+        skip it and the finding stays on the card until the next full cycle.
+        """
+        with self.lock:
+            hosts = list(self.snapshot.get("hosts", []))
+            wanted = [h for h in hosts if h.get("id") in host_ids]
+            if not wanted:
+                return
+            issues.annotate(wanted, self.cfg, self.suppressions, self.acks)
+            issues.annotate_checks(wanted, self.cfg)
+            # Only the derived listings: "generated" says when the readings were
+            # taken, and nothing was read here.
+            self.snapshot["acks"] = self.acks.listing(hosts)
+            self.snapshot["suppressions"] = self.suppressions.listing(hosts)
 
     def get(self) -> dict:
         with self.lock:
@@ -982,6 +1007,12 @@ def order_targets(hosts: list[dict]) -> list[dict]:
 
 class Handler(BaseHTTPRequestHandler):
     server_version = "health-zoo"
+    # Keep the connection open between requests. Every response here carries a
+    # Content-Length, which is what HTTP/1.1 needs to know where one ends. The
+    # dashboard is a page that talks to its server constantly, and on a link
+    # where opening a socket costs seconds — this one does, from the laptop —
+    # a fresh connection per request is the whole latency.
+    protocol_version = "HTTP/1.1"
     fleet: Fleet
     jobs: Jobs
 
@@ -1027,6 +1058,13 @@ class Handler(BaseHTTPRequestHandler):
             if not hmac.compare_digest(given, token):
                 return "token required"
         return ""
+
+    def _request(self):
+        """The POST body as JSON, or None when it is not valid JSON."""
+        try:
+            return json.loads(self._body.decode("utf-8") or "{}")
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            return None
 
     def _json(self, payload, code: int = 200) -> None:
         self._send(code, json.dumps(payload, ensure_ascii=False).encode("utf-8"),
@@ -1131,6 +1169,13 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self):  # noqa: N802
         path = self.path.split("?", 1)[0]
+        # Read before anything can answer. A response sent while the request
+        # body is still in the socket leaves a kept-alive connection out of
+        # step, and the next request on it reads the leftovers — which is what
+        # every early "return" below would do: a refused origin, an unknown
+        # path, a missing token.
+        length = int(self.headers.get("Content-Length") or 0)
+        self._body = self.rfile.read(length) if length > 0 else b""
 
         denied = self._authorized()
         if denied:
@@ -1138,10 +1183,8 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         if path == "/api/settings":
-            length = int(self.headers.get("Content-Length") or 0)
-            try:
-                req = json.loads(self.rfile.read(length).decode("utf-8") or "{}")
-            except json.JSONDecodeError:
+            req = self._request()
+            if req is None:
                 self._json({"error": "bad json"}, 400)
                 return
             if isinstance(req.get("thresholds"), dict):
@@ -1174,13 +1217,7 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         if path == "/api/refresh":
-            length = int(self.headers.get("Content-Length") or 0)
-            req = {}
-            if length:
-                try:
-                    req = json.loads(self.rfile.read(length).decode("utf-8") or "{}")
-                except json.JSONDecodeError:
-                    req = {}
+            req = self._request() or {}
             wanted = req.get("hosts")
             if wanted:
                 # Synchronous: the caller wants the fresh card, not a promise.
@@ -1192,11 +1229,8 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         if path == "/api/update":
-            length = int(self.headers.get("Content-Length") or 0)
-            body = self.rfile.read(length).decode("utf-8") if length else "{}"
-            try:
-                req = json.loads(body or "{}")
-            except json.JSONDecodeError:
+            req = self._request()
+            if req is None:
                 self._json({"error": "bad json"}, 400)
                 return
 
@@ -1233,17 +1267,15 @@ class Handler(BaseHTTPRequestHandler):
             # Reading a finding is not the same as accepting it: no reason, no
             # expiry, no entry in a list to review. It holds only while the
             # finding says what it said, and the finding decides when that ends.
-            length = int(self.headers.get("Content-Length") or 0)
-            try:
-                req = json.loads(self.rfile.read(length).decode("utf-8") or "{}")
-            except json.JSONDecodeError:
+            req = self._request()
+            if req is None:
                 self._json({"error": "bad json"}, 400)
                 return
 
             if path.endswith("/remove"):
                 removed = self.fleet.acks.remove(req.get("id", ""))
                 if removed:
-                    self.fleet.refresh_hosts([req.get("id", "").split("/", 1)[0]])
+                    self.fleet.reannotate([req.get("id", "").split("/", 1)[0]])
                 self._json({"ok": removed} if removed else {"error": "не найдено"},
                            200 if removed else 404)
                 return
@@ -1271,15 +1303,13 @@ class Handler(BaseHTTPRequestHandler):
                 return
             said = finding["text"]
             self.fleet.acks.add(host_id, key, said)
-            self.fleet.refresh_hosts([host_id])
+            self.fleet.reannotate([host_id])
             self._json({"ok": True})
             return
 
         if path in ("/api/suppress", "/api/suppress/remove"):
-            length = int(self.headers.get("Content-Length") or 0)
-            try:
-                req = json.loads(self.rfile.read(length).decode("utf-8") or "{}")
-            except json.JSONDecodeError:
+            req = self._request()
+            if req is None:
                 self._json({"error": "bad json"}, 400)
                 return
 
@@ -1315,10 +1345,8 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         if path == "/api/reboot":
-            length = int(self.headers.get("Content-Length") or 0)
-            try:
-                req = json.loads(self.rfile.read(length).decode("utf-8") or "{}")
-            except json.JSONDecodeError:
+            req = self._request()
+            if req is None:
                 self._json({"error": "bad json"}, 400)
                 return
             host = next((h for h in self.fleet.hosts() if h.get("id") == req.get("host")), None)
@@ -1333,10 +1361,8 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         if path == "/api/unifi/upgrade":
-            length = int(self.headers.get("Content-Length") or 0)
-            try:
-                req = json.loads(self.rfile.read(length).decode("utf-8") or "{}")
-            except json.JSONDecodeError:
+            req = self._request()
+            if req is None:
                 self._json({"error": "bad json"}, 400)
                 return
             snapshot = {h.get("id"): h for h in self.fleet.get().get("hosts", [])}
@@ -1349,10 +1375,8 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         if path == "/api/service/action":
-            length = int(self.headers.get("Content-Length") or 0)
-            try:
-                req = json.loads(self.rfile.read(length).decode("utf-8") or "{}")
-            except json.JSONDecodeError:
+            req = self._request()
+            if req is None:
                 self._json({"error": "bad json"}, 400)
                 return
             host = next((h for h in self.fleet.hosts() if h.get("id") == req.get("host")), None)
@@ -1379,10 +1403,8 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         if path == "/api/service/remove":
-            length = int(self.headers.get("Content-Length") or 0)
-            try:
-                req = json.loads(self.rfile.read(length).decode("utf-8") or "{}")
-            except json.JSONDecodeError:
+            req = self._request()
+            if req is None:
                 self._json({"error": "bad json"}, 400)
                 return
 

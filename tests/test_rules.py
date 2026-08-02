@@ -20,6 +20,7 @@ import copy
 import json
 import re
 import sys
+import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "collector"))
@@ -105,6 +106,74 @@ def test_hundred_megabit_without_a_known_capability_is_silent():
     assert not fires(host, "link:ether5")
 
 
+def text_of(host: dict, key: str) -> str:
+    issues.annotate([host], CFG, None)
+    return next((i["text"] for i in host["issues"] if i["key"] == key), "")
+
+
+def link_host(**fields) -> dict:
+    host = host_named(fleet(), lambda h: h.get("links"))
+    link = {"name": "eth0", "state": "up", "duplex": "full", "crc": 0, "flaps": 0,
+            "autoneg": "on"}
+    link.update(fields)
+    host["links"] = [link]
+    return host
+
+
+def test_slow_link_blames_the_line_when_both_ends_want_more():
+    """Nothing configured says 100: the drop happened on the wire."""
+    host = link_host(speed=100, capable=1000, offered=1000, partner=1000)
+    assert "кабель или разъём" in text_of(host, "link:eth0")
+
+
+def test_slow_link_blames_configuration_when_the_port_offers_less():
+    host = link_host(speed=100, capable=1000, offered=100, partner=100)
+    assert "порт объявляет только" in text_of(host, "link:eth0")
+
+
+def test_slow_link_blames_configuration_when_negotiation_is_off():
+    host = link_host(speed=100, capable=1000, offered=1000, partner=0, autoneg="off")
+    assert "автосогласование выключено" in text_of(host, "link:eth0")
+
+
+def test_slow_link_at_the_neighbours_maximum_is_silent():
+    """The camera on a gigabit socket is a 100 Mbit device, not a bad cable."""
+    host = link_host(speed=100, capable=1000, offered=1000, partner=100)
+    assert not fires(host, "link:eth0")
+
+
+def test_neighbour_at_a_hundred_after_a_gigabit_is_still_the_line():
+    """Ether5: the partner offers 100 now, but the port has run at a gigabit."""
+    host = link_host(speed=100, capable=1000, offered=1000, partner=100,
+                     speed_best=1000)
+    assert "а раньше линк поднимался" in text_of(host, "link:eth0")
+
+
+def test_link_without_partner_data_keeps_the_bare_finding():
+    host = link_host(speed=100, capable=1000)
+    assert text_of(host, "link:eth0").endswith("хотя умеет 1 Гбит/с")
+
+
+def test_routeros_modes_take_the_fastest():
+    assert probe._modes_mbit("10M-half,100M-full,1000M-full") == 1000
+    assert probe._modes_mbit("10M-half,100M-full") == 100
+    assert probe._modes_mbit("2500M-full") == 2500
+    assert probe._modes_mbit("") == 0
+
+
+def test_a_device_that_keeps_failing_to_authenticate_is_a_warning():
+    host = host_named(fleet(), lambda h: h.get("radios"))
+    host["knocking"] = [{"mac": "38:A5:C9:11:22:33", "ssid": "fclegacy", "attempts": 12}]
+    assert fires(host, "authfail:38:A5:C9:11:22:33")
+
+
+def test_a_couple_of_failed_attempts_are_not_a_finding():
+    """A neighbour's phone brushing past is not somebody trying the door."""
+    host = host_named(fleet(), lambda h: h.get("radios"))
+    host["knocking"] = [{"mac": "38:A5:C9:11:22:33", "ssid": "fclegacy", "attempts": 2}]
+    assert not fires(host, "authfail:38:A5:C9:11:22:33")
+
+
 def test_processor_thresholds():
     host = host_named(fleet(), lambda h: h.get("cpu_load_pct") is not None)
     for busy, expected in ((79, None), (80, "warn"), (90, "bad")):
@@ -126,6 +195,34 @@ def test_restart_between_polls_is_a_finding():
     probe.note_service_changes(before, after)
     issues.annotate(after, CFG, None)
     assert any(i["key"] == "svcflap:thing.service" for i in target["issues"])
+
+
+def uptime_pair(was: float, now_up: float) -> tuple[list[dict], list[dict]]:
+    before, after = fleet(), fleet()
+    host_named(before, lambda h: h.get("agent") == "linux")["uptime"] = was
+    target = host_named(after, lambda h: h.get("agent") == "linux")
+    target["uptime"] = now_up
+    return before, after, target
+
+
+def test_a_reading_that_arrived_out_of_order_is_not_a_reboot():
+    """A refresh landing mid-cycle used to make every host it touched "reboot"."""
+    before, after, target = uptime_pair(523_400, 523_286)
+    probe.note_service_changes(before, after, time.time() - 120)
+    assert not target.get("rebooted")
+
+
+def test_a_real_reboot_is_still_detected():
+    before, after, target = uptime_pair(523_400, 90)
+    probe.note_service_changes(before, after, time.time() - 180)
+    assert target["rebooted"]
+
+
+def test_a_reboot_during_a_long_outage_is_still_detected():
+    """The dashboard was down for an hour; the host restarted 50 minutes ago."""
+    before, after, target = uptime_pair(523_400, 3000)
+    probe.note_service_changes(before, after, time.time() - 3600)
+    assert target["rebooted"]
 
 
 def test_a_unit_that_disappeared_is_a_finding():

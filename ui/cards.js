@@ -575,7 +575,10 @@ function renderAlert(hosts) {
     var dismiss = entry.issue && entry.issue.episodic ? h('button', {
       class: 'alert-dismiss', text: '✓',
       title: 'принято — скрыть до следующего раза; вернётся, если изменится',
-      onclick: function (e) { e.stopPropagation(); ackIssue(entry.host, entry.issue); }
+      onclick: function (e) {
+        e.stopPropagation();
+        ackIssue(entry.host, entry.issue, e.currentTarget.parentNode);
+      }
     }) : null;
     return h('span', {
       class: 'alert-item ' + (isBad ? 'bad' : 'warn'),

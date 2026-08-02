@@ -147,28 +147,44 @@ common_links() {
     name=$(basename "$path")
     carrier=$(cat "$path/carrier" 2>/dev/null || echo 0)
     if [ "$carrier" != "1" ]; then
-      row "@link	$name	0	-	down	0	0	0	0"
+      row "@link	$name	0	-	down	0	0	0	0	0	0	on"
       continue
     fi
     speed=$(cat "$path/speed" 2>/dev/null || echo 0)
     # Virtio and some USB adapters report -1 for "cannot say".
     [ "$speed" -gt 0 ] 2>/dev/null || speed=0
-    capable=0
+    capable=0; offered=0; partner=0; autoneg=on
     if [ -n "$eth_cmd" ]; then
-      capable=$($eth_cmd "$name" 2>/dev/null | awk '
-        /Supported link modes:/ {grab = 1; sub(/.*Supported link modes:/, "")}
-        /Supported pause frame|Supports auto-negotiation|Advertised link modes/ {grab = 0}
-        grab {
-          n = split($0, parts, /[ \t]+/)
-          for (i = 1; i <= n; i++)
-            if (parts[i] ~ /^[0-9]+base/) {
-              value = parts[i]; sub(/base.*/, "", value)
-              if (value + 0 > max) max = value + 0
-            }
-        }
-        END {print max + 0}')
+      # Three lists, not one. What the port can do decides whether a slow link
+      # is a fault at all; what it offers decides whether the limit was
+      # configured here; what the other end offers decides whether to go looking
+      # for a cable or for a setting on the far device.
+      report=$($eth_cmd "$name" 2>/dev/null)
+      autoneg=$(printf '%s\n' "$report" | awk -F': ' '/Auto-negotiation:/ {print $2; exit}')
+      for section in "Supported link modes:|capable" \
+                     "Advertised link modes:|offered" \
+                     "Link partner advertised link modes:|partner"; do
+        heading=${section%|*}
+        value=$(printf '%s\n' "$report" | awk -v want="$heading" '
+          index($0, want) {grab = 1; sub(/.*:/, "")}
+          grab && /^[[:space:]]*[A-Z]/ && !index($0, want) {grab = 0}
+          grab {
+            n = split($0, parts, /[ \t]+/)
+            for (i = 1; i <= n; i++)
+              if (parts[i] ~ /^[0-9]+base/) {
+                mode = parts[i]; sub(/base.*/, "", mode)
+                if (mode + 0 > max) max = mode + 0
+              }
+          }
+          END {print max + 0}')
+        case ${section#*|} in
+          capable) capable=$value ;;
+          offered) offered=$value ;;
+          partner) partner=$value ;;
+        esac
+      done
     fi
-    row "@link	$name	$speed	$(cat "$path/duplex" 2>/dev/null || echo -)	up	$(cat "$path/statistics/rx_errors" 2>/dev/null || echo 0)	$(cat "$path/statistics/rx_crc_errors" 2>/dev/null || echo 0)	$(cat "$path/carrier_changes" 2>/dev/null || echo 0)	${capable:-0}"
+    row "@link	$name	$speed	$(cat "$path/duplex" 2>/dev/null || echo -)	up	$(cat "$path/statistics/rx_errors" 2>/dev/null || echo 0)	$(cat "$path/statistics/rx_crc_errors" 2>/dev/null || echo 0)	$(cat "$path/carrier_changes" 2>/dev/null || echo 0)	${capable:-0}	${offered:-0}	${partner:-0}	${autoneg:-on}"
   done
 }
 

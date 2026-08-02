@@ -38,14 +38,24 @@ function suppressKey(host, key, what) {
 /* One click, no prompt, no record to review: the finding is read and goes
    quiet until the fact behind it changes. Anything worth explaining in writing
    is a suppression instead. */
-function ackIssue(host, issue) {
+function ackIssue(host, issue, row) {
+  /* The finding goes the moment it is pressed. The server still has the last
+     word — it re-runs the rules and the next load() reconciles — but a button
+     whose whole promise is "read, move on" cannot spend a round trip looking
+     like it did nothing. If the request is refused, load() puts the row back
+     and the error says why. */
+  if (row && row.parentNode) row.parentNode.removeChild(row);
   fetch('/api/ack', {
     method: 'POST', headers: actionHeaders(),
     body: JSON.stringify({ host: host.id, key: issue.key })
   }).then(function (r) { return r.json(); }).then(function (res) {
-    if (res.error) { if (!actionFailed(res)) alert('Не вышло: ' + res.error); return; }
+    if (res.error) {
+      load();
+      if (!actionFailed(res)) alert('Не вышло: ' + res.error);
+      return;
+    }
     load();
-  }).catch(function (e) { alert('Ошибка запроса: ' + e); });
+  }).catch(function (e) { load(); alert('Ошибка запроса: ' + e); });
 }
 
 function unack(id) {
