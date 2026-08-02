@@ -762,3 +762,27 @@ tr.check-na .check-name { color: var(--text-faint); }
   color: var(--text-faint);
   padding: 2px 0 0 10px;
 }
+
+/* ---------- poll progress ---------- */
+.pollbar {
+  position: relative;
+  height: 16px;
+  margin: 0 16px;
+  display: flex;
+  align-items: center;
+}
+.pollbar.hidden { display: none; }
+.pollbar i {
+  position: absolute;
+  left: 0;
+  top: 6px;
+  height: 3px;
+  border-radius: 2px;
+  background: var(--accent);
+  transition: width .4s ease;
+}
+.pollbar span {
+  margin-left: auto;
+  font-size: 10.5px;
+  color: var(--text-faint);
+}

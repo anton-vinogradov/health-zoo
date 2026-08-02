@@ -2,46 +2,67 @@
 
 /* ---------- wiring ---------- */
 
+var lastGenerated = 0;
+var refreshDeadline = 0;
+
 function load() {
   return fetch('/api/state').then(function (r) { return r.json(); }).then(function (s) {
     state = s;
+    lastGenerated = s.generated || 0;
     render();
   }).catch(function (e) {
     document.getElementById('summary').textContent = 'не удалось получить данные: ' + e;
   });
 }
 
-function refresh() {
-  /* Wait for the snapshot to actually change, not for a fixed number of
-     seconds. A timer either lies (the button frees up while the old data is
-     still on screen) or wastes time; the generated timestamp says exactly when
-     the new poll landed. */
+/* A poll takes twenty seconds on a good day and much longer when something is
+   wedged, and until now the only sign of it was a button that said "опрашиваю…"
+   for an unknown length of time. This asks a deliberately tiny endpoint — the
+   snapshot itself is three quarters of a megabyte — for how far the cycle has
+   got, and reloads the page's data the moment a new one lands. */
+function tickProgress() {
+  return fetch('/api/progress').then(function (r) { return r.json(); }).then(function (p) {
+    var bar = document.getElementById('pollbar');
+    var btn = document.getElementById('btn-refresh');
+    var pct = p.total ? Math.round((p.done || 0) * 100 / p.total) : 0;
+    if (p.polling) {
+      bar.classList.remove('hidden');
+      bar.querySelector('i').style.width = pct + '%';
+      bar.querySelector('span').textContent =
+        (p.phase || 'опрашиваю') + (p.total ? ' · ' + (p.done || 0) + ' из ' + p.total : '');
+      if (btn.disabled) btn.textContent = 'опрашиваю ' + (p.done || 0) + '/' + p.total;
+    } else {
+      bar.classList.add('hidden');
+    }
+    if (p.generated && p.generated > lastGenerated) {
+      lastGenerated = p.generated;
+      done();
+      return load();
+    }
+    /* The poll outlived any sane cycle; stop pretending it is still coming. */
+    if (btn.disabled && refreshDeadline && Date.now() > refreshDeadline) {
+      btn.textContent = 'опрос не ответил';
+      setTimeout(done, 3000);
+    }
+  }).catch(function () { /* a missed tick is not worth a message */ });
+}
+
+function done() {
   var btn = document.getElementById('btn-refresh');
-  var was = (state && state.generated) || 0;
-  var deadline = Date.now() + 120000;
+  refreshDeadline = 0;
+  btn.disabled = false;
+  btn.textContent = 'Обновить данные';
+}
+
+function refresh() {
+  /* Nothing to poll for here any more: the progress ticker knows when a new
+     snapshot lands and puts the button back itself. */
+  var btn = document.getElementById('btn-refresh');
   btn.disabled = true;
   btn.textContent = 'опрашиваю…';
-
-  function done() {
-    btn.disabled = false;
-    btn.textContent = 'Обновить данные';
-  }
-
-  function poll() {
-    load().then(function () {
-      if (state && state.generated > was) { done(); return; }
-      if (Date.now() > deadline) {
-        // The poll outlived any sane cycle; stop pretending it is still coming.
-        btn.textContent = 'опрос не ответил';
-        setTimeout(done, 3000);
-        return;
-      }
-      setTimeout(poll, 1500);
-    });
-  }
-
+  refreshDeadline = Date.now() + 180000;
   fetch('/api/refresh', { method: 'POST', headers: actionHeaders() })
-    .then(function () { setTimeout(poll, 1200); })
+    .then(function () { tickProgress(); })
     .catch(function () { done(); });
 }
 
@@ -106,5 +127,9 @@ document.addEventListener('DOMContentLoaded', function () {
   });
 
   load();
-  setInterval(load, 30000);
+  tickProgress();
+  setInterval(tickProgress, 2000);
+  // A safety net: if the ticker never sees a new cycle (a hub restart resets
+  // the counter), the page still refreshes itself.
+  setInterval(load, 60000);
 });

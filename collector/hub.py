@@ -87,6 +87,10 @@ class Fleet:
         # slow recovers from this by answering; one that is wedged stops
         # costing everybody else their freshness.
         self.misses: dict[str, int] = {}
+        # How far the current cycle has got. Kept apart from the snapshot,
+        # which by design only ever changes when a cycle finishes — the whole
+        # point here is to say something while one is still running.
+        self.progress: dict = {"polling": False, "done": 0, "total": 0, "phase": ""}
         # Set once the Jobs registry exists; automatic reboots go through the
         # same machinery as the button, so there is one reboot path, not two.
         self.jobs_ref: "Jobs | None" = None
@@ -134,11 +138,16 @@ class Fleet:
         try:
             timings: dict[str, float] = {}
             mark = time.time()
+            self.progress = {"polling": True, "done": 0, "total": len(self.hosts()),
+                             "phase": "опрашиваю хосты", "started": started}
 
             def took(name: str) -> None:
                 nonlocal mark
                 timings[name] = round(time.time() - mark, 1)
                 mark = time.time()
+
+            def phase(name: str) -> None:
+                self.progress["phase"] = name
 
             # Two polls missed is not "slow", it is "not answering", and the
             # difference is worth ten seconds a cycle to everybody else.
@@ -146,8 +155,10 @@ class Fleet:
                 host["probe_timeout"] = (
                     10 if self.misses.get(str(host.get("id")), 0) >= 2 else None)
 
-            hosts = probe.probe_all(self.hosts(), self.cfg.get("ssh_key"),
-                                    deadline=self.cfg.get("poll_deadline", 60))
+            hosts = probe.probe_all(
+                self.hosts(), self.cfg.get("ssh_key"),
+                deadline=self.cfg.get("poll_deadline", 60),
+                on_progress=lambda done: self.progress.update(done=done))
             for host in hosts:
                 host_id = str(host.get("id"))
                 if host.get("reachable"):
@@ -155,11 +166,13 @@ class Fleet:
                 else:
                     self.misses[host_id] = self.misses.get(host_id, 0) + 1
             took("хосты")
+            phase("контроллер и внешние проверки")
             probe.run_external_checks(self.cfg.get("external_checks", []),
                                       self.hosts(), self.cfg.get("ssh_key"), hosts)
             probe.poll_unifi_controller(self.cfg, hosts)
             probe.poll_billing(self.cfg, hosts)
             took("контроллер и внешние проверки")
+            phase("взгляд снаружи")
             probe.analyse_wifi(hosts)
             self.attach_channel_history(hosts)
             self.attach_link_history(hosts)
@@ -174,6 +187,7 @@ class Fleet:
             probe.link_exposure(hosts)
             probe.observe_outside(hosts, self.cfg, self.cfg.get("ssh_key"))
             took("взгляд снаружи")
+            phase("правила и уведомления")
             for host in hosts:
                 probe.endpoints_from_probed_ports(host)
             self.apply_camera_limits(hosts)
@@ -223,6 +237,10 @@ class Fleet:
             with self.lock:
                 self.snapshot["polling"] = False
                 self.snapshot["error"] = str(exc)
+        finally:
+            # Whatever happened, the cycle is over: a progress bar left running
+            # is worse than none, because it says work is happening.
+            self.progress["polling"] = False
 
     def loop(self) -> None:
         while True:
@@ -1111,6 +1129,15 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_GET(self):  # noqa: N802
         path = self.path.split("?", 1)[0]
+
+        if path == "/api/progress":
+            # Deliberately tiny and separate from /api/state: the page asks for
+            # this every couple of seconds while a poll runs, and the snapshot
+            # is three quarters of a megabyte.
+            state = dict(self.fleet.progress)
+            state["generated"] = self.fleet.get().get("generated", 0)
+            self._json(state)
+            return
 
         if path in STATIC_FILES:
             name, ctype = STATIC_FILES[path]

@@ -3097,7 +3097,7 @@ def resolve_probe_via(hosts: list[dict], key: str | None) -> None:
 
 
 def probe_all(hosts: list[dict], key: str | None, workers: int | None = None,
-              deadline: float | None = None) -> list[dict]:
+              deadline: float | None = None, on_progress=None) -> list[dict]:
     """Probe every host in parallel; slow hosts never block the fast ones.
 
     The pool has always been parallel. The cycle was not: it waited for the last
@@ -3123,6 +3123,10 @@ def probe_all(hosts: list[dict], key: str | None, workers: int | None = None,
                 results[index] = future.result()
             except Exception as exc:  # a probe must never kill the cycle
                 results[index] = _probe_failed(hosts[index], f"probe crashed: {exc}")
+            if on_progress:
+                # Counted as they land, not as they were started: the caller
+                # wants to show how much of the fleet has actually answered.
+                on_progress(sum(1 for r in results if r is not None))
     except concurrent.futures.TimeoutError:
         pass
     pool.shutdown(wait=False, cancel_futures=True)
