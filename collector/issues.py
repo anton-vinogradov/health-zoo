@@ -646,12 +646,29 @@ def host_issues(host: dict, cfg: dict | None = None) -> list[dict]:
         own = (cam.get("limits") or {})
         quiet_bad = own.get("bad", limits.get("camera_quiet_bad_hours", 24))
         quiet_warn = own.get("warn", limits.get("camera_quiet_warn_hours", 12))
+        # The sentence names the threshold that was crossed, not the running
+        # count. "34 ч" becomes "35 ч" an hour later, and a finding whose
+        # wording moves every poll can never be read and dismissed — the
+        # acknowledgement is keyed on what it said. Naming the bucket instead
+        # holds still while nothing changes and speaks again when the silence
+        # gets a day longer, which is the point at which somebody should hear
+        # about it twice. The exact figure is on the card, in "молчит".
+        def _silence(hours: float, floor: float) -> str:
+            days = int(hours // 24)
+            if days >= 2:
+                return f"больше {days} сут"
+            if days == 1:
+                return "больше суток"
+            return f"больше {int(floor)} ч"
+
         if quiet is not None and quiet >= quiet_bad:
             add("bad", f"camquiet:{cam.get('id')}",
-                f"камера {name}: нет событий {int(quiet)} ч — детекция молчит")
+                f"камера {name}: нет событий {_silence(quiet, quiet_bad)} — "
+                "детекция молчит", episodic=True)
         elif quiet is not None and quiet >= quiet_warn:
             add("warn", f"camquiet:{cam.get('id')}",
-                f"камера {name}: нет событий {int(quiet)} ч")
+                f"камера {name}: нет событий {_silence(quiet, quiet_warn)}",
+                episodic=True)
 
     # A backup that has not run is the failure mode nobody sees until restore
     # day; a share outside the task is the same failure, arranged in advance.

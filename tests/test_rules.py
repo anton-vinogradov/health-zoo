@@ -174,6 +174,40 @@ def test_a_couple_of_failed_attempts_are_not_a_finding():
     assert not fires(host, "authfail:38:A5:C9:11:22:33")
 
 
+def camera_host(quiet_hours):
+    host = host_named(fleet(), lambda h: h.get("cameras"))
+    host["cameras"] = [{"id": "cam1", "name": "Outdoor", "status": "Connected",
+                        "enabled": "1", "quiet_hours": quiet_hours}]
+    return host
+
+
+def test_a_silent_camera_can_be_read_and_dismissed():
+    host = camera_host(34)
+    issues.annotate([host], CFG, None)
+    found = [i for i in host["issues"] if i["key"] == "camquiet:cam1"]
+    assert found and found[0].get("episodic"), "замечание нельзя снять галочкой"
+
+
+def test_the_silence_is_named_by_threshold_not_by_the_clock():
+    """34 h and 35 h must read the same, or the dismissal evaporates hourly."""
+    first = camera_host(34)
+    later = camera_host(35)
+    issues.annotate([first], CFG, None)
+    issues.annotate([later], CFG, None)
+    text = lambda host: [i["text"] for i in host["issues"] if i["key"] == "camquiet:cam1"][0]
+    assert text(first) == text(later)
+    assert "больше суток" in text(first)
+
+
+def test_another_day_of_silence_speaks_again():
+    day, two_days = camera_host(30), camera_host(54)
+    issues.annotate([day], CFG, None)
+    issues.annotate([two_days], CFG, None)
+    text = lambda host: [i["text"] for i in host["issues"] if i["key"] == "camquiet:cam1"][0]
+    assert text(day) != text(two_days)
+    assert "больше 2 сут" in text(two_days)
+
+
 def test_processor_thresholds():
     host = host_named(fleet(), lambda h: h.get("cpu_load_pct") is not None)
     for busy, expected in ((79, None), (80, "warn"), (90, "bad")):
