@@ -28,6 +28,16 @@ function exitGroupTitle(ex) {
   return 'через туннель · ' + kind + (ex.endpoint ? ' → ' + ex.endpoint : '');
 }
 
+/* The road spelled out end to end. The branch used to name the tunnel and the
+   leaf its destination, leaving the reader to guess whether the service talked
+   to the tunnel or to the destination — which is the one thing this view is
+   for. Written as a chain, there is nothing left to assemble. */
+function chainOf(exits) {
+  var listens = exits.map(function (ex) { return ex.listen; }).join(' / ');
+  var far = exits[0] && exits[0].endpoint ? exits[0].endpoint : 'узел на той стороне';
+  return 'сервис → SOCKS5 ' + listens + ' → туннель → ' + far + ' → адрес назначения';
+}
+
 function leaf(name, targets, hosts, evidence, children) {
   var line = h('div', { class: 'tree-leaf' }, [
     h('span', { class: 'tree-name', text: name }),
@@ -91,9 +101,17 @@ function nest(services) {
 
 function serviceNodes(services) {
   return nest(services).map(function (s) {
+    /* A child inherits its parent's destination — it is the same traffic, one
+       hand-off earlier. Repeating the address on every child is noise; saying
+       nothing at all is what made the tree unreadable, so the branch says it
+       once, in words. */
     var kids = (s.kids || []).map(function (k) {
       return leaf(k.who, [], k.hosts, '', []);
     });
+    if (kids.length) {
+      kids = [h('li', { class: 'tree-label' },
+        [h('span', { text: 'шлют через ' + s.who + ', адрес тот же:' })])].concat(kids);
+    }
     return leaf(s.who, s.targets, s.hosts, s.evidence, kids);
   });
 }
@@ -151,7 +169,7 @@ function renderEgress() {
       });
     });
     rows.forEach(function (item) { taken[item.host + '|' + item.who + '|' + item.target] = true; });
-    var meta = group.exits.map(function (ex) {
+    var meta = chainOf(group.exits) + '\n' + group.exits.map(function (ex) {
       return ex.listen + ' на ' + ex.host + ' (' + ex.unit +
              (ex.state === 'active' ? ', работает' : ', ' + ex.state) + ')';
     }).join(' · ');

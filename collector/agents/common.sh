@@ -335,7 +335,14 @@ common_egress() {
       while IFS= read -r hit; do
         keyname=$(printf '%s\n' "$hit" | sed 's/^"//; s/".*//')
         target=$(printf '%s\n' "$hit" | sed 's/.*:[ ]*"//; s/"$//')
-        row "@outbound	$who	$keyname	$target	$conf"
+        # The key names the setting, not the destination. "tgProxy" told the
+        # reader nothing except that somebody had once typed it — where that
+        # traffic actually goes is the whole question this view exists for.
+        goes=""
+        case $keyname in
+          *[tT][gG]*|*[tT]elegram*) goes="api.telegram.org" ;;
+        esac
+        row "@outbound	$who	$goes	$target	$conf: $keyname"
       done
   done
 

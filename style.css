@@ -755,3 +755,10 @@ tr.check-na .check-name { color: var(--text-faint); }
 .tree-target { color: var(--text-dim); }
 .tree-where { color: var(--text-faint); font-size: 11px; }
 .tree-evidence { color: var(--text-faint); font-size: 11px; margin-left: auto; }
+.egress-note { white-space: pre-line; }
+.tree-label {
+  list-style: none;
+  font-size: 11px;
+  color: var(--text-faint);
+  padding: 2px 0 0 10px;
+}
