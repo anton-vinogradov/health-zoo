@@ -607,8 +607,11 @@ function showHost(host) {
         return h('tr', null, [
           h('td', { text: c.label || ('порт ' + c.port) }),
           h('td', { text: c.from }),
-          h('td', null, [h('span', { class: 'dot ' + (c.open ? 'ok' : 'bad') }),
-                         h('span', { text: c.open ? 'открыт' : 'недоступен' })])
+          h('td', null, [
+            h('span', { class: 'dot ' + (c.open === null || c.open === undefined
+                                         ? '' : c.open ? 'ok' : 'bad') }),
+            h('span', { text: c.open === null || c.open === undefined
+                        ? (c.why || 'не проверено') : c.open ? 'открыт' : 'недоступен' })])
         ]);
       }))));
   }

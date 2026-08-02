@@ -1778,6 +1778,10 @@ def run_external_checks(checks: list[dict], hosts: list[dict], key: str | None,
     it is invisible from the machine running the service.
     """
     by_id = {h.get("id"): h for h in hosts}
+    # Reachability as this very poll found it. Asking a host that did not
+    # answer to go and test something costs its whole ssh timeout and comes
+    # back "closed" — a wrong answer, paid for at the worst possible moment.
+    answering = {h.get("id") for h in results if h.get("reachable")}
     per_target: dict[str, list] = {}
 
     def probe_one(check: dict) -> tuple[str, dict]:
@@ -1807,16 +1811,21 @@ def run_external_checks(checks: list[dict], hosts: list[dict], key: str | None,
             target_ssh = f"{source['user']}@{target_ssh}"
         cmd += [target_ssh, remote]
 
+        head = {"from": source.get("name", check["from"]), "port": port,
+                "proto": proto, "label": check.get("label", "")}
+        if check.get("from") not in answering:
+            # Unknown, and said so. Reporting it as closed would raise an alarm
+            # about the target when the thing that is wrong is the machine we
+            # asked.
+            return check["to"], dict(head, open=None,
+                                     why=f"{head['from']} не отвечает — проверить неоткуда")
         try:
-            res = subprocess.run(cmd, capture_output=True, timeout=25, text=True)
+            res = subprocess.run(cmd, capture_output=True,
+                                 timeout=_ssh_timeout(source), text=True)
             ok = res.stdout.strip().endswith("0")
         except (subprocess.SubprocessError, OSError):
             ok = False
-        return check["to"], {
-            "from": source.get("name", check["from"]),
-            "port": port, "proto": proto, "open": ok,
-            "label": check.get("label", ""),
-        }
+        return check["to"], dict(head, open=ok)
 
     if not checks:
         return
@@ -3087,7 +3096,7 @@ def resolve_probe_via(hosts: list[dict], key: str | None) -> None:
                 host.pop("probe_via", None)
 
 
-def probe_all(hosts: list[dict], key: str | None, workers: int = 12,
+def probe_all(hosts: list[dict], key: str | None, workers: int | None = None,
               deadline: float | None = None) -> list[dict]:
     """Probe every host in parallel; slow hosts never block the fast ones.
 
@@ -3099,6 +3108,11 @@ def probe_all(hosts: list[dict], key: str | None, workers: int = 12,
     dropped — the next cycle asks again.
     """
     resolve_probe_via(hosts, key)
+    # A thread per host, capped. These threads do nothing but wait on ssh, so
+    # the cost of one is a stack; the cost of too few is that the fleet is
+    # polled in waves and the cycle takes as long as the slowest host in each.
+    if workers is None:
+        workers = min(max(4, len(hosts)), 24)
     results: list[dict] = [None] * len(hosts)  # type: ignore[list-item]
     pool = concurrent.futures.ThreadPoolExecutor(max_workers=workers)
     futures = {pool.submit(probe_host, h, key): i for i, h in enumerate(hosts)}

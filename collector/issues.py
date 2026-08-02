@@ -861,7 +861,13 @@ def host_issues(host: dict, cfg: dict | None = None) -> list[dict]:
     # Measured from another machine on the internet: this is the only check
     # that reflects what a user outside the perimeter actually gets.
     for check in host.get("external", []):
-        if not check.get("open"):
+        if check.get("open") is None:
+            # Nobody could look. Green would be a lie and red would blame the
+            # wrong machine, so this stays a note.
+            add("info", f"external:{check['port']}",
+                f"{check.get('label') or 'порт ' + str(check['port'])}: "
+                f"{check.get('why') or 'снаружи не проверено'}")
+        elif not check.get("open"):
             label = check.get("label") or f"порт {check['port']}"
             add("bad", f"external:{check['port']}",
                 f"{label} недоступен снаружи (проверено с {check['from']})")

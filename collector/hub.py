@@ -111,6 +111,12 @@ class Fleet:
         if restored:
             restored["restored"] = True
             self.snapshot = restored
+            # A restart used to forgive every wedged host its record, so the
+            # first two cycles after every deploy paid the full timeout again.
+            # What the last snapshot saw is exactly what this counter is for.
+            for host in restored.get("hosts", []):
+                if not host.get("reachable"):
+                    self.misses[str(host.get("id"))] = 2
 
     def hosts(self) -> list[dict]:
         return self.cfg.get("hosts", [])
