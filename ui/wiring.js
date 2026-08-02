@@ -76,6 +76,23 @@ document.addEventListener('DOMContentLoaded', function () {
   document.getElementById('btn-settings').addEventListener('click', showSettings);
   document.getElementById('btn-upgrade-all').addEventListener('click', function () { startUpdate([]); });
 
+  /* The chosen tab survives a reload: the page reloads itself every thirty
+     seconds, and a view that jumped back to the fleet each time would be
+     unusable for reading anything longer than that. */
+  function showView(name) {
+    document.querySelectorAll('.tab').forEach(function (tab) {
+      tab.classList.toggle('active', tab.dataset.view === name);
+    });
+    ['fleet', 'egress'].forEach(function (view) {
+      document.getElementById(view).classList.toggle('hidden', view !== name);
+    });
+    localStorage.setItem('hz-view', name);
+  }
+  document.querySelectorAll('.tab').forEach(function (tab) {
+    tab.addEventListener('click', function () { showView(tab.dataset.view); });
+  });
+  showView(localStorage.getItem('hz-view') || 'fleet');
+
   document.querySelectorAll('[data-close]').forEach(function (el) {
     el.addEventListener('click', function () {
       el.closest('.modal').classList.add('hidden');

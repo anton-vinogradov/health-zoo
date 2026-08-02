@@ -47,6 +47,7 @@ STATIC_FILES = {
     "/ui/cards.js": ("ui/cards.js", "application/javascript; charset=utf-8"),
     "/ui/details.js": ("ui/details.js", "application/javascript; charset=utf-8"),
     "/ui/actions.js": ("ui/actions.js", "application/javascript; charset=utf-8"),
+    "/ui/egress.js": ("ui/egress.js", "application/javascript; charset=utf-8"),
     "/ui/wiring.js": ("ui/wiring.js", "application/javascript; charset=utf-8"),
     "/style.css": ("style.css", "text/css; charset=utf-8"),
 }

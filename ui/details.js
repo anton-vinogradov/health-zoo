@@ -248,6 +248,22 @@ function showHost(host) {
       }))));
   }
 
+  if ((host.knocking || []).length) {
+    /* The finding says a device cannot get in; this says how hard it is
+       trying. The number is kept out of the finding on purpose — it moves at
+       every poll, and a sentence that names it could never be dismissed. */
+    body.appendChild(section('Стучатся в сеть',
+      table(['устройство', 'сеть', 'попыток', 'последняя'],
+      host.knocking.map(function (k) {
+        return h('tr', null, [
+          h('td', { text: k.mac }),
+          h('td', { text: k.ssid || '—' }),
+          h('td', { text: String(k.attempts || 0) }),
+          h('td', { text: k.last || '—' })
+        ]);
+      }))));
+  }
+
   if ((host.disks || []).length) {
     body.appendChild(section('Диски', table(['точка', 'устройство', 'занято', 'всего', '%'],
       host.disks.map(function (d) {

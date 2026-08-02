@@ -686,6 +686,14 @@ function render() {
 
   renderUnmanaged(root, state.unmanaged || []);
 
+  /* The second tab must not be able to take the first one down with it: both
+     are drawn from the same pass, and an exception here used to mean a blank
+     dashboard rather than a blank tab. */
+  try {
+    renderEgress();
+  } catch (err) {
+    document.getElementById('egress').textContent = 'не удалось нарисовать: ' + err;
+  }
   renderAlert(state.hosts || []);
 
   var hosts = state.hosts || [];

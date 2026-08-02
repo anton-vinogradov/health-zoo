@@ -579,9 +579,14 @@ def host_issues(host: dict, cfg: dict | None = None) -> list[dict]:
         if (guest.get("attempts") or 0) < limits.get("authfail_warn", 5):
             continue
         where = f" «{guest['ssid']}»" if guest.get("ssid") else ""
+        # No number in the sentence, deliberately. The count is read from a
+        # rolling window and changes at every poll, so a finding that named it
+        # could never be dismissed: the acknowledgement is keyed on the wording
+        # and would evaporate a minute later. The exact figure lives on the
+        # card, where it can move without undoing anybody's decision.
         add("warn", f"authfail:{guest['mac']}",
-            f"{guest['mac']} не проходит авторизацию в сети{where} — "
-            f"{guest['attempts']} попыток, устройства нет ни в арендах, ни в ARP")
+            f"{guest['mac']} стучится в сеть{where} и не проходит авторизацию — "
+            "устройства нет ни в арендах, ни в ARP", episodic=True)
 
     # A unit that dies and is brought back looks healthy at every poll; the
     # restart counter is the only place it shows, and only as a difference.

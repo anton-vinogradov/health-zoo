@@ -274,3 +274,99 @@ common_listeners() {
     }' | sort -u
   fi
 }
+
+# ---------- the way out ----------
+# Which of this host's traffic leaves through a tunnel and which goes straight
+# out is written down in four different places and nowhere together: a curl
+# option in one config, a JSON key in another, a systemd environment variable,
+# or nothing at all — meaning direct. Remembering it is hopeless, and the cost
+# of forgetting is finding out that the thing you thought was proxied was not.
+#
+# Two kinds of row: "@exit" is a way out that lives on this host, "@goesout" is
+# somebody using one. Both carry the file they were read from, because a claim
+# about routing is worth exactly as much as the evidence behind it.
+common_egress() {
+  read_cmd="cat"
+  if [ "$(id -u)" != 0 ] && command -v sudo >/dev/null 2>&1 && sudo -n true 2>/dev/null; then
+    read_cmd="sudo -n cat"
+  fi
+
+  # wireproxy: one file says both what it offers locally and where the tunnel
+  # comes out. Keys are never read — only the three lines that describe a path.
+  for conf in /etc/wireproxy/*.conf; do
+    [ -e "$conf" ] || continue
+    body=$($read_cmd "$conf" 2>/dev/null) || continue
+    bind=$(printf '%s\n' "$body" | awk -F'=' '/^[ \t]*BindAddress/ {gsub(/[ \t]/, "", $2); print $2; exit}')
+    endpoint=$(printf '%s\n' "$body" | awk -F'=' '/^[ \t]*Endpoint/ {gsub(/[ \t]/, "", $2); print $2; exit}')
+    inside=$(printf '%s\n' "$body" | awk -F'=' '/^[ \t]*Address/ {gsub(/[ \t]/, "", $2); print $2; exit}')
+    # The obfuscation parameters are what tell AmneziaWG from plain WireGuard,
+    # and that difference is the whole reason this tunnel exists here.
+    kind=wireguard
+    printf '%s\n' "$body" | grep -q '^[ \t]*Jc[ \t]*=' && kind=amneziawg
+    state=$(systemctl is-active wireproxy.service 2>/dev/null || echo "?")
+    [ -n "$bind" ] && row "@exit	socks5	$bind	wireproxy.service	$state	$kind	$endpoint	$inside"
+  done
+
+  # telegram.sh keeps its proxy inside the curl options, so the setting that
+  # decides how every notification in the house leaves is one word in one line.
+  for conf in /etc/telegram.sh.conf "${HOME:-/root}/.telegram.sh.conf"; do
+    [ -r "$conf" ] || continue
+    via=$(sed -n 's/.*-x[ ]*\([a-z0-9]*:\/\/[^" ]*\).*/\1/p' "$conf" | head -1)
+    row "@outbound	telegram.sh	api.telegram.org	${via:-прямо}	$conf"
+    # Everything that sends a message does it through this one script, so the
+    # tree has to show them as its users rather than as separate paths out.
+    for dir in /opt/*/; do
+      name=${dir#/opt/}; name=${name%/}
+      case "$name" in *.bak*|*backup*|telegram.sh-repo) continue ;; esac
+      if grep -rqs "telegram.sh-repo\|/opt/telegram" "$dir" 2>/dev/null; then
+        row "@outbound	$name	api.telegram.org	${via:-прямо}	через telegram.sh"
+      fi
+    done
+    break
+  done
+
+  # A proxy named in a service's own configuration.
+  for conf in /opt/*/collector/config.json /opt/*/config.json /etc/*.json; do
+    [ -r "$conf" ] || continue
+    case "$conf" in *.bak*|*backup*) continue ;; esac
+    who=${conf#/opt/}; who=${who%%/*}
+    case "$conf" in /etc/*) who=$(basename "$conf" .json) ;; esac
+    grep -oiE '"[a-z_]*proxy[a-z_]*"[ ]*:[ ]*"[^"]+"' "$conf" 2>/dev/null |
+      while IFS= read -r hit; do
+        keyname=$(printf '%s\n' "$hit" | sed 's/^"//; s/".*//')
+        target=$(printf '%s\n' "$hit" | sed 's/.*:[ ]*"//; s/"$//')
+        row "@outbound	$who	$keyname	$target	$conf"
+      done
+  done
+
+  # A proxy handed to a unit as an environment variable applies to everything
+  # that unit runs, which makes it the easiest one to set and forget.
+  for unit in /etc/systemd/system/*.service; do
+    [ -r "$unit" ] || continue
+    grep -oiE 'Environment=[A-Z_]*_?proxy=[^ "]+' "$unit" 2>/dev/null |
+      while IFS= read -r hit; do
+        row "@outbound	$(basename "$unit" .service)	$(printf '%s' "$hit" | sed 's/Environment=//; s/=.*//')	$(printf '%s' "$hit" | sed 's/.*=//')	$unit"
+      done
+  done
+
+  # And what each service talks to when nothing proxies it. Read from its own
+  # code: a hostname in the source is the only place this exists at all.
+  for dir in /opt/*/; do
+    name=${dir#/opt/}; name=${name%/}
+    case "$name" in *.bak*|*backup*|telegram.sh-repo) continue ;; esac
+    # Only the service's own code. A vendored library carries the hostnames of
+    # its own documentation, and reporting that meshtastic-zoo "talks to
+    # android.stackexchange.com" would be worse than saying nothing.
+    find "$dir" -maxdepth 3 \( -name .git -o -name vendor -o -name node_modules \
+            -o -name '.venv' -o -name 'site-packages' -o -name docs \) -prune -o \
+        -type f \( -name '*.py' -o -name '*.sh' -o -name '*.js' \) \
+        -exec grep -hoE 'https://[a-zA-Z0-9][a-zA-Z0-9._-]+\.[a-z]{2,}' {} + 2>/dev/null |
+      sed 's|https://||' |
+      grep -vE '^(localhost|127\.|schemas\.|www\.w3\.org|api\.telegram\.org)' |
+      sort -u | head -6 |
+      while IFS= read -r target; do
+        row "@outbound	$name	$target	прямо	$dir"
+      done
+  done
+  return 0
+}

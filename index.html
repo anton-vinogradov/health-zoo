@@ -31,7 +31,13 @@
 
 <div id="alert" class="alert hidden"></div>
 
+<nav class="tabs">
+  <button class="tab active" data-view="fleet">Парк</button>
+  <button class="tab" data-view="egress" title="Через что каждый сервис выходит в интернет">Наружу</button>
+</nav>
+
 <main id="fleet" class="fleet"></main>
+<main id="egress" class="fleet hidden"></main>
 
 <footer class="foot">
   <span id="foot-note"></span>
@@ -64,6 +70,7 @@
 <script src="ui/core.js"></script>
 <script src="ui/cards.js"></script>
 <script src="ui/details.js"></script>
+<script src="ui/egress.js"></script>
 <script src="ui/actions.js"></script>
 <script src="ui/wiring.js"></script>
 </body>

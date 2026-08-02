@@ -686,3 +686,59 @@ tr.check-na .check-name { color: var(--text-faint); }
 .set-exclude { display: flex; flex-wrap: wrap; gap: 6px 16px; }
 .set-actions { display: flex; align-items: center; gap: 12px; margin-top: 16px; }
 .set-status { font-size: 12.5px; color: var(--text-faint); }
+
+/* ---------- tabs and the "outside" view ---------- */
+.tabs {
+  display: flex;
+  gap: 4px;
+  padding: 10px 16px 0;
+}
+.tab {
+  font: inherit;
+  font-size: 13px;
+  padding: 6px 14px;
+  border: 1px solid var(--line);
+  border-bottom: none;
+  border-radius: var(--radius) var(--radius) 0 0;
+  background: var(--bg-raise);
+  color: var(--text-dim);
+  cursor: pointer;
+}
+.tab.active {
+  background: var(--bg-card);
+  color: var(--text);
+  box-shadow: inset 0 2px 0 var(--accent);
+}
+.egress-block {
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--bg-card);
+  padding: 10px 12px;
+  margin: 8px 0;
+}
+.egress-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 10px;
+}
+.egress-title { font-weight: 600; }
+.egress-sub { font-size: 12px; color: var(--text-dim); }
+.egress-note {
+  font-size: 11px;
+  color: var(--text-faint);
+  margin-top: 2px;
+}
+.egress-table {
+  width: 100%;
+  border-collapse: collapse;
+  margin-top: 8px;
+  font-size: 12px;
+}
+.egress-table td {
+  padding: 3px 8px 3px 0;
+  border-top: 1px solid var(--line);
+  vertical-align: top;
+}
+.egress-table td.egress-who { white-space: nowrap; font-weight: 500; }
+.egress-table td.egress-note { color: var(--text-faint); }

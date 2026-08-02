@@ -79,6 +79,10 @@ LIST_FIELDS = {
     # because what counts as a cap is platform knowledge. The parser makes
     # the key plural, so the row is "@cap" and the field is "caps".
     "cap": ["what", "detail", "level"],
+    # How this host reaches the internet, and who uses which way. "exit" is a
+    # way out that lives here, "outbound" is somebody taking one.
+    "exit": ["kind", "listen", "unit", "state", "tunnel", "endpoint", "inside"],
+    "outbound": ["who", "target", "via", "evidence"],
     "listen": ["port", "process", "scope"],
     "udp": ["port", "process", "scope"],
     # Same shape the RouterOS parser builds by hand, so both kinds of router

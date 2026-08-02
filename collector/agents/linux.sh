@@ -337,6 +337,7 @@ common_links
 common_capped
 common_peer
 common_listeners
+common_egress
 if command -v ss >/dev/null 2>&1; then
   ss -tlnH 2>/dev/null | awk '{
     addr = $4
