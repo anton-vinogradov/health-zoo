@@ -80,7 +80,7 @@ document.addEventListener('DOMContentLoaded', function () {
      seconds, and a view that jumped back to the fleet each time would be
      unusable for reading anything longer than that. */
   function showView(name) {
-    document.querySelectorAll('.tab').forEach(function (tab) {
+    document.querySelectorAll('.view-tabs .tab').forEach(function (tab) {
       tab.classList.toggle('active', tab.dataset.view === name);
     });
     ['fleet', 'egress'].forEach(function (view) {
@@ -88,7 +88,7 @@ document.addEventListener('DOMContentLoaded', function () {
     });
     localStorage.setItem('hz-view', name);
   }
-  document.querySelectorAll('.tab').forEach(function (tab) {
+  document.querySelectorAll('.view-tabs .tab').forEach(function (tab) {
     tab.addEventListener('click', function () { showView(tab.dataset.view); });
   });
   showView(localStorage.getItem('hz-view') || 'fleet');
