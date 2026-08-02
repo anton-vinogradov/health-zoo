@@ -351,6 +351,36 @@ common_egress() {
 
   # And what each service talks to when nothing proxies it. Read from its own
   # code: a hostname in the source is the only place this exists at all.
+  #
+  # Cached hard, and this is not an optimisation. Walking /opt costs real disk
+  # on a host whose disk is the thing that is already sick — and a poll every
+  # three minutes means the next walk starts before the last one finished,
+  # until the box stops answering ssh altogether. That is not a theory: it is
+  # what happened to the VPS an hour after this was first deployed. The answer
+  # changes when somebody edits a service, which is not a three-minute event.
+  cache=${TMPDIR:-/tmp}/health-zoo-outbound.cache
+  stale=1
+  if [ -f "$cache" ]; then
+    then_ts=$(stat -c %Y "$cache" 2>/dev/null || stat -f %m "$cache" 2>/dev/null || echo 0)
+    now_ts=$(date +%s 2>/dev/null || echo 0)
+    [ "$(( now_ts - then_ts ))" -lt 86400 ] && stale=0
+  fi
+  # A machine already at its limit gets nothing extra: it keeps the last answer
+  # rather than being asked to walk its disk again.
+  if [ "$stale" = 1 ] && [ -r /proc/loadavg ]; then
+    case $(cut -d. -f1 /proc/loadavg) in
+      ''|*[!0-9]*) : ;;
+      *) [ "$(cut -d. -f1 /proc/loadavg)" -ge 4 ] && stale=0 ;;
+    esac
+  fi
+  if [ "$stale" = 1 ]; then
+    scan_outbound > "$cache.new" 2>/dev/null && mv "$cache.new" "$cache" 2>/dev/null
+  fi
+  cat "$cache" 2>/dev/null
+  return 0
+}
+
+scan_outbound() {
   for dir in /opt/*/; do
     name=${dir#/opt/}; name=${name%/}
     case "$name" in *.bak*|*backup*|telegram.sh-repo) continue ;; esac
@@ -368,5 +398,4 @@ common_egress() {
         row "@outbound	$name	$target	прямо	$dir"
       done
   done
-  return 0
 }

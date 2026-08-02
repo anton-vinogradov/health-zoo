@@ -4,83 +4,108 @@
    that has no home anywhere else: through what does a given service leave the
    house. That knowledge is currently spread across a curl option in one file,
    a JSON key in another, a tunnel configuration in a third — and after a few
-   months nobody remembers which of them applies to what. Grouped by the way
-   out rather than by service, so both directions of the question are answered
-   at once: what does this service use, and what else rides the same tunnel. */
+   months nobody remembers which of them applies to what.
+
+   A tree of services, not a list of hosts. The same service usually runs in
+   more than one place and takes the same road out of each, so the road is the
+   branch and the host is a detail on the leaf. Where one service reaches the
+   internet through another — everything here sends its notifications by
+   handing them to telegram.sh — it hangs under it, because that is the shape
+   of the thing: one exit, one script, and a dozen users behind it. */
 
 'use strict';
 
-function exitKey(listen) {
-  return (listen || '').trim();
+/* Two hosts running the same tunnel to the same endpoint are one way out, seen
+   twice. Grouping by the endpoint answers "what rides this tunnel" across the
+   whole fleet, which is the question a list per host cannot answer. */
+function exitGroupKey(ex) {
+  return (ex.tunnel || 'proxy') + ' ' + (ex.endpoint || ex.listen || '');
 }
 
-/* A "via" as written by whoever configured it ("socks5://10.0.0.1:1081") next
-   to an exit as the host reports it ("10.0.0.1:1081"). */
-function viaMatchesExit(via, listen) {
-  if (!via || !listen) return false;
-  return via.indexOf(listen) >= 0;
+function exitGroupTitle(ex) {
+  var kind = ex.tunnel === 'amneziawg' ? 'AmneziaWG'
+           : ex.tunnel === 'wireguard' ? 'WireGuard' : (ex.kind || 'прокси');
+  return 'через туннель · ' + kind + (ex.endpoint ? ' → ' + ex.endpoint : '');
 }
 
-function tunnelLine(ex) {
-  var parts = [];
-  if (ex.tunnel) parts.push(ex.tunnel === 'amneziawg' ? 'AmneziaWG' : 'WireGuard');
-  if (ex.endpoint) parts.push('→ ' + ex.endpoint);
-  return parts.join(' ');
-}
-
-function outboundRow(item) {
-  /* The evidence is the point: a claim about where traffic goes is worth what
-     the file behind it says, and the file is what you edit to change it. */
-  return h('tr', null, [
-    h('td', { class: 'egress-who', text: item.who }),
-    h('td', { text: item.target || '' }),
-    h('td', { class: 'egress-note', text: item.evidence || '' })
+function leaf(name, targets, hosts, evidence, children) {
+  var line = h('div', { class: 'tree-leaf' }, [
+    h('span', { class: 'tree-name', text: name }),
+    targets.length ? h('span', { class: 'tree-target', text: '→ ' + targets.join(', ') }) : null,
+    hosts.length ? h('span', { class: 'tree-where', text: hosts.join(', ') }) : null,
+    evidence ? h('span', { class: 'tree-evidence', text: evidence }) : null
   ]);
+  return h('li', null, [line].concat(children && children.length
+    ? [h('ul', { class: 'tree' }, children)] : []));
 }
 
-function exitBlock(ex, users) {
-  var head = h('div', { class: 'egress-head' }, [
-    h('span', { class: 'egress-title', text: ex.listen + ' · ' + (ex.kind || 'proxy') }),
-    h('span', { class: 'egress-sub', text: tunnelLine(ex) })
-  ]);
-  var meta = [];
-  if (ex.unit) meta.push(ex.unit);
-  if (ex.state) meta.push(ex.state === 'active' ? 'работает' : ex.state);
-  if (ex.inside) meta.push('адрес внутри туннеля ' + ex.inside);
-  if (ex.host) meta.push('на ' + ex.host);
+/* One service, however many rows and hosts it came from. */
+function collect(rows) {
+  var byName = {};
+  rows.forEach(function (row) {
+    /* A service can appear twice on the same road for different reasons — once
+       because it hands its messages to another service, once because its own
+       configuration names the proxy. Merging those two would lose whichever
+       was read second, and the second one is usually the setting somebody is
+       looking for. */
+    var carried = (row.evidence || '').indexOf('через ') === 0;
+    var key = row.who + (carried ? ' ↑' : '');
+    var entry = byName[key] || (byName[key] = {
+      who: row.who, targets: {}, hosts: {}, evidence: {}, viaScript: carried
+    });
+    if (row.target) entry.targets[row.target] = true;
+    if (row.host) entry.hosts[row.host] = true;
+    if (row.evidence) entry.evidence[row.evidence] = true;
+  });
+  return Object.keys(byName).sort().map(function (k) {
+    var e = byName[k];
+    return {
+      who: e.who,
+      targets: Object.keys(e.targets).sort(),
+      hosts: Object.keys(e.hosts).sort(),
+      evidence: Object.keys(e.evidence).sort().join(', '),
+      viaScript: e.viaScript
+    };
+  });
+}
 
+/* Services that reach the internet by handing the job to another service hang
+   under it. Anything else stands on its own. */
+function nest(services) {
+  var carriers = {}, out = [];
+  services.forEach(function (s) { if (!s.viaScript) carriers[s.who] = { service: s, kids: [] }; });
+  services.forEach(function (s) {
+    if (!s.viaScript) return;
+    var host = null;
+    Object.keys(carriers).forEach(function (name) {
+      if (s.evidence.indexOf(name) >= 0) host = carriers[name];
+    });
+    (host ? host.kids : out).push(s);
+  });
+  Object.keys(carriers).sort().forEach(function (name) {
+    out.push(carriers[name].service);
+    carriers[name].service.kids = carriers[name].kids;
+  });
+  return out.sort(function (a, b) { return a.who.localeCompare(b.who); });
+}
+
+function serviceNodes(services) {
+  return nest(services).map(function (s) {
+    var kids = (s.kids || []).map(function (k) {
+      return leaf(k.who, [], k.hosts, '', []);
+    });
+    return leaf(s.who, s.targets, s.hosts, s.evidence, kids);
+  });
+}
+
+function branch(title, meta, services) {
   return h('section', { class: 'egress-block' }, [
-    head,
-    h('div', { class: 'egress-note', text: meta.join(' · ') }),
-    users.length
-      ? h('table', { class: 'egress-table' }, [h('tbody', null, users.map(outboundRow))])
-      : h('div', { class: 'egress-note', text: 'через этот выход сейчас никто не ходит' })
+    h('div', { class: 'egress-head' }, [h('span', { class: 'egress-title', text: title })]),
+    meta ? h('div', { class: 'egress-note', text: meta }) : null,
+    services.length
+      ? h('ul', { class: 'tree' }, serviceNodes(services))
+      : h('div', { class: 'egress-note', text: 'этой дорогой сейчас никто не ходит' })
   ]);
-}
-
-function directBlock(hosts, direct) {
-  /* Everything nobody routed anywhere. Worth showing next to the tunnels
-     precisely because it is the default: a service is direct not by decision
-     but by nobody having decided. */
-  var byHost = {};
-  direct.forEach(function (item) {
-    (byHost[item.host] = byHost[item.host] || []).push(item);
-  });
-  var blocks = Object.keys(byHost).sort().map(function (name) {
-    var host = hosts.filter(function (x) { return x.name === name || x.id === name; })[0];
-    /* Only the site's edge is measured from outside, so only it can name the
-       address the world sees. Printing "unknown" against every other host
-       would be true and useless; the measured exits are listed once above. */
-    var seen = host && host.egress_addr ? 'выход ' + host.egress_addr : 'через роутер площадки';
-    return h('section', { class: 'egress-block' }, [
-      h('div', { class: 'egress-head' }, [
-        h('span', { class: 'egress-title', text: name }),
-        h('span', { class: 'egress-sub', text: seen })
-      ]),
-      h('table', { class: 'egress-table' }, [h('tbody', null, byHost[name].map(outboundRow))])
-    ]);
-  });
-  return blocks;
 }
 
 function renderEgress() {
@@ -89,14 +114,17 @@ function renderEgress() {
   root.innerHTML = '';
 
   var hosts = state.hosts || [];
-  var exits = [];
-  var outbound = [];
+  var exits = [], outbound = [];
   hosts.forEach(function (host) {
+    var where = host.name || host.id;
     (host.exits || []).forEach(function (ex) {
-      exits.push(Object.assign({}, ex, { host: host.name || host.id }));
+      exits.push({ host: where, kind: ex.kind, listen: ex.listen, unit: ex.unit,
+                   state: ex.state, tunnel: ex.tunnel, endpoint: ex.endpoint,
+                   inside: ex.inside });
     });
     (host.outbounds || []).forEach(function (item) {
-      outbound.push(Object.assign({}, item, { host: host.name || host.id }));
+      outbound.push({ host: where, who: item.who, target: item.target,
+                      via: item.via, evidence: item.evidence });
     });
   });
 
@@ -106,29 +134,39 @@ function renderEgress() {
     return;
   }
 
-  /* Two identical tunnels on two hosts are two ways out, not one: they exit
-     through the same endpoint but a service can only use the one on its own
-     host, and that difference is exactly what somebody debugging needs. */
-  var used = {};
+  var groups = {}, order = [];
   exits.forEach(function (ex) {
-    var users = outbound.filter(function (item) {
-      return item.host === ex.host && viaMatchesExit(item.via, exitKey(ex.listen));
+    var key = exitGroupKey(ex);
+    if (!groups[key]) { groups[key] = { title: exitGroupTitle(ex), exits: [] }; order.push(key); }
+    groups[key].exits.push(ex);
+  });
+
+  var taken = {};
+  order.forEach(function (key) {
+    var group = groups[key];
+    var rows = outbound.filter(function (item) {
+      return group.exits.some(function (ex) {
+        return item.host === ex.host && item.via && ex.listen &&
+               item.via.indexOf(ex.listen) >= 0;
+      });
     });
-    users.forEach(function (item) { used[item.host + '|' + item.who + '|' + item.target] = true; });
-    root.appendChild(exitBlock(ex, users));
+    rows.forEach(function (item) { taken[item.host + '|' + item.who + '|' + item.target] = true; });
+    var meta = group.exits.map(function (ex) {
+      return ex.listen + ' на ' + ex.host + ' (' + ex.unit +
+             (ex.state === 'active' ? ', работает' : ', ' + ex.state) + ')';
+    }).join(' · ');
+    root.appendChild(branch(group.title, meta, collect(rows)));
   });
 
   var direct = outbound.filter(function (item) {
-    return !used[item.host + '|' + item.who + '|' + item.target];
+    return !taken[item.host + '|' + item.who + '|' + item.target];
   });
   if (direct.length) {
-    /* What the internet sees when nothing is tunnelled. Measured, not read off
-       an interface: a provider can hand out a private address and map a public
-       one onto it, which is exactly what happens here. */
+    /* Measured, not read off an interface: a provider can hand out a private
+       address and map a public one onto it, which is what happens here. */
     var edges = hosts.filter(function (x) { return x.egress_addr; })
       .map(function (x) { return x.egress_addr + ' (' + (x.name || x.id) + ')'; });
-    root.appendChild(h('div', { class: 'role-head', text:
-      'напрямую, без туннеля' + (edges.length ? ' — снаружи это ' + edges.join(', ') : '') }));
-    directBlock(hosts, direct).forEach(function (block) { root.appendChild(block); });
+    root.appendChild(branch('напрямую, без туннеля',
+      edges.length ? 'снаружи это ' + edges.join(', ') : '', collect(direct)));
   }
 }
