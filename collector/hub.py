@@ -83,6 +83,10 @@ class Fleet:
         self.lock = threading.Lock()
         self.snapshot: dict = {"generated": 0, "hosts": [], "polling": False}
         self.wake = threading.Event()
+        # Consecutive polls a host failed to answer. A machine that is merely
+        # slow recovers from this by answering; one that is wedged stops
+        # costing everybody else their freshness.
+        self.misses: dict[str, int] = {}
         # Set once the Jobs registry exists; automatic reboots go through the
         # same machinery as the button, so there is one reboot path, not two.
         self.jobs_ref: "Jobs | None" = None
@@ -122,11 +126,34 @@ class Fleet:
             previous = self.snapshot.get("hosts", [])
             previous_at = self.snapshot.get("generated")
         try:
-            hosts = probe.probe_all(self.hosts(), self.cfg.get("ssh_key"))
+            timings: dict[str, float] = {}
+            mark = time.time()
+
+            def took(name: str) -> None:
+                nonlocal mark
+                timings[name] = round(time.time() - mark, 1)
+                mark = time.time()
+
+            # Two polls missed is not "slow", it is "not answering", and the
+            # difference is worth ten seconds a cycle to everybody else.
+            for host in self.hosts():
+                host["probe_timeout"] = (
+                    10 if self.misses.get(str(host.get("id")), 0) >= 2 else None)
+
+            hosts = probe.probe_all(self.hosts(), self.cfg.get("ssh_key"),
+                                    deadline=self.cfg.get("poll_deadline", 60))
+            for host in hosts:
+                host_id = str(host.get("id"))
+                if host.get("reachable"):
+                    self.misses.pop(host_id, None)
+                else:
+                    self.misses[host_id] = self.misses.get(host_id, 0) + 1
+            took("хосты")
             probe.run_external_checks(self.cfg.get("external_checks", []),
                                       self.hosts(), self.cfg.get("ssh_key"), hosts)
             probe.poll_unifi_controller(self.cfg, hosts)
             probe.poll_billing(self.cfg, hosts)
+            took("контроллер и внешние проверки")
             probe.analyse_wifi(hosts)
             self.attach_channel_history(hosts)
             self.attach_link_history(hosts)
@@ -140,6 +167,7 @@ class Fleet:
             probe.verify_exposure(hosts, self.cfg, self.cfg.get("ssh_key"))
             probe.link_exposure(hosts)
             probe.observe_outside(hosts, self.cfg, self.cfg.get("ssh_key"))
+            took("взгляд снаружи")
             for host in hosts:
                 probe.endpoints_from_probed_ports(host)
             self.apply_camera_limits(hosts)
@@ -147,6 +175,7 @@ class Fleet:
             self.note_reboots(hosts)
             issues.annotate(hosts, self.cfg, self.suppressions, self.acks)
             issues.annotate_checks(hosts, self.cfg)
+            took("правила")
             self.suppressions.note_firing(hosts)
             # An acknowledgement outliving its sentence would silence the next
             # occurrence too, so it is dropped the moment the wording moves.
@@ -157,6 +186,9 @@ class Fleet:
                 "unmanaged": probe.find_unmanaged(hosts, self.hosts()),
                 "generated": int(time.time()),
                 "duration_ms": int((time.time() - started) * 1000),
+                # Where the cycle went. Without it "опрос занял 73 с" is a
+                # number nobody can act on.
+                "timings": timings,
                 "subnets": self.cfg.get("subnets", []),
                 "check_categories": issues.CHECK_CATEGORIES,
                 "hosts": hosts,

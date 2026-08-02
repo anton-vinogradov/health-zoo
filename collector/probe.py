@@ -510,9 +510,9 @@ def run_agent(host: dict, key: str | None) -> tuple[bool, str]:
 
     try:
         res = subprocess.run(cmd, input=body, capture_output=True,
-                             timeout=SSH_TIMEOUT, text=True)
+                             timeout=_ssh_timeout(host), text=True)
     except subprocess.TimeoutExpired:
-        return False, f"timeout after {SSH_TIMEOUT}s"
+        return False, f"timeout after {_ssh_timeout(host)}s"
     except OSError as exc:
         return False, str(exc)
 
@@ -655,6 +655,31 @@ ROUTEROS_CMD = (
 
 
 
+def _ssh_timeout(host: dict) -> int:
+    """How long to wait for this host before giving up on it.
+
+    A box that has already missed its last polls gets a shorter leash. With one
+    default for everybody, a single wedged machine — one that accepts the
+    connection and then says nothing — costs the whole fleet its full timeout on
+    every cycle, and the cycle is what the dashboard's freshness is made of.
+    """
+    return int(host.get("probe_timeout") or SSH_TIMEOUT)
+
+
+def _probe_failed(host: dict, error: str) -> dict:
+    return {
+        "id": host.get("id") or host["addr"],
+        "name": host.get("name") or host.get("id") or host["addr"],
+        "addr": host["addr"],
+        "role": (host.get("roles") or [host.get("role", "server")])[0],
+        "roles": host.get("roles") or [host.get("role", "server")],
+        "agent": host.get("agent", "linux"),
+        "subnet": host.get("subnet", ""),
+        "reachable": False,
+        "error": error,
+    }
+
+
 def _rate_mbit(rate: str) -> int:
     """RouterOS reports "1Gbps"; everything else here counts in megabits."""
     text = (rate or "").strip().lower()
@@ -721,9 +746,10 @@ def probe_routeros(host: dict, key: str | None) -> dict:
     cmd += [target, ROUTEROS_CMD]
 
     try:
-        res = subprocess.run(cmd, capture_output=True, timeout=SSH_TIMEOUT, text=True)
+        res = subprocess.run(cmd, capture_output=True,
+                             timeout=_ssh_timeout(host), text=True)
     except subprocess.TimeoutExpired:
-        return {"_error": f"timeout after {SSH_TIMEOUT}s"}
+        return {"_error": f"timeout after {_ssh_timeout(host)}s"}
     except OSError as exc:
         return {"_error": str(exc)}
     if res.returncode != 0:
@@ -3061,25 +3087,35 @@ def resolve_probe_via(hosts: list[dict], key: str | None) -> None:
                 host.pop("probe_via", None)
 
 
-def probe_all(hosts: list[dict], key: str | None, workers: int = 12) -> list[dict]:
-    """Probe every host in parallel; slow hosts never block the fast ones."""
+def probe_all(hosts: list[dict], key: str | None, workers: int = 12,
+              deadline: float | None = None) -> list[dict]:
+    """Probe every host in parallel; slow hosts never block the fast ones.
+
+    The pool has always been parallel. The cycle was not: it waited for the last
+    straggler, so one machine that accepts a connection and then goes quiet held
+    every other host's fresh reading hostage for its whole timeout. Past the
+    deadline the cycle takes what it has and says plainly which host did not
+    answer in time. The abandoned thread finishes on its own and its result is
+    dropped — the next cycle asks again.
+    """
     resolve_probe_via(hosts, key)
     results: list[dict] = [None] * len(hosts)  # type: ignore[list-item]
-    with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as pool:
-        futures = {pool.submit(probe_host, h, key): i for i, h in enumerate(hosts)}
-        for future in concurrent.futures.as_completed(futures):
+    pool = concurrent.futures.ThreadPoolExecutor(max_workers=workers)
+    futures = {pool.submit(probe_host, h, key): i for i, h in enumerate(hosts)}
+    try:
+        for future in concurrent.futures.as_completed(futures, timeout=deadline):
             index = futures[future]
             try:
                 results[index] = future.result()
             except Exception as exc:  # a probe must never kill the cycle
-                host = hosts[index]
-                results[index] = {
-                    "id": host.get("id") or host["addr"],
-                    "name": host.get("name") or host["addr"],
-                    "addr": host["addr"],
-                    "reachable": False,
-                    "error": f"probe crashed: {exc}",
-                }
+                results[index] = _probe_failed(hosts[index], f"probe crashed: {exc}")
+    except concurrent.futures.TimeoutError:
+        pass
+    pool.shutdown(wait=False, cancel_futures=True)
+    for index, host in enumerate(hosts):
+        if results[index] is None:
+            results[index] = _probe_failed(
+                host, f"не ответил за {int(deadline or 0)} с — опрос его не ждал")
     link_cameras(results)
     link_camera_firmware(results)
     link_backups(results)

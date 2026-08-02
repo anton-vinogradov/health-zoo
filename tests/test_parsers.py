@@ -186,6 +186,38 @@ def test_a_client_that_did_get_in_is_not_reported_as_knocking():
     assert "AA:BB:CC:DD:EE:01" not in entries  # держит аренду
 
 
+def test_a_hung_host_does_not_hold_up_the_poll():
+    """One machine that never answers used to cost every other host its turn."""
+    import time as clock
+    hosts = [{"id": "slow", "addr": "10.0.0.9", "name": "slow", "role": "server"},
+             {"id": "quick", "addr": "10.0.0.8", "name": "quick", "role": "server"}]
+
+    def fake_probe(host, key):
+        if host["id"] == "slow":
+            clock.sleep(5)
+        return {"id": host["id"], "name": host["name"], "addr": host["addr"],
+                "reachable": True, "role": "server", "roles": ["server"]}
+
+    original_probe, original_via = probe.probe_host, probe.resolve_probe_via
+    probe.probe_host = fake_probe
+    probe.resolve_probe_via = lambda *a, **kw: None
+    try:
+        started = clock.time()
+        out = probe.probe_all(hosts, None, deadline=0.5)
+        assert clock.time() - started < 3, "опрос всё ещё ждёт зависший хост"
+    finally:
+        probe.probe_host, probe.resolve_probe_via = original_probe, original_via
+    found = {h["id"]: h for h in out}
+    assert found["quick"]["reachable"] is True
+    assert found["slow"]["reachable"] is False
+    assert "не ответил" in found["slow"]["error"]
+
+
+def test_a_silent_host_gets_a_shorter_leash():
+    assert probe._ssh_timeout({"addr": "10.0.0.1"}) == probe.SSH_TIMEOUT
+    assert probe._ssh_timeout({"addr": "10.0.0.1", "probe_timeout": 10}) == 10
+
+
 def test_routeros_basic_facts():
     data = _routeros(ROUTEROS_OUTPUT)
     assert data["os_name"] == "RouterOS 7.23.2 (stable)"

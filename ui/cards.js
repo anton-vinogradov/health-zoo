@@ -718,8 +718,14 @@ function render() {
       (version.behind ? ', отстала на ' + version.behind +
         plural(version.behind, ' коммит', ' коммита', ' коммитов') : '')
     : '';
+  /* Where the cycle went, not just how long it took: "73 с" is a number
+     nobody can act on, "хосты 41 с" points straight at the machine that is not
+     answering. */
+  var spent = state.timings || {};
+  var breakdown = Object.keys(spent).map(function (k) { return k + ' ' + spent[k] + ' с'; });
   document.getElementById('foot-note').textContent =
-    'опрос занял ' + ((state.duration_ms || 0) / 1000).toFixed(1) + ' с · ' +
+    'опрос занял ' + ((state.duration_ms || 0) / 1000).toFixed(1) + ' с' +
+    (breakdown.length ? ' (' + breakdown.join(', ') + ')' : '') + ' · ' +
     'автообновление каждые ' + Math.round((state.poll_interval || 180) / 60) + ' мин' +
     build;
 }
