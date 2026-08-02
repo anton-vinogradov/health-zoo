@@ -338,11 +338,21 @@ common_egress() {
         # The key names the setting, not the destination. "tgProxy" told the
         # reader nothing except that somebody had once typed it — where that
         # traffic actually goes is the whole question this view exists for.
-        goes=""
-        case $keyname in
-          *[tT][gG]*|*[tT]elegram*) goes="api.telegram.org" ;;
-        esac
-        row "@outbound	$who	$goes	$target	$conf: $keyname"
+        # The code that reads the key usually builds the request a few lines
+        # later, and that URL answers both "where" and "what for": one service
+        # here proxies its sending through another and polls for replies
+        # itself, which looked like a duplicate until the endpoint said
+        # otherwise.
+        hint=$(grep -rh -A 8 "[\"']${keyname}[\"']" "$(dirname "$conf")"/*.py 2>/dev/null |
+               grep -oE 'https://[a-zA-Z0-9._-]+(/[a-zA-Z0-9{}._-]*)*' | head -1)
+        goes=$(printf '%s' "$hint" | sed 's|https://||; s|/.*||')
+        what=$(printf '%s' "$hint" | sed 's|.*/||; s|?.*||')
+        if [ -z "$goes" ]; then
+          case $keyname in
+            *[tT][gG]*|*[tT]elegram*) goes="api.telegram.org" ;;
+          esac
+        fi
+        row "@outbound	$who	$goes	$target	$conf: $keyname${what:+ → $what}"
       done
   done
 
