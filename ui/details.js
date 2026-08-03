@@ -153,6 +153,7 @@ function showHost(host) {
       .filter(function (k) { return money.balance[k]; })
       .map(function (k) { return k + ': ' + money.balance[k]; }).join(', ') || '0');
   }
+  if (money.note) fact('как посчитано', money.note);
   if (money.error) fact('биллинг', money.error);
   if (host.paid_until) fact('оплачен до', host.paid_until);
   if (host.note) fact('заметка', host.note);

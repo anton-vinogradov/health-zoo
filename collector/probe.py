@@ -1752,18 +1752,28 @@ def reverse_name(addr: str) -> str:
     hit = _PTR_CACHE.get(addr)
     if hit and now - hit[1] < _PTR_TTL:
         return hit[0]
+    # Resolved in a subprocess rather than with socket.gethostbyaddr, which
+    # has no timeout of its own: bounding it meant socket.setdefaulttimeout,
+    # and that is process-wide. This runs inside the parallel probe, so for the
+    # three seconds one host was waiting for a PTR record every other thread's
+    # network call inherited a three-second deadline — a slow web probe or an
+    # API call in another thread would fail for no reason of its own, in a way
+    # that never reproduces on its own.
     name = ""
     try:
-        socket.setdefaulttimeout(3)
-        candidate = socket.gethostbyaddr(addr)[0].rstrip(".")
+        answer = subprocess.run(["getent", "hosts", addr], capture_output=True,
+                                text=True, timeout=3)
+        fields = answer.stdout.split()
+        candidate = fields[1].rstrip(".") if len(fields) > 1 else ""
         # Trust it only if it resolves back to the same address; a stale or
         # hostile PTR should not redirect a link somewhere else.
-        if candidate and addr in socket.gethostbyname_ex(candidate)[2]:
-            name = candidate
-    except (OSError, socket.herror, socket.gaierror):
+        if candidate:
+            back = subprocess.run(["getent", "ahostsv4", candidate],
+                                  capture_output=True, text=True, timeout=3)
+            if addr in {line.split()[0] for line in back.stdout.splitlines() if line}:
+                name = candidate
+    except (OSError, subprocess.SubprocessError):
         name = ""
-    finally:
-        socket.setdefaulttimeout(None)
     _PTR_CACHE[addr] = (name, now)
     return name
 
@@ -2664,15 +2674,78 @@ def poll_billing(cfg: dict, results: list[dict]) -> None:
             host["billing"] = {"error": "токен не задан: "
                                         f"{secrets.describe(billing, 'token')}"}
             continue
-        if billing.get("provider") != "vdsina":
-            host["billing"] = {"error": f"провайдер {billing.get('provider')} "
-                                        "не поддерживается"}
-            continue
+        provider = billing.get("provider")
         try:
-            host["billing"] = _vdsina_balance(
-                token, billing.get("api") or "https://userapi.vdsina.com/v1")
+            if provider == "vdsina":
+                host["billing"] = _vdsina_balance(
+                    token, billing.get("api") or "https://userapi.vdsina.com/v1")
+            elif provider == "upcloud":
+                host["billing"] = _upcloud_balance(
+                    token, billing.get("api") or "https://api.upcloud.com/1.3")
+            else:
+                host["billing"] = {"error": f"провайдер {provider} не поддерживается"}
         except Exception as exc:
             host["billing"] = {"error": f"биллинг не ответил: {exc}"}
+
+
+def _upcloud_burn(servers: list[dict], prices: dict) -> float:
+    """Credits per hour for everything currently running.
+
+    A stopped server keeps its storage and is not free, but its plan is not
+    charged, and storage is billed per gigabyte from a different part of the
+    price list. Counting the plans of what is running is the honest floor: the
+    real bill is a little higher, never lower, so a forecast built on it errs
+    towards warning early.
+    """
+    hourly = 0.0
+    for server in servers:
+        if (server.get("state") or "") != "started":
+            continue
+        zone = prices.get(server.get("zone") or "", {})
+        hourly += float(zone.get(server.get("plan") or "", 0.0))
+    return hourly
+
+
+def _upcloud_balance(token: str, base: str) -> dict:
+    """Ask UpCloud how long the credit lasts.
+
+    Unlike vdsina, UpCloud does not compute a forecast — it publishes a balance
+    and a price list, and the quotient is left to the reader. So it is computed
+    here, from the provider's own prices for the plans actually running, rather
+    than from a rate somebody would have to remember to update.
+    """
+    def ask(path: str):
+        request = urllib.request.Request(
+            f"{base.rstrip('/')}/{path}",
+            headers={"Authorization": f"Bearer {token}",
+                     "Accept": "application/json"})
+        with urllib.request.urlopen(request, timeout=25) as response:
+            return json.load(response)
+
+    credits = float((ask("account").get("account") or {}).get("credits") or 0)
+    servers = (ask("server").get("servers") or {}).get("server") or []
+    prices: dict = {}
+    for zone in (ask("price").get("prices") or {}).get("zone") or []:
+        plans = {}
+        for key, value in zone.items():
+            if key.startswith("server_plan_") and isinstance(value, dict):
+                plans[key[len("server_plan_"):]] = value.get("price") or 0
+        prices[zone.get("name") or ""] = plans
+
+    hourly = _upcloud_burn(servers, prices)
+    running = sum(1 for s in servers if (s.get("state") or "") == "started")
+    out: dict = {"balance": {"кредиты": round(credits, 2)}}
+    if hourly <= 0:
+        out["note"] = (f"серверов запущено {running} — расход посчитать не по чему"
+                       if running else "запущенных серверов нет, расхода нет")
+        return out
+    daily = hourly * 24
+    days = credits / daily
+    out["days_left"] = round(days, 1)
+    out["forecast"] = time.strftime("%Y-%m-%d", time.localtime(time.time() + days * 86400))
+    out["note"] = (f"расчёт по прайсу провайдера: {running} сервер(ов), "
+                   f"{daily:.1f} кредита в сутки; хранилище и трафик сверх этого")
+    return out
 
 
 def _vdsina_balance(token: str, base: str) -> dict:

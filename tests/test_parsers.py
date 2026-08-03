@@ -218,6 +218,24 @@ def test_a_silent_host_gets_a_shorter_leash():
     assert probe._ssh_timeout({"addr": "10.0.0.1", "probe_timeout": 10}) == 10
 
 
+UPCLOUD_PRICES = {"fi-hel2": {"STARTER-1xCPU-1GB": 0.5208,
+                                "STARTER-2xCPU-4GB": 2.0833}}
+
+
+def test_upcloud_counts_only_what_is_running():
+    servers = [{"state": "started", "plan": "STARTER-1xCPU-1GB", "zone": "fi-hel2"},
+               {"state": "started", "plan": "STARTER-1xCPU-1GB", "zone": "fi-hel2"},
+               {"state": "stopped", "plan": "STARTER-2xCPU-4GB", "zone": "fi-hel2"}]
+    assert round(probe._upcloud_burn(servers, UPCLOUD_PRICES), 4) == 1.0416
+
+
+def test_upcloud_ignores_a_plan_it_has_no_price_for():
+    """An unknown plan must cost nothing rather than crash the whole poll."""
+    servers = [{"state": "started", "plan": "GPU-WHATEVER", "zone": "fi-hel2"},
+               {"state": "started", "plan": "STARTER-1xCPU-1GB", "zone": "nl-ams1"}]
+    assert probe._upcloud_burn(servers, UPCLOUD_PRICES) == 0.0
+
+
 def test_routeros_basic_facts():
     data = _routeros(ROUTEROS_OUTPUT)
     assert data["os_name"] == "RouterOS 7.23.2 (stable)"
