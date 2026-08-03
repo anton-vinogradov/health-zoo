@@ -159,18 +159,26 @@ function showHost(host) {
   if (host.note) fact('заметка', host.note);
   body.appendChild(section('Общее', h('dl', { class: 'kv' }, facts)));
 
+  /* Renaming works on a host that is not answering too — the name is for the
+     person reading the card, and a machine nobody can reach is exactly the one
+     whose card you end up staring at. */
+  var actions = [h('button', {
+    class: 'btn btn-sm', text: 'переименовать',
+    onclick: function () { renameHost(host); }
+  })];
   if (host.reachable) {
-    body.appendChild(section('Действия', h('div', { class: 'card-foot' }, [
-      host.updatable && host.agent === 'linux' ? h('button', {
+    if (host.updatable && host.agent === 'linux') {
+      actions.push(h('button', {
         class: 'btn btn-sm btn-warn', text: 'обновить пакеты',
         onclick: function () { startUpdate([host.id]); }
-      }) : null,
-      h('button', {
-        class: 'btn btn-sm', text: 'перезагрузить хост',
-        onclick: function () { rebootHost(host); }
-      })
-    ])));
+      }));
+    }
+    actions.push(h('button', {
+      class: 'btn btn-sm', text: 'перезагрузить хост',
+      onclick: function () { rebootHost(host); }
+    }));
   }
+  body.appendChild(section('Действия', h('div', { class: 'card-foot' }, actions)));
 
   var issues = hostIssues(host).filter(function (i) { return i.level !== 'ok'; });
   if (issues.length) {

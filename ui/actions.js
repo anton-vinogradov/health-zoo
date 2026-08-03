@@ -58,6 +58,26 @@ function ackIssue(host, issue, row) {
   }).catch(function (e) { load(); alert('Ошибка запроса: ' + e); });
 }
 
+/* The name a provider gives a machine — "ubuntu-1cpu-1gb-fi-hel2" — says
+   nothing about what it is for, and it is the first thing to go wrong on the
+   day the host is added. Editing the fleet file over ssh to fix that is out of
+   proportion; this lives with the thresholds instead, layered over the config,
+   so an empty answer gives the original name back. */
+function renameHost(host) {
+  var name = prompt('Как называть этот хост?\n(пусто — вернуть имя из конфига)',
+                    host.name || '');
+  if (name === null) return;
+  fetch('/api/rename', {
+    method: 'POST', headers: actionHeaders(),
+    body: JSON.stringify({ host: host.id, name: name })
+  }).then(function (r) { return r.json(); }).then(function (res) {
+    if (res.error) { if (!actionFailed(res)) alert('Не вышло: ' + res.error); return; }
+    document.getElementById('modal-title').textContent =
+      (res.name || host.id) + ' · ' + host.addr;
+    load();
+  }).catch(function (e) { alert('Ошибка запроса: ' + e); });
+}
+
 function unack(id) {
   fetch('/api/ack/remove', {
     method: 'POST', headers: actionHeaders(), body: JSON.stringify({ id: id })

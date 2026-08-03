@@ -208,6 +208,29 @@ def test_another_day_of_silence_speaks_again():
     assert "больше 2 сут" in text(two_days)
 
 
+def test_a_host_can_be_renamed_and_the_rename_undone(tmp_path):
+    """The provider's name is not the operator's name, and neither is final."""
+    import settings as settings_mod
+    store = settings_mod.Settings(str(tmp_path / "settings.json"))
+    cfg = {"hosts": [{"id": "h1", "name": "ubuntu-1cpu-1gb-fi-hel2"}]}
+    store.apply_to(cfg)
+
+    store.set_name("h1", "  amnezia  ")
+    store.apply_to(cfg)
+    assert cfg["hosts"][0]["name"] == "amnezia"
+
+    store.set_name("h1", "")
+    store.apply_to(cfg)
+    assert cfg["hosts"][0]["name"] == "ubuntu-1cpu-1gb-fi-hel2"
+
+
+def test_a_name_cannot_break_a_card():
+    import settings as settings_mod
+    store = settings_mod.Settings("/dev/null")
+    assert store.set_name("h1", "две\nстроки\tи\tтабы") == "две строки и табы"
+    assert len(store.set_name("h1", "я" * 200)) == 40
+
+
 def test_processor_thresholds():
     host = host_named(fleet(), lambda h: h.get("cpu_load_pct") is not None)
     for busy, expected in ((79, None), (80, "warn"), (90, "bad")):

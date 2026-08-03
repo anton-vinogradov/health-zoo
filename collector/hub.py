@@ -1329,6 +1329,34 @@ class Handler(BaseHTTPRequestHandler):
             self._json({"ok": ok, "message": message}, 200 if ok else 400)
             return
 
+        if path == "/api/rename":
+            req = self._request()
+            if req is None:
+                self._json({"error": "bad json"}, 400)
+                return
+            host_id = str(req.get("host") or "")
+            known = {str(h.get("id")) for h in self.fleet.hosts()}
+            if host_id not in known:
+                self._json({"error": "нет такого хоста"}, 404)
+                return
+            try:
+                name = self.fleet.settings.set_name(host_id, req.get("name") or "")
+            except ValueError as exc:
+                self._json({"error": str(exc)}, 400)
+                return
+            # Applied to the live config and to the snapshot at once: a name
+            # changed in the browser has to be the name on the card now, not
+            # after the next cycle rebuilds it from the config.
+            self.fleet.settings.apply_to(self.fleet.cfg)
+            with self.fleet.lock:
+                for host in self.fleet.snapshot.get("hosts", []):
+                    if str(host.get("id")) == host_id:
+                        host["name"] = next(
+                            (h.get("name") for h in self.fleet.hosts()
+                             if str(h.get("id")) == host_id), host.get("name"))
+            self._json({"ok": True, "name": name})
+            return
+
         if path in ("/api/ack", "/api/ack/remove"):
             # Reading a finding is not the same as accepting it: no reason, no
             # expiry, no entry in a list to review. It holds only while the

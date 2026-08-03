@@ -336,8 +336,37 @@ class Settings:
 
     # ---------- applying ----------
 
+    # ---------- names ----------
+
+    def names(self) -> dict:
+        return dict(self.data.get("names") or {})
+
+    def set_name(self, host_id: str, name: str) -> str:
+        """Rename a host, or clear the rename and fall back to the config.
+
+        A name is the one thing about a host that is purely for the person
+        reading it, and the one most likely to be wrong on the day the host is
+        added — a provider's "ubuntu-1cpu-1gb-fi-hel2" says nothing about what
+        the machine is for. Editing the fleet file over ssh to fix that is out
+        of proportion to the change, so it lives here with the thresholds.
+        """
+        host_id = str(host_id).strip()
+        if not host_id:
+            raise ValueError("не сказано, какой хост переименовать")
+        # One line, no control characters, and short enough to fit a card.
+        name = " ".join(str(name).split())[:40]
+        with self.lock:
+            names = dict(self.data.get("names") or {})
+            if name:
+                names[host_id] = name
+            else:
+                names.pop(host_id, None)
+            self.data["names"] = names
+            self._save()
+        return name
+
     def apply_to(self, cfg: dict) -> None:
-        """Layer the stored thresholds over the config, in place.
+        """Layer the stored thresholds and names over the config, in place.
 
         The config layer is remembered on the first call, so clearing a value
         in the UI falls back to the file rather than to whatever this function
@@ -348,3 +377,12 @@ class Settings:
         merged = dict(self._base)
         merged.update(self.thresholds())
         cfg["thresholds"] = merged
+
+        if not hasattr(self, "_base_names"):
+            self._base_names = {str(h.get("id")): h.get("name")
+                                for h in cfg.get("hosts") or []}
+        chosen = self.names()
+        for host in cfg.get("hosts") or []:
+            host_id = str(host.get("id"))
+            renamed = chosen.get(host_id)
+            host["name"] = renamed or self._base_names.get(host_id) or host.get("name")
