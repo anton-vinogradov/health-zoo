@@ -655,6 +655,23 @@ ROUTEROS_CMD = (
 
 
 
+def due_for_poll(host: dict, previous: dict | None, now: float) -> bool:
+    """Is it this host's turn yet?
+
+    Everything here is polled on one cadence, which suits a server and is wrong
+    for hardware that answers grudgingly. A Meshtastic node is a microcontroller
+    with a web server bolted on: it serves one request at a time, and being
+    asked every three minutes, all day, is a load it never signed up for —
+    while what it reports (uptime, air time, free heap) is of no interest at
+    that resolution anyway. A host may therefore name its own interval; without
+    one, nothing changes.
+    """
+    every = int(host.get("poll_every") or 0)
+    if every <= 0 or not previous:
+        return True
+    return now - float(previous.get("polled_at") or 0) >= every
+
+
 def _ssh_timeout(host: dict) -> int:
     """How long to wait for this host before giving up on it.
 
@@ -1476,6 +1493,9 @@ def probe_host(host: dict, key: str | None) -> dict:
         "subnet": host.get("subnet", ""),
         "note": host.get("note", ""),
         "updatable": bool(host.get("updatable")),
+        # Carried into the result so the card can say why its numbers are an
+        # hour old instead of looking stale for no stated reason.
+        "poll_every": int(host.get("poll_every") or 0) or None,
         # Declared in the config: see issues.py for why it cannot be probed.
         "power_recovery": host.get("power_recovery"),
         "backup_exempt": bool(host.get("backup_exempt")),

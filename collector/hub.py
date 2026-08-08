@@ -155,10 +155,27 @@ class Fleet:
                 host["probe_timeout"] = (
                     10 if self.misses.get(str(host.get("id")), 0) >= 2 else None)
 
+            # Hosts that asked to be left alone between polls keep the reading
+            # they already gave. They stay on the dashboard with the age of that
+            # reading rather than disappearing from it.
+            seen = {h.get("id"): h for h in previous}
+            now = time.time()
+            due, carried = [], []
+            for host in self.hosts():
+                was = seen.get(host.get("id"))
+                if probe.due_for_poll(host, was, now):
+                    due.append(host)
+                elif was:
+                    carried.append(dict(was, stale=True))
+            self.progress["total"] = len(due)
+
             hosts = probe.probe_all(
-                self.hosts(), self.cfg.get("ssh_key"),
+                due, self.cfg.get("ssh_key"),
                 deadline=self.cfg.get("poll_deadline", 60),
                 on_progress=lambda done: self.progress.update(done=done))
+            for host in hosts:
+                host["polled_at"] = now
+            hosts += carried
             for host in hosts:
                 host_id = str(host.get("id"))
                 if host.get("reachable"):

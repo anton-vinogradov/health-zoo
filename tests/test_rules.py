@@ -231,6 +231,19 @@ def test_a_name_cannot_break_a_card():
     assert len(store.set_name("h1", "я" * 200)) == 40
 
 
+def test_a_host_without_an_interval_is_always_due():
+    assert probe.due_for_poll({"id": "h"}, {"polled_at": 1000.0}, 1001.0)
+
+
+def test_a_fragile_host_is_left_alone_between_its_own_polls():
+    """A microcontroller with a web server is not a server: it sets its pace."""
+    host = {"id": "mesh", "poll_every": 3600}
+    assert not probe.due_for_poll(host, {"polled_at": 1000.0}, 1000.0 + 600)
+    assert probe.due_for_poll(host, {"polled_at": 1000.0}, 1000.0 + 3600)
+    # Never polled at all: ask now, whatever the interval says.
+    assert probe.due_for_poll(host, None, 1000.0)
+
+
 def test_processor_thresholds():
     host = host_named(fleet(), lambda h: h.get("cpu_load_pct") is not None)
     for busy, expected in ((79, None), (80, "warn"), (90, "bad")):

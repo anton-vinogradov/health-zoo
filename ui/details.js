@@ -61,7 +61,10 @@ function showHost(host) {
   fact('память', host.mem_total ? bytes(host.mem_used) + ' из ' + bytes(host.mem_total) + ' (' + host.mem_pct + '%)' : null);
   fact('swap', host.swap_total ? bytes(host.swap_used) + ' из ' + bytes(host.swap_total) + ' (' + host.swap_pct + '%)' : null);
   fact('ping', host.rtt_ms !== null && host.rtt_ms !== undefined ? host.rtt_ms + ' мс' : null);
-  fact('опрос', (host.probe_ms || 0) + ' мс');
+  fact('опрос', (host.probe_ms || 0) + ' мс' +
+       (host.poll_every ? ', раз в ' + Math.round(host.poll_every / 60) + ' мин — '
+        + 'это устройство просило спрашивать реже' : ''));
+  if (host.stale) fact('данные', 'с прошлого опроса, ' + ago(host.polled_at));
   if (host.agent === 'meshtastic') {
     fact('эфир', host.channel_utilization + '% (tx ' + host.tx_utilization + '%)');
     fact('перезагрузок', host.reboot_counter);

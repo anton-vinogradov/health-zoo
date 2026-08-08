@@ -136,6 +136,11 @@ class History:
         now = int(time.time())
         rows = []
         for host in hosts:
+            # A host carried over from the previous cycle has nothing new to
+            # say; writing its old numbers again would draw a flat line where
+            # the truth is "nobody asked".
+            if host.get("stale"):
+                continue
             for metric, value in extract(host).items():
                 rows.append((now, host["id"], metric, value))
         with self.lock:
