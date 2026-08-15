@@ -32,6 +32,11 @@ class Alerts:
         self.enabled = bool(self.cfg.get("enabled") and self.cfg.get("chats"))
         self.binary = self.cfg.get("telegram_bin", "/opt/telegram.sh-repo/telegram")
         self.spool = self.cfg.get("spool", "")
+        # A way out that does not depend on the way out being monitored. The
+        # normal path leaves through a tunnel whose far end is one of the very
+        # VPSes this dashboard watches: when that one died, the alerts about it
+        # died with it, which is the one failure a watchman may not have.
+        self.fallback = self.cfg.get("fallback_via") or {}
         # Only alert on real breakage by default; warnings are for the screen.
         self.min_level = self.cfg.get("min_level", "bad")
         self.startup_summary = bool(self.cfg.get("startup_summary", True))
@@ -330,12 +335,19 @@ class Alerts:
         """
         if not (self.enabled and self.spool and self._queued()):
             return
+        # Replaying goes out the usual way, so while that way is down every
+        # attempt costs the poll a minute of hanging on a dead proxy. Once every
+        # ten minutes is plenty for messages that are already safe on disk.
+        now = time.time()
+        if now - getattr(self, "_last_drain", 0) < 600:
+            return
+        self._last_drain = now
         token = secrets.load(self.cfg, "token") or os.environ.get("HEALTH_ZOO_TG_TOKEN", "")
         if not token or not os.path.exists(self.binary):
             return
         try:
             done = subprocess.run([self.binary, "-t", token, "-d", self.spool],
-                                  capture_output=True, timeout=180, text=True)
+                                  capture_output=True, timeout=45, text=True)
             left = self._queued()
             print(f"health-zoo: разбор очереди уведомлений, осталось {left}", flush=True)
             if done.returncode == 0 and not left:
@@ -363,7 +375,11 @@ class Alerts:
             self._note_delivery(False, f"нет {self.binary}")
             return False
 
-        cmd = [self.binary, "-t", token, "-a", "3", "-p"]
+        # One attempt, not three. telegram.sh gives each attempt a sixty-second
+        # curl timeout, so three of them outlive any sane deadline: the process
+        # was being killed before it could even park the message in its queue,
+        # which is how a message managed to be neither sent nor saved.
+        cmd = [self.binary, "-t", token, "-a", "1", "-p"]
         for chat in chats:
             cmd += ["-c", str(chat)]
         if self.spool:
@@ -377,14 +393,18 @@ class Alerts:
 
         before = self._queued()
         try:
-            done = subprocess.run(cmd, capture_output=True, timeout=120, text=True)
+            done = subprocess.run(cmd, capture_output=True, timeout=75, text=True)
         except (subprocess.SubprocessError, OSError) as exc:
+            if self._send_elsewhere(token, text):
+                return True
             self._note_delivery(False, str(exc))
             return False
         # Queued counts as "not delivered": the message is safe on disk, but
         # nobody has read it, and the problem must stay unannounced until they
         # have.
         if done.returncode != 0 or self._queued() > before:
+            if self._send_elsewhere(token, text):
+                return True
             tail = (done.stderr or done.stdout or "").strip().splitlines()
             self._note_delivery(False, tail[-1][:120] if tail else
                                 f"telegram.sh вернул {done.returncode}, "
@@ -392,6 +412,42 @@ class Alerts:
             return False
         self._note_delivery(True)
         return True
+
+    def _send_elsewhere(self, token: str, text: str) -> bool:
+        """Deliver from a machine that still has a way to Telegram.
+
+        The request is handed to curl on standard input rather than as
+        arguments, so the token never appears in a process list or a log on the
+        far side — the same trick the mesh hub uses for the same reason.
+        """
+        where = self.fallback.get("host")
+        if not where:
+            return False
+        request = "\n".join([
+            f'url = "https://api.telegram.org/bot{token}/sendMessage"',
+            *[f'data-urlencode = "chat_id={chat}"' for chat in (self.cfg.get("chats") or [])[:1]],
+            f'data-urlencode = "text={text}"',
+            'silent',
+        ]) + "\n"
+        cmd = ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10",
+               "-o", "StrictHostKeyChecking=accept-new"]
+        if self.fallback.get("key"):
+            cmd += ["-i", os.path.expanduser(self.fallback["key"])]
+        cmd += [where, "curl -s -m 20 -K - -o /dev/null -w '%{http_code}'"]
+        try:
+            done = subprocess.run(cmd, input=request, capture_output=True,
+                                  timeout=45, text=True)
+        except (subprocess.SubprocessError, OSError) as exc:
+            print(f"health-zoo: запасной путь тоже не сработал: {exc}", flush=True)
+            return False
+        if done.returncode == 0 and done.stdout.strip().endswith("200"):
+            print(f"health-zoo: уведомление ушло запасным путём через {where}",
+                  flush=True)
+            self._note_delivery(True)
+            return True
+        print(f"health-zoo: запасной путь отказал: {done.stdout.strip()[:80]} "
+              f"{(done.stderr or '').strip()[:80]}", flush=True)
+        return False
 
     def notify(self, text: str) -> None:
         """Send one line the rules did not produce — an action being taken."""

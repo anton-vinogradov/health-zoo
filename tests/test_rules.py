@@ -285,6 +285,30 @@ def test_it_is_announced_once_the_message_gets_out(tmp_path):
     assert post.delivery["ok"] is True
 
 
+def test_the_fallback_path_counts_as_delivered(tmp_path):
+    """When the usual way out is down, a message that leaves another way is out."""
+    import os, stat
+    import alerts as alerts_mod
+    broken = tmp_path / "telegram"
+    broken.write_text("#!/bin/sh\nexit 1\n", encoding="utf-8")
+    broken.chmod(broken.stat().st_mode | stat.S_IEXEC)
+    # Stands in for ssh: prints what curl would have printed on success.
+    fake_ssh = tmp_path / "ssh"
+    fake_ssh.write_text("#!/bin/sh\ncat > /dev/null\nprintf 200\n", encoding="utf-8")
+    fake_ssh.chmod(fake_ssh.stat().st_mode | stat.S_IEXEC)
+    os.environ["HEALTH_ZOO_TG_TOKEN"] = "test-token"
+    os.environ["PATH"] = str(tmp_path) + os.pathsep + os.environ["PATH"]
+
+    post = alerts_mod.Alerts({"telegram": {
+        "enabled": True, "chats": ["1"], "telegram_bin": str(broken),
+        "flap_cycles": 1, "startup_summary": False, "digest_hour": -1,
+        "state_file": str(tmp_path / "state.json"), "spool": "",
+        "fallback_via": {"host": "somewhere"}}})
+    post.process([broken_host()])
+    assert post.active, "сообщение ушло запасным путём — проблема должна считаться сообщённой"
+    assert post.delivery["ok"] is True
+
+
 def test_processor_thresholds():
     host = host_named(fleet(), lambda h: h.get("cpu_load_pct") is not None)
     for busy, expected in ((79, None), (80, "warn"), (90, "bad")):
