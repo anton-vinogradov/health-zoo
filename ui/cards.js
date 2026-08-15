@@ -588,6 +588,15 @@ function renderAlert(hosts) {
   });
 
   box.innerHTML = '';
+  /* The one failure a dashboard cannot report through its own alerts, so it
+     says it here — above everything else, because until it is fixed nothing on
+     this page reaches anybody. */
+  var post = state.alerting || {};
+  if (post.ok === false) {
+    box.appendChild(h('div', { class: 'alert-title', text:
+      '✉ уведомления не доставляются' + (post.error ? ': ' + post.error : '') +
+      (post.queued ? ' · в очереди ' + post.queued : '') }));
+  }
   box.appendChild(h('div', { class: 'alert-title', text: title }));
   if (items.length) {
     // Collapsed by default on narrow screens (CSS decides): the banner must

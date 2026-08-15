@@ -57,6 +57,11 @@ class Alerts:
         self.seeded = False
         self.last_startup = 0
         self.last_digest = 0
+        # Whether the last delivery actually left the building. A dashboard
+        # that cannot notify has to say so on its own screen — otherwise its
+        # silence is indistinguishable from "nothing is wrong", which is the
+        # one lie it must never tell.
+        self.delivery: dict = {"ok": True, "error": "", "since": 0, "queued": 0}
         self._load_state()
 
     # ---------- persistence ----------
@@ -148,6 +153,10 @@ class Alerts:
 
             # Debounce in both directions: count how many polls in a row a
             # problem has been present (or absent) before acting on it.
+            # Candidates only. Nothing is recorded as announced until the
+            # message is out of the door: a problem marked reported and then
+            # lost to a failed send is never mentioned again, which is exactly
+            # how a server went down in silence.
             appeared, cleared = [], []
             for key, value in current.items():
                 if key in previous:
@@ -155,9 +164,7 @@ class Alerts:
                     continue
                 self.pending[key] = self.pending.get(key, 0) + 1
                 if self.pending[key] >= self.flap_cycles:
-                    appeared.append(value)
-                    self.active[key] = value
-                    self.pending.pop(key, None)
+                    appeared.append((key, value))
             for key in list(self.pending):
                 if key not in current:
                     self.pending.pop(key, None)
@@ -167,9 +174,7 @@ class Alerts:
                     continue
                 self.clearing[key] = self.clearing.get(key, 0) + 1
                 if self.clearing[key] >= self.flap_cycles:
-                    cleared.append(value)
-                    self.active.pop(key, None)
-                    self.clearing.pop(key, None)
+                    cleared.append((key, value))
 
             first_run = not self.seeded
             self.seeded = True
@@ -187,10 +192,24 @@ class Alerts:
         if first_run and self.startup_summary and startup_due:
             self._send(self._startup_text(hosts, current))
 
-        if appeared:
-            self._send(self._change_text("Появилось", appeared, "🔴"))
-        if cleared:
-            self._send(self._change_text("Ушло", cleared, "🟢"))
+        # Anything parked by an earlier failure goes first, so the order the
+        # operator reads matches the order things happened.
+        self.drain()
+
+        if appeared and self._send(self._change_text(
+                "Появилось", [v for _, v in appeared], "🔴")):
+            with self.lock:
+                for key, value in appeared:
+                    self.active[key] = value
+                    self.pending.pop(key, None)
+                self._save_state()
+        if cleared and self._send(self._change_text(
+                "Ушло", [v for _, v in cleared], "🟢")):
+            with self.lock:
+                for key, _ in cleared:
+                    self.active.pop(key, None)
+                    self.clearing.pop(key, None)
+                self._save_state()
         if digest_due:
             text = self._digest_text(hosts)
             if text:
@@ -279,13 +298,70 @@ class Alerts:
 
     # ---------- delivery ----------
 
-    def _send(self, text: str) -> None:
+    def _note_delivery(self, ok: bool, error: str = "") -> None:
+        if ok:
+            self.delivery = {"ok": True, "error": "", "since": 0,
+                             "queued": self._queued()}
+            return
+        if self.delivery.get("ok", True):
+            self.delivery = {"ok": False, "error": error,
+                             "since": int(time.time()), "queued": self._queued()}
+        else:
+            self.delivery["error"] = error
+            self.delivery["queued"] = self._queued()
+        print(f"health-zoo: уведомление не ушло: {error}", flush=True)
+
+    def _queued(self) -> int:
+        """Messages telegram.sh parked because it could not deliver them."""
+        if not self.spool:
+            return 0
+        try:
+            return len([n for n in os.listdir(self.spool) if not n.startswith(".")])
+        except OSError:
+            return 0
+
+    def drain(self) -> None:
+        """Replay whatever telegram.sh parked while the way out was down.
+
+        Passing -q gives store-and-forward, but the queue it writes is only
+        replayed by -d, and nothing was calling it: a message that failed once
+        stayed on disk for ever while the dashboard went on believing it had
+        reported the problem. This is that missing half.
+        """
+        if not (self.enabled and self.spool and self._queued()):
+            return
+        token = secrets.load(self.cfg, "token") or os.environ.get("HEALTH_ZOO_TG_TOKEN", "")
+        if not token or not os.path.exists(self.binary):
+            return
+        try:
+            done = subprocess.run([self.binary, "-t", token, "-d", self.spool],
+                                  capture_output=True, timeout=180, text=True)
+            left = self._queued()
+            print(f"health-zoo: разбор очереди уведомлений, осталось {left}", flush=True)
+            if done.returncode == 0 and not left:
+                self._note_delivery(True)
+        except (subprocess.SubprocessError, OSError) as exc:
+            self._note_delivery(False, f"очередь не разобралась: {exc}")
+
+    def _send(self, text: str) -> bool:
+        """True only if the message actually left. The caller acts on that.
+
+        It used to return nothing and swallow every error, so a notification
+        lost to a five-second proxy hiccup was indistinguishable from one
+        delivered — and since the caller had already recorded the problem as
+        announced, it was never mentioned again. That is how a server can go
+        down without anybody hearing about it.
+        """
         token = secrets.load(self.cfg, "token") or os.environ.get("HEALTH_ZOO_TG_TOKEN", "")
         chats = self.cfg.get("chats") or []
-        if not token or not chats or not text:
-            return
+        if not text:
+            return True
+        if not token or not chats:
+            self._note_delivery(False, "не задан токен или чат")
+            return False
         if not os.path.exists(self.binary):
-            return
+            self._note_delivery(False, f"нет {self.binary}")
+            return False
 
         cmd = [self.binary, "-t", token, "-a", "3", "-p"]
         for chat in chats:
@@ -299,10 +375,23 @@ class Alerts:
         # unit names and file names are exactly the strings that break it.
         cmd += [text]
 
+        before = self._queued()
         try:
-            subprocess.run(cmd, capture_output=True, timeout=120, text=True)
-        except (subprocess.SubprocessError, OSError):
-            pass  # a failed notification must never disturb polling
+            done = subprocess.run(cmd, capture_output=True, timeout=120, text=True)
+        except (subprocess.SubprocessError, OSError) as exc:
+            self._note_delivery(False, str(exc))
+            return False
+        # Queued counts as "not delivered": the message is safe on disk, but
+        # nobody has read it, and the problem must stay unannounced until they
+        # have.
+        if done.returncode != 0 or self._queued() > before:
+            tail = (done.stderr or done.stdout or "").strip().splitlines()
+            self._note_delivery(False, tail[-1][:120] if tail else
+                                f"telegram.sh вернул {done.returncode}, "
+                                f"в очереди {self._queued()}")
+            return False
+        self._note_delivery(True)
+        return True
 
     def notify(self, text: str) -> None:
         """Send one line the rules did not produce — an action being taken."""

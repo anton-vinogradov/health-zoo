@@ -244,6 +244,47 @@ def test_a_fragile_host_is_left_alone_between_its_own_polls():
     assert probe.due_for_poll(host, None, 1000.0)
 
 
+def alerting(tmp_path, script_body, monkeypatch=None):
+    import os, stat
+    import alerts as alerts_mod
+    fake = tmp_path / "telegram"
+    fake.write_text(script_body, encoding="utf-8")
+    fake.chmod(fake.stat().st_mode | stat.S_IEXEC)
+    os.environ["HEALTH_ZOO_TG_TOKEN"] = "test-token"
+    return alerts_mod.Alerts({"telegram": {
+        "enabled": True, "chats": ["1"], "telegram_bin": str(fake),
+        "flap_cycles": 1, "startup_summary": False, "digest_hour": -1,
+        "state_file": str(tmp_path / "state.json"), "spool": ""}})
+
+
+def broken_host():
+    host = host_named(fleet(), lambda h: h.get("agent") == "linux")
+    host["reachable"] = False
+    host["error"] = "ssh: connection timed out"
+    host["issues"] = [{"level": "bad", "key": "down", "text": "не отвечает"}]
+    return host
+
+
+def test_a_problem_stays_unannounced_while_the_message_cannot_be_sent(tmp_path):
+    """The failure that let a server die in silence: reported, then not sent."""
+    post = alerting(tmp_path, "#!/bin/sh\nexit 1\n")
+    post.process([broken_host()])
+    assert not post.active, "проблема помечена сообщённой, хотя отправка провалилась"
+    assert post.delivery["ok"] is False
+
+
+def test_it_is_announced_once_the_message_gets_out(tmp_path):
+    post = alerting(tmp_path, "#!/bin/sh\nexit 1\n")
+    post.process([broken_host()])
+    post.binary = str(tmp_path / "ok")
+    ok = tmp_path / "ok"
+    ok.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    ok.chmod(0o755)
+    post.process([broken_host()])
+    assert post.active, "после успешной отправки проблема должна считаться сообщённой"
+    assert post.delivery["ok"] is True
+
+
 def test_processor_thresholds():
     host = host_named(fleet(), lambda h: h.get("cpu_load_pct") is not None)
     for busy, expected in ((79, None), (80, "warn"), (90, "bad")):

@@ -248,6 +248,10 @@ class Fleet:
             # a single-host refresh after an action would look like everything
             # else vanished.
             self.alerts.process(hosts)
+            # Whether the alerting itself is working. A watchman who cannot
+            # shout has to at least be visibly unable to shout.
+            with self.lock:
+                self.snapshot["alerting"] = dict(self.alerts.delivery)
             self.maybe_auto_update(hosts)
             self.maybe_auto_reboot(hosts)
         except Exception as exc:  # keep the loop alive whatever happens
