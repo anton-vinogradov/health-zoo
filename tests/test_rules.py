@@ -309,6 +309,16 @@ def test_the_fallback_path_counts_as_delivered(tmp_path):
     assert post.delivery["ok"] is True
 
 
+def test_a_multiline_alert_survives_the_fallback_format():
+    """A newline used to end the value and take the rest of the alert with it."""
+    import alerts as alerts_mod
+    text = 'заголовок:\n• первый хост\n• второй хост'
+    quoted = alerts_mod._curl_quote(text)
+    assert "\n" not in quoted, "перевод строки обрывает значение в конфиге curl"
+    assert quoted.count("\\n") == 2
+    assert alerts_mod._curl_quote('он сказал "да"') == 'он сказал \\"да\\"'
+
+
 def test_processor_thresholds():
     host = host_named(fleet(), lambda h: h.get("cpu_load_pct") is not None)
     for busy, expected in ((79, None), (80, "warn"), (90, "bad")):

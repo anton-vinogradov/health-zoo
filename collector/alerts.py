@@ -24,6 +24,20 @@ import secrets
 LEVEL_ICON = {"bad": "🔴", "warn": "🟡", "ok": "🟢"}
 
 
+def _curl_quote(value: str) -> str:
+    """Escape a value for a curl config file.
+
+    Values live on one line: a real newline inside one ends it, and everything
+    after is read as further directives and quietly dropped. That is how an
+    alert arrived as its own headline — "появилось (2):" and nothing else,
+    because the two hosts it was about were on the following lines.
+    """
+    return (value.replace("\\", "\\\\")
+                 .replace('"', '\\"')
+                 .replace("\n", "\\n")
+                 .replace("\r", ""))
+
+
 class Alerts:
     """Diffs consecutive snapshots and reports the changes."""
 
@@ -425,8 +439,9 @@ class Alerts:
             return False
         request = "\n".join([
             f'url = "https://api.telegram.org/bot{token}/sendMessage"',
-            *[f'data-urlencode = "chat_id={chat}"' for chat in (self.cfg.get("chats") or [])[:1]],
-            f'data-urlencode = "text={text}"',
+            *[f'data-urlencode = "chat_id={_curl_quote(str(chat))}"'
+              for chat in (self.cfg.get("chats") or [])[:1]],
+            f'data-urlencode = "text={_curl_quote(text)}"',
             'silent',
         ]) + "\n"
         cmd = ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10",
