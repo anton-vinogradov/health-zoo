@@ -650,7 +650,20 @@ ROUTEROS_CMD = (
     # who cannot.
     ':put "@@wifimac"; :do {:foreach r in=[/interface wifi registration-table find] '
     'do={:put [:tostr [/interface wifi registration-table get $r mac-address]]}} '
-    'on-error={}'
+    'on-error={}; '
+    # Which port each device is actually behind. The switch knows it from the
+    # frames it forwards, and nothing else in the house does: a cable is the
+    # one part of this network that no configuration file describes.
+    ':put "@@fdb"; :do {:foreach h in=[/interface bridge host find where !local] '
+    'do={:put ([:tostr [/interface bridge host get $h mac-address]]."|"'
+    '.[:tostr [/interface bridge host get $h interface]])}} on-error={}; '
+    # The same question for the clients that have no cable at all.
+    ':put "@@wifireg"; :do {:foreach r in=[/interface wifi registration-table find] '
+    'do={:put ([:tostr [/interface wifi registration-table get $r mac-address]]."|"'
+    '.[:tostr [/interface wifi registration-table get $r interface]]."|"'
+    '.[:tostr [/interface wifi registration-table get $r ssid]]."|"'
+    '.[:tostr [/interface wifi registration-table get $r signal]]."|"'
+    '.[:tostr [/interface wifi registration-table get $r band]])}} on-error={}'
 )
 
 
@@ -1103,6 +1116,23 @@ def probe_routeros(host: dict, key: str | None) -> dict:
                 if mac not in associated and mac not in leased]
     if knocking:
         data["knocking"] = knocking
+
+    behind = []
+    for cells in _routeros_rows(sections.get("fdb", [])):
+        if len(cells) >= 2 and cells[0]:
+            behind.append({"mac": cells[0].lower(), "port": cells[1]})
+    if behind:
+        data["behind"] = behind
+
+    wireless = []
+    for cells in _routeros_rows(sections.get("wifireg", [])):
+        cells += [""] * (5 - len(cells))
+        if not cells[0]:
+            continue
+        wireless.append({"mac": cells[0].lower(), "radio": cells[1], "ssid": cells[2],
+                         "signal": int(_num(cells[3]) or 0), "band": cells[4]})
+    if wireless:
+        data["wireless"] = wireless
 
     radios = []
     for cells in _routeros_rows(sections.get("wifi", [])):
@@ -2049,12 +2079,33 @@ def poll_unifi_controller(cfg: dict, results: list[dict]) -> None:
             if previous is None or sighting["signal"] > previous["signal"]:
                 site_wide[sighting["bssid"]] = sighting
 
+    # Who is actually associated to which access point. The counts alone say
+    # four clients on a radio; drawing the house needs their names.
+    joined: dict = {}
+    try:
+        stations = json.loads(opener.open(
+            f"{base}/api/s/{site}/stat/sta", timeout=20).read())
+        for client in stations.get("data", []):
+            joined.setdefault(client.get("ap_mac"), []).append({
+                "mac": (client.get("mac") or "").lower(),
+                "name": client.get("name") or client.get("hostname") or "",
+                "addr": client.get("ip") or "",
+                "ssid": client.get("essid") or "",
+                "band": "5" if (client.get("channel") or 0) > 14 else "2.4",
+                "signal": client.get("signal") or client.get("rssi") or 0,
+            })
+    except Exception:
+        pass  # the radios and their counts are still worth having
+
     by_addr = {h.get("addr"): h for h in results}
     for device in devices.get("data", []):
         host = by_addr.get(device.get("ip"))
         if not host:
             continue
         host["reachable"] = True
+        seated = joined.get(device.get("mac"))
+        if seated:
+            host["wireless"] = seated
         host["error"] = ""
         # The MAC is what the controller's command API addresses devices by.
         host["unifi_mac"] = device.get("mac", "")

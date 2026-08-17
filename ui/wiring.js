@@ -104,7 +104,7 @@ document.addEventListener('DOMContentLoaded', function () {
     document.querySelectorAll('.view-tabs .tab').forEach(function (tab) {
       tab.classList.toggle('active', tab.dataset.view === name);
     });
-    ['fleet', 'egress'].forEach(function (view) {
+    ['fleet', 'egress', 'topology'].forEach(function (view) {
       document.getElementById(view).classList.toggle('hidden', view !== name);
     });
     localStorage.setItem('hz-view', name);

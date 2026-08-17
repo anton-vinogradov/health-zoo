@@ -786,3 +786,11 @@ tr.check-na .check-name { color: var(--text-faint); }
   font-size: 10.5px;
   color: var(--text-faint);
 }
+.wire-dot {
+  width: 7px; height: 7px; border-radius: 50%;
+  background: var(--ok); flex: none;
+}
+.wire-dot.warn { background: var(--warn); }
+.wire-dot.bad { background: var(--bad); }
+.wire-dot.unknown { background: transparent; border: 1px solid var(--text-faint); }
+.tree-leaf .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }

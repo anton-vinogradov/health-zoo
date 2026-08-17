@@ -703,6 +703,11 @@ function render() {
   } catch (err) {
     document.getElementById('egress').textContent = 'не удалось нарисовать: ' + err;
   }
+  try {
+    renderTopology();
+  } catch (err) {
+    document.getElementById('topology').textContent = 'не удалось нарисовать: ' + err;
+  }
   renderAlert(state.hosts || []);
 
   var hosts = state.hosts || [];
