@@ -319,6 +319,17 @@ def test_a_multiline_alert_survives_the_fallback_format():
     assert alerts_mod._curl_quote('он сказал "да"') == 'он сказал \\"да\\"'
 
 
+def test_a_changed_host_key_is_loud():
+    """Answering the network while refusing ssh is a different machine, not a hiccup."""
+    host = host_named(fleet(), lambda h: h.get("agent") == "linux")
+    host["reachable"] = True
+    host["error"] = "Host key verification failed."
+    issues.annotate([host], CFG, None)
+    found = [i for i in host["issues"] if i["key"] == "hostkey"]
+    assert found and found[0]["level"] == "bad"
+    assert not [i for i in host["issues"] if i["key"] == "noaccess"]
+
+
 def test_processor_thresholds():
     host = host_named(fleet(), lambda h: h.get("cpu_load_pct") is not None)
     for busy, expected in ((79, None), (80, "warn"), (90, "bad")):

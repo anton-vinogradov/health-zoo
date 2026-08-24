@@ -325,7 +325,18 @@ def host_issues(host: dict, cfg: dict | None = None) -> list[dict]:
     # Reachable over the network but the agent could not run: half-known is not
     # healthy — otherwise a router with no key installed looks perfectly fine.
     if host.get("error"):
-        add("warn", "noaccess", f"нет доступа: {host['error']}")
+        # A host key that changed is not "no access", it is a different machine
+        # answering at a familiar address — a reinstall, a restored snapshot, or
+        # somebody else holding the address now. It also means this host has
+        # stopped being monitored at all while still looking present, which is
+        # the combination worth waking somebody for.
+        if "host key" in host["error"].lower():
+            add("bad", "hostkey",
+                "ключ хоста сменился — ssh отклонён, данные не собираются; "
+                "это переустановка, восстановление из копии или чужая машина "
+                "на этом адресе")
+        else:
+            add("warn", "noaccess", f"нет доступа: {host['error']}")
 
     for disk in host.get("disks", []):
         level = _level(disk.get("pct"), limits["disk_warn"], limits["disk_bad"])
