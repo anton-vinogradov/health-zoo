@@ -207,6 +207,13 @@ common_links() {
 # unrelated ones.
 common_cpu() {
   [ -r /proc/stat ] || return 0
+  cores=$(grep -c '^cpu[0-9]' /proc/stat)
+  [ "${cores:-0}" -gt 0 ] || cores=1
+  # The process snapshots bracket everything else here, so their window is the
+  # longer one — and dividing their ticks by the shorter processor window is
+  # how a single-core box reported a process at 109% of itself. Uptime is read
+  # at exactly the two moments the processes are, in hundredths of a second.
+  up1=$(cut -d' ' -f1 /proc/uptime)
   procs1=$(_cpu_procs)
   disk1=$(_disk_counters)
   # shellcheck disable=SC2046  # word splitting is the point: busy and idle
@@ -223,6 +230,7 @@ common_cpu() {
   busy2=$1; idle2=$2; wait2=$3; steal2=$4
   disk2=$(_disk_counters)
   procs2=$(_cpu_procs)
+  up2=$(cut -d' ' -f1 /proc/uptime)
   total=$(( busy2 - busy1 + idle2 - idle1 + wait2 - wait1 + steal2 - steal1 ))
   [ "$total" -gt 0 ] 2>/dev/null || return 0
   busy=$(( (busy2 - busy1) * 100 / total ))
@@ -233,8 +241,6 @@ common_cpu() {
 
   # Ticks are counted per core, so the wall clock the window took is the total
   # divided by however many cores reported, ten milliseconds each.
-  cores=$(grep -c '^cpu[0-9]' /proc/stat)
-  [ "${cores:-0}" -gt 0 ] || cores=1
   window_ms=$(( total * 10 / cores ))
   [ "$window_ms" -gt 0 ] || window_ms=1
   _disk_io "$disk1" "$disk2" "$window_ms"
@@ -245,8 +251,12 @@ common_cpu() {
   [ -n "$full" ] && emit io_stall_full_pct "$full"
 
   # Naming names costs a sort and a few reads, and is only interesting once
-  # the processor is actually loaded.
-  [ "$busy" -ge 50 ] && _cpu_blame "$procs1" "$procs2" "$total"
+  # the processor is actually loaded. The divisor is the processor time the
+  # machine had to give during the process window: hundredths of a second of
+  # wall clock, times cores.
+  had=$(awk -v a="$up1" -v b="$up2" -v c="$cores" 'BEGIN{printf "%d", (b - a) * 100 * c}')
+  [ "${had:-0}" -gt 0 ] || had=$(( total ))
+  [ "$busy" -ge 50 ] && _cpu_blame "$procs1" "$procs2" "$had"
   # The other half of the question. A process stuck on the disk uses no
   # processor time at all, so it can never appear in the list above — and it
   # is exactly the one worth naming when the machine feels slow but nothing
@@ -308,22 +318,38 @@ _disk_counters() {
 # a third of a second, and "no operations" is not an answer to "how fast does
 # it answer". The short window is kept as a fallback for the first poll after
 # a reboot, when there is nothing to compare against yet.
-_disk_io() {
-  cache=${TMPDIR:-/tmp}/health-zoo-diskstats
-  # Uptime rather than the clock: it cannot jump, and it resets on a reboot,
-  # which is exactly when the previous counters stop being comparable.
-  now=$(cut -d. -f1 /proc/uptime 2>/dev/null || echo 0)
-  before=$1
-  window_ms=$3
+#
+# Counters mean nothing on their own — only how far they moved since last
+# time. This keeps the previous reading in a small file and hands it back with
+# the seconds that passed on the first line. Uptime rather than the clock: it
+# cannot jump, and it resets on a reboot, which is exactly when the previous
+# counters stop being comparable to the current ones.
+_cache_swap() {
+  cache=${TMPDIR:-/tmp}/health-zoo-$1
+  now=$(cut -d' ' -f1 /proc/uptime 2>/dev/null | cut -d. -f1)
+  gap=0; before=""
   if [ -r "$cache" ]; then
     was=$(head -1 "$cache")
-    gap=$(( now - was ))
-    if [ "$gap" -ge 20 ] && [ "$gap" -le 3600 ]; then
+    step=$(( ${now:-0} - ${was:-0} ))
+    if [ "$step" -ge 20 ] && [ "$step" -le 3600 ]; then
+      gap=$step
       before=$(tail -n +2 "$cache")
-      window_ms=$(( gap * 1000 ))
     fi
   fi
-  { echo "$now"; printf '%s\n' "$2"; } > "$cache" 2>/dev/null
+  { echo "${now:-0}"; printf '%s\n' "$2"; } > "$cache" 2>/dev/null
+  printf '%s\n%s\n' "$gap" "$before"
+}
+
+_disk_io() {
+  swapped=$(_cache_swap diskstats "$2")
+  gap=$(printf '%s\n' "$swapped" | head -1)
+  before=$(printf '%s\n' "$swapped" | tail -n +2)
+  window_ms=$3
+  if [ "${gap:-0}" -gt 0 ]; then
+    window_ms=$(( gap * 1000 ))
+  else
+    before=$1
+  fi
   printf '%s\n@\n%s\n' "$before" "$2" | awk -F'\t' -v ms="$window_ms" '
     $1 == "@" { second = 1; next }
     !second   { ios[$1] = $2; spent[$1] = $3; busy[$1] = $4; next }
@@ -355,6 +381,107 @@ _io_pressure() {
       /proc/pressure/io
 }
 
+# ---------- how much is actually going through the wires ----------
+# A processor pegged by a network service is not a mystery once the throughput
+# next to it is known: encryption at 45 Mbit/s on one core is a ceiling, not a
+# fault, and the same 100% with no traffic at all is something else entirely.
+# Measured from the previous poll, like the disks — a third of a second of
+# traffic is not a rate anybody should act on.
+common_netio() {
+  now=""
+  for path in /sys/class/net/*; do
+    dev=${path##*/}
+    case $dev in lo|veth*|docker*|br-*|virbr*) continue ;; esac
+    [ -r "$path/statistics/rx_bytes" ] || continue
+    now="$now$dev	$(cat "$path/statistics/rx_bytes")	$(cat "$path/statistics/tx_bytes")	$(cat "$path/statistics/rx_packets")	$(cat "$path/statistics/tx_packets")
+"
+  done
+  [ -n "$now" ] || return 0
+  swapped=$(_cache_swap netio "$now")
+  gap=$(printf '%s\n' "$swapped" | head -1)
+  [ "${gap:-0}" -gt 0 ] || return 0
+  printf '%s@\n%s' "$(printf '%s\n' "$swapped" | tail -n +2)
+" "$now" | awk -F'\t' -v secs="$gap" '
+    $1 == "@" { second = 1; next }
+    !second   { rx[$1] = $2; tx[$1] = $3; rp[$1] = $4; tp[$1] = $5; next }
+    $1 in rx {
+      d_rx = $2 - rx[$1]; d_tx = $3 - tx[$1]
+      d_rp = $4 - rp[$1]; d_tp = $5 - tp[$1]
+      if (d_rx < 0 || d_tx < 0) next          # counters wrapped or reset
+      if (d_rx + d_tx == 0) next
+      printf "@netio\t%s\t%d\t%d\t%d\t%d\t%d\n", $1, d_rx * 8 / secs,
+             d_tx * 8 / secs, d_rp / secs, d_tp / secs, secs
+    }'
+  return 0
+}
+
+# ---------- who is on the other end of the tunnel ----------
+# "amneziawg-go is using the whole processor" is only half an answer; the other
+# half is which peer is pulling. WireGuard keeps per-peer counters, and the
+# difference between two polls says who moved the traffic. Peer names come from
+# the comments in the server config, because a public key is not something
+# anybody recognises at four in the morning.
+common_wg() {
+  dump=$(wg show all dump 2>/dev/null || awg show all dump 2>/dev/null)
+  if [ -z "$dump" ] && command -v docker >/dev/null 2>&1; then
+    # The daemon usually lives in a container, and only it has the binary.
+    for name in $(docker ps --format '{{.Names}} {{.Image}}' 2>/dev/null |
+                  awk 'tolower($0) ~ /wg|wireguard|amnezia/ {print $1}'); do
+      dump=$(docker exec "$name" awg show all dump 2>/dev/null ||
+             docker exec "$name" wg show all dump 2>/dev/null)
+      [ -n "$dump" ] && break
+    done
+  fi
+  [ -n "$dump" ] || return 0
+  # The first line of each interface carries its PRIVATE key, and counting
+  # fields does not tell it from a peer: AmneziaWG appends its obfuscation
+  # parameters to that line, so it is longer than a peer line rather than
+  # shorter. What only a peer has is allowed-ips in the fifth column.
+  peers=$(printf '%s\n' "$dump" |
+          awk -F'\t' '$5 ~ /\// { print $1 "\t" $2 "\t" $4 "\t" $5 "\t" $6 "\t" $7 "\t" $8 }')
+  [ -n "$peers" ] || return 0
+  # peers: interface, public key, endpoint, allowed ips, last handshake, rx, tx
+  counters=$(printf '%s\n' "$peers" | awk -F'\t' '{print $1 "|" $2 "\t" $6 "\t" $7}')
+  swapped=$(_cache_swap wgpeers "$counters")
+  gap=$(printf '%s\n' "$swapped" | head -1)
+  before=$(printf '%s\n' "$swapped" | tail -n +2)
+  # A glob that matches nothing is passed through literally, and awk given a
+  # file that is not there gives up on the spot — which is why the first
+  # version of this quietly labelled every peer with its address.
+  set --
+  for conf in /etc/wireguard/*.conf /opt/awg/*.conf /etc/amnezia/amneziawg/*.conf; do
+    [ -r "$conf" ] && set -- "$@" "$conf"
+  done
+  names=""
+  [ "$#" -gt 0 ] && names=$(awk '
+    /^[[:space:]]*#/ { label = $0; sub(/^[[:space:]]*#[[:space:]]*/, "", label); next }
+    /^PublicKey/     { if (label != "") print $3 "\t" label; label = "" }
+  ' "$@" 2>/dev/null)
+  printf '%s\n@\n%s\n@@\n%s\n' "$before" "$names" "$peers" |
+  awk -F'\t' -v secs="${gap:-0}" -v now="$(date +%s)" '
+    /^@$/  { part = 1; next }
+    /^@@$/ { part = 2; next }
+    part == 0 { was_rx[$1] = $2; was_tx[$1] = $3; next }
+    part == 1 { label[$1] = $2; next }
+    {
+      key = $1 "|" $2
+      rx = 0; tx = 0
+      if (secs > 0 && (key in was_rx)) {
+        rx = ($6 - was_rx[key]) * 8 / secs
+        tx = ($7 - was_tx[key]) * 8 / secs
+        if (rx < 0) rx = 0        # the daemon restarted and started over
+        if (tx < 0) tx = 0
+      }
+      split($4, allowed, "/")
+      split($3, from, ":")        # an endpoint of "(none)" never connected
+      printf "@wgpeer\t%s\t%s\t%s\t%s\t%d\t%d\t%d\n", $1,
+             (label[$2] != "" ? label[$2] : allowed[1]), allowed[1],
+             (from[1] == "(none)" ? "" : from[1]), rx, tx,
+             ($5 > 0 ? now - $5 : -1)
+    }'
+  return 0
+}
+
 # Processes in uninterruptible sleep: the ones the kernel will not even let be
 # killed, because they are inside a call that has not come back. wchan names
 # the call, which is usually the whole diagnosis.
@@ -378,7 +505,11 @@ _cpu_blame() {
     {
       # A process born inside the window spent everything it has inside it.
       used = ($1 in was) ? $2 - was[$1] : $2
-      if (used > 0) printf "%s\t%d\t%s\n", $1, used * 100 / total, $4
+      pct = used * 100 / total
+      # Rounding at the edges must not produce a process using more of the
+      # machine than the machine has.
+      if (pct > 100) pct = 100
+      if (used > 0) printf "%s\t%d\t%s\n", $1, pct, $4
     }
   ' | sort -t'	' -k2,2rn | head -4 | while IFS='	' read -r pid pct name; do
     [ "${pct:-0}" -ge 1 ] || continue

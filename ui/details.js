@@ -297,6 +297,50 @@ function showHost(host) {
     ])));
   }
 
+  function rate(bits) {
+    return bits >= 1000000 ? Math.round(bits / 1000000) + ' Мбит/с'
+                           : Math.round(bits / 1000) + ' кбит/с';
+  }
+
+  /* Throughput, not link speed: the port has said "1 Гбит/с" since it was
+     plugged in, and what matters when a core is pegged is what is going
+     through it right now. */
+  if ((host.netios || []).length) {
+    body.appendChild(section('Трафик', h('div', null, [
+      h('p', { class: 'set-hint', text: 'Замер от прошлого опроса.' }),
+      table(['интерфейс', 'внутрь', 'наружу', 'пакетов/с'],
+        host.netios.map(function (n) {
+          return h('tr', null, [
+            h('td', { class: 'mono', text: n.dev }),
+            h('td', { class: 'mono right', text: rate(n.rx_bps) }),
+            h('td', { class: 'mono right', text: rate(n.tx_bps) }),
+            h('td', { class: 'mono right', text: n.rx_pps + ' / ' + n.tx_pps })
+          ]);
+        }))
+    ])));
+  }
+
+  /* The other end of a tunnel. "amneziawg-go is using the whole processor" is
+     half an answer; this is the half that says whose traffic it was. */
+  if ((host.wgpeers || []).length) {
+    body.appendChild(section('Пиры туннеля',
+      table(['пир', 'адрес', 'откуда', 'от него', 'к нему', 'связь'],
+        host.wgpeers.map(function (p) {
+          return h('tr', null, [
+            h('td', { text: p.name }),
+            h('td', { class: 'mono', text: p.addr }),
+            h('td', { class: 'mono', text: p.endpoint || '—' }),
+            h('td', { class: 'mono right', text: rate(p.rx_bps) }),
+            h('td', { class: 'mono right', text: rate(p.tx_bps) }),
+            h('td', { class: 'mono right', text:
+              p.handshake_age === null || p.handshake_age === undefined
+                ? 'не подключался'
+                : p.handshake_age < 180 ? 'на связи'
+                : duration(p.handshake_age) + ' назад' })
+          ]);
+        }))));
+  }
+
   /* Not capacity but speed — the two are unrelated and a full disk that
      answers instantly is a different problem from an empty one that does
      not. The queue column is what separates slow storage from our own load. */

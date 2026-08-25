@@ -333,6 +333,8 @@ emit_vhosts | sort -u | head -40
 
 # ---------- listening ports ----------
 common_cpu
+common_netio
+common_wg
 common_links
 common_capped
 common_peer

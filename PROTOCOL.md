@@ -78,6 +78,8 @@ lists both. An agent that cannot tell leaves it empty, which reads as `user`.
 | `@proc` | pid, % of the whole machine, short name, command line |
 | `@diskio` | device, operations a second, ms per operation, % of time busy, rotating flag, operations counted, window in ms |
 | `@stuck` | pid, short name, command line, kernel call it is stuck in |
+| `@netio` | interface, bits/s in, bits/s out, packets/s in, packets/s out, window in seconds |
+| `@wgpeer` | interface, peer name, tunnel address, endpoint address, bits/s from the peer, bits/s to it, seconds since the last handshake |
 | `@listen` | port, process, scope (`any` or `local`) |
 | `@raid` | array, level, state (`UU`, `U_`, …) |
 | `@backup` | task, name, last run |
@@ -109,6 +111,19 @@ Two scalars come with them: `io_stall_pct` and `io_stall_full_pct`, the share
 of the last ten seconds in which at least one task, or every runnable task, was
 waiting for storage. They come from `/proc/pressure/io`, where the kernel keeps
 it; iowait answers the same question only on a machine with nothing else to do.
+
+`@netio` and `@wgpeer` are the same idea applied to the wires: a service that
+pegs a core is explained by the throughput next to it, and on a tunnel the
+question "whose traffic" has an answer the kernel already knows. Both are
+measured from the previous poll and both keep the two directions apart — a
+tunnel or a proxy carries the same bytes twice, once in each, and adding them
+up reports double the traffic.
+
+Peer names come from the `# name` comments in the server config, looked up by
+public key. Two traps live in `wg show all dump`: its first line per interface
+carries the **private** key, and with AmneziaWG that line is *longer* than a
+peer line rather than shorter, so it cannot be told apart by counting fields.
+Allowed-ips in the fifth column is what only a peer has.
 
 Adding a kind means adding one entry to `LIST_FIELDS` and emitting the rows;
 nothing else in the pipeline needs to know about it.

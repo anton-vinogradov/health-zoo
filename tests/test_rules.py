@@ -370,6 +370,49 @@ def test_busy_processor_names_what_is_using_it():
         "процессор занят на 93%"
 
 
+def test_busy_processor_says_what_the_wires_were_doing():
+    """A tunnel at its encryption ceiling should read as one, not as a mystery.
+
+    The alert that started this said "processor at 100% — amneziawg-go" and
+    left the reader to guess whether that was a flood, a bug or somebody
+    watching a film. The traffic and the peer answer it in the same line.
+    """
+    host = host_named(fleet(), lambda h: h.get("cpu_load_pct") is not None)
+    host["cpu_load_pct"] = 96
+    host["procs"] = [{"pid": 700, "pct": 95, "name": "amneziawg-go",
+                      "cmd": "/usr/bin/amneziawg-go awg0"}]
+    host["netios"] = [
+        {"dev": "eth0", "rx_bps": 29000000, "tx_bps": 27000000,
+         "rx_pps": 4016, "tx_pps": 3235, "window_s": 180},
+        {"dev": "awg0", "rx_bps": 24000000, "tx_bps": 900000,
+         "rx_pps": 1771, "tx_pps": 1449, "window_s": 180},
+    ]
+    host["wgpeers"] = [
+        {"iface": "awg0", "name": "mac", "addr": "10.13.13.7",
+         "endpoint": "188.134.1.11", "rx_bps": 26000000, "tx_bps": 1800000,
+         "handshake_age": 38},
+        {"iface": "awg0", "name": "phone", "addr": "10.13.13.10",
+         "endpoint": "", "rx_bps": 0, "tx_bps": 0, "handshake_age": None},
+    ]
+    issues.annotate([host], CFG, None)
+    text = [i for i in host["issues"] if i["key"] == "cpu"][0]["text"]
+    assert "amneziawg-go 95%" in text
+    # Both directions, never summed: a tunnel carries the same bytes twice.
+    assert "eth0 29 Мбит/с внутрь и 27 Мбит/с наружу" in text
+    assert "больше всех — пир mac" in text
+
+
+def test_busy_processor_stays_quiet_about_an_idle_network():
+    host = host_named(fleet(), lambda h: h.get("cpu_load_pct") is not None)
+    host["cpu_load_pct"] = 96
+    host["procs"] = [{"pid": 9, "pct": 95, "name": "ffmpeg", "cmd": "ffmpeg"}]
+    host["netios"] = [{"dev": "eth0", "rx_bps": 120000, "tx_bps": 90000,
+                       "rx_pps": 30, "tx_pps": 20, "window_s": 180}]
+    issues.annotate([host], CFG, None)
+    text = [i for i in host["issues"] if i["key"] == "cpu"][0]["text"]
+    assert text == "процессор занят на 96% — ffmpeg 95%"
+
+
 def _waiting_host(await_ms, iops, ops=600):
     """A host that is waiting on storage, with one disk to blame."""
     host = host_named(fleet(), lambda h: h.get("cpu_load_pct") is not None)

@@ -278,6 +278,38 @@ def _cpu_blame(host: dict) -> str:
     return " — " + ", ".join(f"{p['name']} {p['pct']}%" for p in named[:3])
 
 
+def _rate(bits: float) -> str:
+    if bits >= 1_000_000:
+        return f"{round(bits / 1_000_000)} Мбит/с"
+    return f"{round(bits / 1000)} кбит/с"
+
+
+def _net_context(host: dict) -> str:
+    """What the wires were doing while the processor was busy.
+
+    A network service pegging a core is not a mystery once the throughput is
+    next to it: encryption at forty megabits on one core is a ceiling, and the
+    same reading with the wires idle is a different problem entirely. Both
+    directions are shown because a proxy or a tunnel carries the same bytes
+    twice, once in each, and summing them doubles the traffic.
+    """
+    nets = [n for n in host.get("netios") or []
+            if (n.get("rx_bps") or 0) + (n.get("tx_bps") or 0) > 0]
+    if not nets:
+        return ""
+    busiest = max(nets, key=lambda n: max(n["rx_bps"], n["tx_bps"]))
+    if max(busiest["rx_bps"], busiest["tx_bps"]) < 5_000_000:
+        # Below this the network is not what is keeping a processor busy.
+        return ""
+    text = (f"; через {busiest['dev']} {_rate(busiest['rx_bps'])} внутрь и "
+            f"{_rate(busiest['tx_bps'])} наружу")
+    peers = sorted((p for p in host.get("wgpeers") or []),
+                   key=lambda p: p["rx_bps"] + p["tx_bps"], reverse=True)
+    if peers and peers[0]["rx_bps"] + peers[0]["tx_bps"] >= 1_000_000:
+        text += f", больше всех — пир {peers[0]['name']}"
+    return text
+
+
 def _worst_disk(host: dict, limits: dict) -> dict | None:
     """The device the machine is waiting on, if the numbers rest on anything.
 
@@ -438,7 +470,8 @@ def host_issues(host: dict, cfg: dict | None = None) -> list[dict]:
     # asked here.
     level = _level(host.get("cpu_load_pct"), limits["cpu_warn"], limits["cpu_bad"])
     if level:
-        add(level, "cpu", f"процессор занят на {host['cpu_load_pct']}%{_cpu_blame(host)}")
+        add(level, "cpu", f"процессор занят на {host['cpu_load_pct']}%"
+                          f"{_cpu_blame(host)}{_net_context(host)}")
 
     # Waiting on storage is the opposite of busy, and saying "processor at 100%"
     # about it sends everybody looking in the wrong place. This host spent

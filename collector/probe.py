@@ -94,6 +94,14 @@ LIST_FIELDS = {
     # Processes the kernel will not let be interrupted, because they are inside
     # a call that has not returned. "wchan" is the call.
     "stuck": ["pid", "name", "cmd", "wchan"],
+    # What is actually going through each wire, bits and packets a second,
+    # measured from the previous poll.
+    "netio": ["dev", "rx_bps", "tx_bps", "rx_pps", "tx_pps", "window_s"],
+    # Per-peer traffic on a WireGuard interface: who is on the other end of
+    # the load. Rates are from the server's side — "rx" is what it received
+    # from that peer.
+    "wgpeer": ["iface", "name", "addr", "endpoint", "rx_bps", "tx_bps",
+               "handshake_age"],
     "listen": ["port", "process", "scope"],
     "udp": ["port", "process", "scope"],
     # Same shape the RouterOS parser builds by hand, so both kinds of router
@@ -184,6 +192,17 @@ def _post_process(data: dict) -> dict:
     for proc in data.get("procs", []):
         proc["pid"] = int(_num(proc.get("pid", 0)) or 0)
         proc["pct"] = int(_num(proc.get("pct", 0)) or 0)
+
+    for net in data.get("netios", []):
+        for field in ("rx_bps", "tx_bps", "rx_pps", "tx_pps", "window_s"):
+            net[field] = int(_num(net.get(field, 0)) or 0)
+
+    for peer in data.get("wgpeers", []):
+        for field in ("rx_bps", "tx_bps", "handshake_age"):
+            peer[field] = int(_num(peer.get(field, 0)) or 0)
+        # A peer that has never completed a handshake is not "0 seconds ago".
+        if peer["handshake_age"] < 0:
+            peer["handshake_age"] = None
 
     for disk in data.get("diskios", []):
         for field in ("iops", "await", "util"):
