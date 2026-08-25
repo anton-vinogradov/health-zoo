@@ -536,7 +536,9 @@ function showSettings() {
         'в сутки, и никогда — хост с самим дашбордом: он бы оборвал собственный отчёт. ' +
         'Перед каждой перезагрузкой уходит сообщение в Telegram.' }),
       h('div', { class: 'set-row' }, [
-        h('span', { text: 'окно, часы:' }), fromHour, h('span', { text: '—' }), toHour
+        h('span', { text: 'перезагружать между' }), fromHour,
+        h('span', { text: 'и' }), toHour,
+        h('span', { text: 'часами по местному времени' })
       ]),
       h('div', { class: 'set-row' }, [h('span', { text: 'никогда не перезагружать:' })]),
       excludeList

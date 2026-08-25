@@ -83,6 +83,10 @@ LIST_FIELDS = {
     # way out that lives here, "outbound" is somebody taking one.
     "exit": ["kind", "listen", "unit", "state", "tunnel", "endpoint", "inside"],
     "outbound": ["who", "target", "via", "evidence"],
+    # Who was using the processor while its busy time was being measured, in
+    # order. Sent only when the host is loaded enough for the question to have
+    # an answer worth reading.
+    "proc": ["pid", "pct", "name", "cmd"],
     "listen": ["port", "process", "scope"],
     "udp": ["port", "process", "scope"],
     # Same shape the RouterOS parser builds by hand, so both kinds of router
@@ -168,6 +172,10 @@ def _post_process(data: dict) -> dict:
 
     for temp in data.get("temps", []):
         temp["c"] = _num(temp.get("c", 0))
+
+    for proc in data.get("procs", []):
+        proc["pid"] = int(_num(proc.get("pid", 0)) or 0)
+        proc["pct"] = int(_num(proc.get("pct", 0)) or 0)
 
     for link in data.get("links", []):
         for field in ("speed", "errors", "crc", "flaps", "capable",

@@ -42,6 +42,22 @@ def test_parse_report_scalars_and_lists():
     assert data["temps"][0]["label"] == "Core 0"
 
 
+def test_parse_report_reads_who_took_the_processor():
+    """A loaded host sends the processes it measured, biggest first."""
+    data = probe._post_process(probe.parse_report(
+        "cpu_load_pct\t93\n"
+        "@proc\t2841\t61\tffmpeg\t/usr/bin/ffmpeg -i rtsp://cam4 -c copy out.mp4\n"
+        "@proc\t914\t24\tpython3\t/opt/health-zoo/.venv/bin/python3 -m collector.hub\n"
+        "@proc\t7\t3\tkworker/0:1\t[kworker/0:1]\n"
+    ))
+    top = data["procs"][0]
+    # Both numbers arrive as text and are useless to a threshold until coerced.
+    assert top["pid"] == 2841 and top["pct"] == 61
+    assert top["name"] == "ffmpeg"
+    assert top["cmd"].startswith("/usr/bin/ffmpeg")
+    assert [p["pct"] for p in data["procs"]] == [61, 24, 3]
+
+
 def test_parse_report_tolerates_short_rows():
     """Agents omit trailing fields when a value is unavailable."""
     data = probe.parse_report("@service\tfoo.service\tactive/running\n")

@@ -552,6 +552,9 @@ table.list td.right { text-align: right; }
 table.list td.warn { color: var(--warn); }
 table.list td.nowrap { white-space: nowrap; }
 table.list td.nowrap .btn + .btn { margin-left: 4px; }
+/* A command line has no spaces to break on where it matters most — a long
+   path or a base64 argument would otherwise push the table off the screen. */
+table.list td.wrap { white-space: normal; word-break: break-all; }
 
 /* Discovered-but-unconfigured devices: present, but not something the
    dashboard claims to watch. */

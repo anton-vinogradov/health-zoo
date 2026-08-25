@@ -19,7 +19,7 @@ router → site router → the camera segment behind it.
 
 | Device | Collected |
 |---|---|
-| Debian/Ubuntu | uptime, load, RAM/swap, disks, temperatures, pending `apt` updates (security flagged separately), reboot-required, services, containers, git checkouts, ZoneMinder monitors |
+| Debian/Ubuntu | uptime, load, RAM/swap, disks, temperatures, pending `apt` updates (security flagged separately), reboot-required, services, containers, git checkouts, ZoneMinder monitors, and — while the processor is loaded — which processes are using it |
 | Synology DSM | DSM version, volumes, RAID state, swap pressure, temperatures, installed packages and versions, HyperBackup freshness, Surveillance Station cameras |
 | MikroTik RouterOS | version, RouterBOARD firmware (and whether a reboot is pending), CPU/RAM/flash, temperature and voltage, management services, installed packages, interface link state |
 | OpenWrt | release, model, overlay/flash usage, temperatures, init scripts, interfaces |

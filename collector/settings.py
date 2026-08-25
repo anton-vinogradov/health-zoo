@@ -87,9 +87,11 @@ EDITABLE = {f["key"] for f in FIELDS}
 AUTO_REBOOT_DEFAULT = {
     "enabled": False,
     # Local hours. A window rather than "as soon as needed": kernel updates land
-    # during the day and nobody wants the cameras to blink at 15:00.
-    "from_hour": 4,
-    "to_hour": 6,
+    # during the day and nobody wants the cameras to blink at 15:00. Morning
+    # rather than the small hours on purpose — a host that does not come back
+    # is found in minutes instead of at breakfast.
+    "from_hour": 8,
+    "to_hour": 9,
     # Hosts that must never be rebooted automatically, by id.
     "exclude": [],
     # Never reboot the same host twice within this many hours, whatever the

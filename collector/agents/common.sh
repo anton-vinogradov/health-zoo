@@ -201,6 +201,7 @@ common_links() {
 # ours: the hypervisor took it.
 common_cpu() {
   [ -r /proc/stat ] || return 0
+  procs1=$(_cpu_procs)
   # shellcheck disable=SC2046  # word splitting is the point: busy and idle
   # /proc/stat: user nice system idle iowait irq softirq steal
   # busy is the first three plus both interrupt columns; the rest are not work.
@@ -213,11 +214,62 @@ common_cpu() {
   # shellcheck disable=SC2046  # same two fields, a second later
   set -- $(awk '/^cpu /{print $2+$3+$4+$7+$8, $5, $6, $9; exit}' /proc/stat)
   busy2=$1; idle2=$2; wait2=$3; steal2=$4
+  procs2=$(_cpu_procs)
   total=$(( busy2 - busy1 + idle2 - idle1 + wait2 - wait1 + steal2 - steal1 ))
   [ "$total" -gt 0 ] 2>/dev/null || return 0
-  emit cpu_load_pct "$(( (busy2 - busy1) * 100 / total ))"
+  busy=$(( (busy2 - busy1) * 100 / total ))
+  emit cpu_load_pct "$busy"
   emit cpu_iowait_pct "$(( (wait2 - wait1) * 100 / total ))"
   emit cpu_steal_pct "$(( (steal2 - steal1) * 100 / total ))"
+  # Naming names costs a sort and a few reads, and is only interesting once
+  # the processor is actually loaded.
+  [ "$busy" -ge 50 ] && _cpu_blame "$procs1" "$procs2" "$total"
+  return 0
+}
+
+# One line per process: pid, processor ticks it has used, its short name.
+# ps would be the obvious tool and is the wrong one — the percentage it prints
+# is an average over the whole life of the process, so a daemon that idled for
+# a week and is pegged right now shows a fraction of a percent.
+_cpu_procs() {
+  awk '
+    {
+      # comm sits in parentheses and may contain them itself ("(sd-pam)"),
+      # so the numeric fields are counted from the LAST ")" in the line.
+      shut = 0
+      while ((step = index(substr($0, shut + 1), ")")) > 0) shut += step
+      open = index($0, "(")
+      if (shut <= open) next
+      split(FILENAME, path, "/")
+      if (split(substr($0, shut + 1), f) >= 13)
+        print path[3] "\t" f[12] + f[13] "\t" substr($0, open + 1, shut - open - 1)
+    }
+  ' /proc/[0-9]*/stat 2>/dev/null
+}
+
+# The two snapshots, subtracted. Percentages are of the whole machine and of
+# the same window the total above was measured over, so the parts named here
+# add up under it rather than being a second, differently-scaled opinion.
+_cpu_blame() {
+  printf '%s\n@\n%s\n' "$1" "$2" | awk -F'\t' -v total="$3" '
+    $1 == "@" { second = 1; next }
+    !second   { was[$1] = $2; next }
+    {
+      # A process born inside the window spent everything it has inside it.
+      used = ($1 in was) ? $2 - was[$1] : $2
+      if (used > 0) printf "%s\t%d\t%s\n", $1, used * 100 / total, $3
+    }
+  ' | sort -t'	' -k2,2rn | head -4 | while IFS='	' read -r pid pct name; do
+    [ "${pct:-0}" -ge 1 ] || continue
+    # What it was started with answers "why", where the name only says "who".
+    # Arguments are separated by NUL and may themselves contain newlines and
+    # tabs — a python one-liner does — and a row that spans two lines is not a
+    # row any more. Kernel threads have no command line at all; they keep
+    # their bracketed name.
+    cmd=$(tr '\000\n\t\r' '    ' < "/proc/$pid/cmdline" 2>/dev/null |
+          cut -c1-160 | sed 's/[[:space:]]*$//')
+    row "@proc	$pid	$pct	$name	${cmd:-[$name]}"
+  done
 }
 
 # ---------- how we look from here ----------

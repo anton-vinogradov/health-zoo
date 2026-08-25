@@ -276,6 +276,27 @@ function showHost(host) {
       }))));
   }
 
+  /* Only sent while the host is loaded, and measured over the same window as
+     the busy percentage itself — so this answers "who" for the number on the
+     card, not for some other moment. */
+  if ((host.procs || []).length) {
+    body.appendChild(section('Кто занял процессор', h('div', null, [
+      h('p', { class: 'set-hint', text:
+        'Снято в момент опроса, за ту же долю секунды, по которой посчитана ' +
+        'занятость ' + (host.cpu_load_pct || 0) + '%. Проценты — от всей машины, ' +
+        'поэтому складываются под ней.' }),
+      table(['процесс', 'pid', '% машины', 'команда'],
+        host.procs.map(function (p) {
+          return h('tr', null, [
+            h('td', { text: p.name }),
+            h('td', { class: 'mono right', text: String(p.pid) }),
+            h('td', { class: 'mono right', text: p.pct + '%' }),
+            h('td', { class: 'mono wrap', text: p.cmd })
+          ]);
+        }))
+    ])));
+  }
+
   if ((host.disks || []).length) {
     body.appendChild(section('Диски', table(['точка', 'устройство', 'занято', 'всего', '%'],
       host.disks.map(function (d) {

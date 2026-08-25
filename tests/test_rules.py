@@ -340,6 +340,36 @@ def test_processor_thresholds():
         assert (found[0]["level"] if found else None) == expected, busy
 
 
+def test_busy_processor_names_what_is_using_it():
+    """The whole point of the reading: the message says who, not just how much.
+
+    It also has to survive a host that reports the load but no processes —
+    every agent that is not Linux, and any Linux host measured before this
+    existed.
+    """
+    host = host_named(fleet(), lambda h: h.get("cpu_load_pct") is not None)
+    host["cpu_load_pct"] = 93
+    host["procs"] = [
+        {"pid": 2841, "pct": 61, "name": "ffmpeg", "cmd": "/usr/bin/ffmpeg -i rtsp://cam4"},
+        {"pid": 914, "pct": 24, "name": "python3", "cmd": "python3 -m collector.hub"},
+        {"pid": 7, "pct": 3, "name": "kworker/0:1", "cmd": "[kworker/0:1]"},
+        {"pid": 12, "pct": 2, "name": "sshd", "cmd": "sshd: randoom"},
+    ]
+    issues.annotate([host], CFG, None)
+    text = [i for i in host["issues"] if i["key"] == "cpu"][0]["text"]
+    assert text.startswith("процессор занят на 93%")
+    assert "ffmpeg 61%" in text and "python3 24%" in text
+    # Three names is a message somebody reads; four is a wall of text.
+    assert "sshd" not in text
+
+    quiet = host_named(fleet(), lambda h: h.get("cpu_load_pct") is not None)
+    quiet["cpu_load_pct"] = 93
+    quiet.pop("procs", None)
+    issues.annotate([quiet], CFG, None)
+    assert [i for i in quiet["issues"] if i["key"] == "cpu"][0]["text"] == \
+        "процессор занят на 93%"
+
+
 def test_restart_between_polls_is_a_finding():
     before = fleet()
     after = fleet()

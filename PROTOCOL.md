@@ -75,10 +75,20 @@ lists both. An agent that cannot tell leaves it empty, which reads as `user`.
 | `@camera` | id, name, enabled, address, resolution, status, fps, analysis fps, bandwidth, last event, retention days |
 | `@camlink` | address of a camera this host has an open RTSP session with |
 | `@smart` | device, health, °C, power-on hours, reallocated, pending, wear %, model |
+| `@proc` | pid, % of the whole machine, short name, command line |
 | `@listen` | port, process, scope (`any` or `local`) |
 | `@raid` | array, level, state (`UU`, `U_`, …) |
 | `@backup` | task, name, last run |
 | `@iface` | name, status, rx, tx, comment |
+
+`@proc` answers "who is using the processor" for the `cpu_load_pct` reported in
+the same report. The agent samples every process across the same fraction of a
+second it measures the total over, so the percentages are shares of the whole
+machine and add up under it — they are not the per-core figures `top` prints.
+Rows come biggest first, at most four of them, and only when the host is at
+least half busy: on an idle machine the question has no answer worth sending.
+The command line is flattened to one line, because an argument may contain a
+newline and a row that spans two lines is not a row.
 
 Adding a kind means adding one entry to `LIST_FIELDS` and emitting the rows;
 nothing else in the pipeline needs to know about it.

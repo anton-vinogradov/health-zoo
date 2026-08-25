@@ -252,6 +252,21 @@ def _level(value, warn, bad) -> str:
     return ""
 
 
+def _cpu_blame(host: dict) -> str:
+    """Name what is using the processor.
+
+    "Processor at 93%" is the start of a question, and by the time somebody
+    has read the message, opened a terminal and run top, the answer is usually
+    gone. The agent samples every process across the same third of a second it
+    measures the total over, so these are not a second opinion at a different
+    moment: they are the parts of the number in front of them.
+    """
+    named = [p for p in host.get("procs") or [] if p.get("pct") and p.get("name")]
+    if not named:
+        return ""
+    return " — " + ", ".join(f"{p['name']} {p['pct']}%" for p in named[:3])
+
+
 def _link_verdict(link: dict) -> tuple[str, str]:
     """Is a slow port configured that way, or is the line failing?
 
@@ -350,7 +365,7 @@ def host_issues(host: dict, cfg: dict | None = None) -> list[dict]:
     # asked here.
     level = _level(host.get("cpu_load_pct"), limits["cpu_warn"], limits["cpu_bad"])
     if level:
-        add(level, "cpu", f"процессор занят на {host['cpu_load_pct']}%")
+        add(level, "cpu", f"процессор занят на {host['cpu_load_pct']}%{_cpu_blame(host)}")
 
     # Waiting on storage is the opposite of busy, and saying "processor at 100%"
     # about it sends everybody looking in the wrong place. This host spent
