@@ -354,7 +354,11 @@ function showHost(host) {
         host.diskios.map(function (d) {
           var depth = (d.await || 0) * (d.iops || 0) / 1000;
           return h('tr', null, [
-            h('td', { class: 'mono', text: d.dev + (d.rotational ? ' · шпиндель' : '') }),
+            /* virtio disks report themselves as rotating by default, whatever
+               the host actually spins, so the label is only shown where the
+               kernel is talking about real hardware. */
+            h('td', { class: 'mono', text: d.dev +
+              (d.rotational && !/^vd/.test(d.dev) ? ' · шпиндель' : '') }),
             h('td', { class: 'mono right', text: String(d.iops) }),
             h('td', { class: 'mono right', text: String(d.await) }),
             h('td', { class: 'mono right', text: (d.util || 0) + '%' }),
