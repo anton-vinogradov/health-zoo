@@ -28,6 +28,17 @@ DEFAULT_THRESHOLDS = {
     # louder than the tenant.
     "iowait_warn": 50, "iowait_bad": 80,
     "steal_warn": 10, "steal_bad": 25,
+    # How long the storage takes to answer one operation. Any disk worth
+    # paying for answers in single milliseconds; tens of milliseconds is a
+    # queue, and a hundred is a machine that feels broken to everybody using
+    # it. Judged only when something is actually waiting — see _io_verdict.
+    "await_warn_ms": 20, "await_bad_ms": 50,
+    # Share of the last ten seconds in which at least one task was stuck
+    # waiting for storage, straight from the kernel's own accounting.
+    "io_stall_warn": 20, "io_stall_bad": 45,
+    # Below this many completed operations the average time per operation is
+    # one slow request and arithmetic, not a measurement.
+    "await_min_ops": 30,
     # HyperBackup here runs nightly; two days without a run means it stopped.
     "backup_stale_days": 2,
     # Motion detection that has produced nothing all night is suspicious;
@@ -267,6 +278,68 @@ def _cpu_blame(host: dict) -> str:
     return " — " + ", ".join(f"{p['name']} {p['pct']}%" for p in named[:3])
 
 
+def _worst_disk(host: dict, limits: dict) -> dict | None:
+    """The device the machine is waiting on, if the numbers rest on anything.
+
+    An average over four operations is one slow request and arithmetic, so a
+    device that barely moved during the window is not allowed to be the one
+    blamed for the machine feeling slow.
+    """
+    seen = [d for d in host.get("diskios") or []
+            if (d.get("ops") or 0) >= limits.get("await_min_ops", 30)]
+    return max(seen, key=lambda d: d.get("await") or 0) if seen else None
+
+
+def _queue_depth(disk: dict) -> float:
+    """How many operations the device had in flight on average.
+
+    Little's law on the two numbers we already have: arrival rate times how
+    long each one stays. This is the whole diagnosis — a device answering
+    slowly with nothing queued is slow storage, and the same latency with a
+    deep queue is our own load waiting for its turn.
+    """
+    return (disk.get("await") or 0) * (disk.get("iops") or 0) / 1000.0
+
+
+def _waiting_names(host: dict) -> str:
+    stuck = host.get("stucks") or []
+    if not stuck:
+        return ""
+    names = ", ".join(dict.fromkeys(s.get("name", "?") for s in stuck[:3]))
+    return f"; ждут диск: {names}"
+
+
+def _io_verdict(host: dict, limits: dict) -> str:
+    """Whose fault the waiting is, and whether anybody here can do something.
+
+    The question this answers is not "is the disk slow" but "is this a bill or
+    a bug". Those need different words: one ends in a change to what runs on
+    the machine, the other in a decision about where the machine lives.
+    """
+    disk = _worst_disk(host, limits)
+    if not disk:
+        return ""
+    depth = _queue_depth(disk)
+    where = (f"{disk['dev']} отвечает {disk['await']:g} мс на операцию "
+             f"при {disk['iops']:g} оп/с")
+    if depth < 2:
+        return (f"{where}, и очереди к нему при этом нет — медленно отвечает сам "
+                "диск, а не наша нагрузка. Изнутри машины это не чинится: либо "
+                "мириться, либо хостинг с выделенным диском"
+                + _waiting_names(host))
+    return (f"{where}, в очереди {_requests(round(depth))} одновременно — диск "
+            "занят нашей же работой, и разбираться надо с тем, кто столько пишет"
+            + _waiting_names(host))
+
+
+def _requests(count: int) -> str:
+    tail = count % 100
+    if 11 <= tail <= 14:
+        return f"{count} запросов"
+    return f"{count} " + {1: "запрос", 2: "запроса", 3: "запроса",
+                          4: "запроса"}.get(count % 10, "запросов")
+
+
 def _link_verdict(link: dict) -> tuple[str, str]:
     """Is a slow port configured that way, or is the line failing?
 
@@ -374,8 +447,23 @@ def host_issues(host: dict, cfg: dict | None = None) -> list[dict]:
     level = _level(host.get("cpu_iowait_pct"),
                    limits["iowait_warn"], limits["iowait_bad"])
     if level:
+        worst = _worst_disk(host, limits)
         add(level, "iowait",
-            f"процессор ждёт диск {host['cpu_iowait_pct']}% времени")
+            f"процессор ждёт диск {host['cpu_iowait_pct']}% времени"
+            + (f" — {worst['dev']}, {worst['await']:g} мс на операцию" if worst else ""))
+
+    # Slow storage deserves its own row, because the answer to it is not the
+    # answer to anything else on this card: nothing that runs on the machine
+    # will fix a disk that takes fifty milliseconds to say yes. Reported only
+    # when something is actually waiting on it — a video archive answering
+    # lazily while nobody needs it is not a fault.
+    worst = _worst_disk(host, limits)
+    waiting = max(host.get("io_stall_pct") or 0, 0) >= limits["io_stall_warn"] \
+        or (host.get("cpu_iowait_pct") or 0) >= 10
+    if worst and waiting:
+        level = _level(worst.get("await"), limits["await_warn_ms"], limits["await_bad_ms"])
+        if level:
+            add(level, "slowdisk", _io_verdict(host, limits))
 
     # Stolen time is not ours at all: the hypervisor gave the core to somebody
     # else. Nothing inside the guest can fix it and nothing inside the guest
@@ -1186,6 +1274,16 @@ def checks_for(host: dict, cfg: dict | None = None) -> list[dict]:
         "числом с ней значит искать проблему не там",
         applies=host.get("cpu_iowait_pct") is not None,
         skipped="хост не отдаёт разбивку процессорного времени", keys=("iowait",))
+    add("resources", "Скорость ответа диска",
+        f"Сколько миллисекунд уходит на одну операцию: предупреждение с "
+        f"{limits.get('await_warn_ms', 20)} мс, критично с "
+        f"{limits.get('await_bad_ms', 50)} мс. Считается от опроса к опросу и "
+        f"только по устройствам, сделавшим хотя бы {limits.get('await_min_ops', 30)} "
+        "операций. Срабатывает лишь тогда, когда кто-то диска ждёт: архив, "
+        "отвечающий не спеша, когда он никому не нужен, — не поломка. Средняя "
+        "глубина очереди отделяет медленный диск от нашей же нагрузки",
+        applies=bool(host.get("diskios")),
+        skipped="хост не отдаёт статистику дисков", keys=("slowdisk",))
     add("resources", "Украденное время",
         f"Сколько процессорного времени забрал гипервизор: предупреждение с "
         f"{limits.get('steal_warn', 10)}%, критично с {limits.get('steal_bad', 25)}%. "

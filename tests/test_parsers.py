@@ -58,6 +58,21 @@ def test_parse_report_reads_who_took_the_processor():
     assert [p["pct"] for p in data["procs"]] == [61, 24, 3]
 
 
+def test_parse_report_reads_disk_response():
+    data = probe._post_process(probe.parse_report(
+        "io_stall_pct\t57.4\n"
+        "@diskio\tvda\t18.6\t47.2\t93.0\t1\t3350\t180000\n"
+        "@stuck\t811\tpostgres\tpostgres: writer process\tio_schedule\n"
+    ))
+    disk = data["diskios"][0]
+    assert disk["await"] == 47.2 and disk["iops"] == 18.6
+    # The kernel's flag is a string "1" until somebody makes it a fact.
+    assert disk["rotational"] is True
+    assert disk["ops"] == 3350 and disk["window_ms"] == 180000
+    assert data["io_stall_pct"] == 57.4
+    assert data["stucks"][0]["wchan"] == "io_schedule"
+
+
 def test_parse_report_tolerates_short_rows():
     """Agents omit trailing fields when a value is unavailable."""
     data = probe.parse_report("@service\tfoo.service\tactive/running\n")

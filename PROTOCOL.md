@@ -76,6 +76,8 @@ lists both. An agent that cannot tell leaves it empty, which reads as `user`.
 | `@camlink` | address of a camera this host has an open RTSP session with |
 | `@smart` | device, health, °C, power-on hours, reallocated, pending, wear %, model |
 | `@proc` | pid, % of the whole machine, short name, command line |
+| `@diskio` | device, operations a second, ms per operation, % of time busy, rotating flag, operations counted, window in ms |
+| `@stuck` | pid, short name, command line, kernel call it is stuck in |
 | `@listen` | port, process, scope (`any` or `local`) |
 | `@raid` | array, level, state (`UU`, `U_`, …) |
 | `@backup` | task, name, last run |
@@ -89,6 +91,24 @@ Rows come biggest first, at most four of them, and only when the host is at
 least half busy: on an idle machine the question has no answer worth sending.
 The command line is flattened to one line, because an argument may contain a
 newline and a row that spans two lines is not a row.
+
+`@diskio` is measured from the previous poll, not over the fraction of a second
+the processor is measured over: a disk finishes nothing at all in a third of a
+second, and "no operations" does not answer "how fast does it answer". The
+agent keeps the previous counters in `$TMPDIR/health-zoo-diskstats` and falls
+back to the short window on the first poll after a reboot. Latency times rate
+gives the average queue depth, which is what separates storage that is slow
+from storage that is merely busy with our own work.
+
+`@stuck` rows are sent only while something is actually waiting on storage.
+They cost nothing to collect — the process table has already been read twice
+for `@proc` — and they are the only evidence of a machine that feels slow with
+no processor load at all: a task in uninterruptible sleep uses none.
+
+Two scalars come with them: `io_stall_pct` and `io_stall_full_pct`, the share
+of the last ten seconds in which at least one task, or every runnable task, was
+waiting for storage. They come from `/proc/pressure/io`, where the kernel keeps
+it; iowait answers the same question only on a machine with nothing else to do.
 
 Adding a kind means adding one entry to `LIST_FIELDS` and emitting the rows;
 nothing else in the pipeline needs to know about it.

@@ -199,9 +199,16 @@ common_links() {
 # processor was doing nothing at all — it was waiting on a disk that answered
 # four operations a second. iowait is not work, and stolen time is not even
 # ours: the hypervisor took it.
+#
+# One window, three views: what the processor did, what the disks did, and
+# which process did it. Measuring them together is the point — a machine that
+# is 90% busy and a disk that answers in 40 ms are the same event seen from
+# two sides, and sampled a minute apart they cannot be told apart from two
+# unrelated ones.
 common_cpu() {
   [ -r /proc/stat ] || return 0
   procs1=$(_cpu_procs)
+  disk1=$(_disk_counters)
   # shellcheck disable=SC2046  # word splitting is the point: busy and idle
   # /proc/stat: user nice system idle iowait irq softirq steal
   # busy is the first three plus both interrupt columns; the rest are not work.
@@ -214,23 +221,47 @@ common_cpu() {
   # shellcheck disable=SC2046  # same two fields, a second later
   set -- $(awk '/^cpu /{print $2+$3+$4+$7+$8, $5, $6, $9; exit}' /proc/stat)
   busy2=$1; idle2=$2; wait2=$3; steal2=$4
+  disk2=$(_disk_counters)
   procs2=$(_cpu_procs)
   total=$(( busy2 - busy1 + idle2 - idle1 + wait2 - wait1 + steal2 - steal1 ))
   [ "$total" -gt 0 ] 2>/dev/null || return 0
   busy=$(( (busy2 - busy1) * 100 / total ))
+  iowait=$(( (wait2 - wait1) * 100 / total ))
   emit cpu_load_pct "$busy"
-  emit cpu_iowait_pct "$(( (wait2 - wait1) * 100 / total ))"
+  emit cpu_iowait_pct "$iowait"
   emit cpu_steal_pct "$(( (steal2 - steal1) * 100 / total ))"
+
+  # Ticks are counted per core, so the wall clock the window took is the total
+  # divided by however many cores reported, ten milliseconds each.
+  cores=$(grep -c '^cpu[0-9]' /proc/stat)
+  [ "${cores:-0}" -gt 0 ] || cores=1
+  window_ms=$(( total * 10 / cores ))
+  [ "$window_ms" -gt 0 ] || window_ms=1
+  _disk_io "$disk1" "$disk2" "$window_ms"
+
+  stall=$(_io_pressure some)
+  [ -n "$stall" ] && emit io_stall_pct "$stall"
+  full=$(_io_pressure full)
+  [ -n "$full" ] && emit io_stall_full_pct "$full"
+
   # Naming names costs a sort and a few reads, and is only interesting once
   # the processor is actually loaded.
   [ "$busy" -ge 50 ] && _cpu_blame "$procs1" "$procs2" "$total"
+  # The other half of the question. A process stuck on the disk uses no
+  # processor time at all, so it can never appear in the list above — and it
+  # is exactly the one worth naming when the machine feels slow but nothing
+  # seems to be running.
+  stalled=${stall:-0}; stalled=${stalled%%.*}
+  if [ "$iowait" -ge 5 ] || [ "${stalled:-0}" -ge 10 ]; then
+    _io_stuck "$procs2"
+  fi
   return 0
 }
 
-# One line per process: pid, processor ticks it has used, its short name.
-# ps would be the obvious tool and is the wrong one — the percentage it prints
-# is an average over the whole life of the process, so a daemon that idled for
-# a week and is pegged right now shows a fraction of a percent.
+# One line per process: pid, processor ticks it has used, its state, its short
+# name. ps would be the obvious tool and is the wrong one — the percentage it
+# prints is an average over the whole life of the process, so a daemon that
+# idled for a week and is pegged right now shows a fraction of a percent.
 _cpu_procs() {
   awk '
     {
@@ -242,9 +273,99 @@ _cpu_procs() {
       if (shut <= open) next
       split(FILENAME, path, "/")
       if (split(substr($0, shut + 1), f) >= 13)
-        print path[3] "\t" f[12] + f[13] "\t" substr($0, open + 1, shut - open - 1)
+        print path[3] "\t" f[12] + f[13] "\t" f[1] "\t" \
+              substr($0, open + 1, shut - open - 1)
     }
   ' /proc/[0-9]*/stat 2>/dev/null
+}
+
+# Whole disks only: partitions repeat their parent's work, and loop, ram and
+# device-mapper entries are not hardware anybody can buy a better one of.
+_disk_counters() {
+  [ -r /proc/diskstats ] || return 0
+  whole=""
+  for path in /sys/block/*; do
+    name=${path##*/}
+    case $name in loop*|ram*|zram*|dm-*|md*|sr*) continue ;; esac
+    whole="$whole $name"
+  done
+  [ -n "$whole" ] || return 0
+  # diskstats: 4 reads, 7 ms reading, 8 writes, 11 ms writing, 13 ms with the
+  # queue non-empty.
+  awk -v keep="$whole" '
+    BEGIN { n = split(keep, k, " "); for (i = 1; i <= n; i++) want[k[i]] = 1 }
+    want[$3] { print $3 "\t" $4 + $8 "\t" $7 + $11 "\t" $13 }
+  ' /proc/diskstats
+}
+
+# How the disk behaved: how many operations it finished, how long each took,
+# and how much of the time it had anything to do at all. The three together
+# separate "our load is heavy" from "this storage is slow", which is the
+# difference between a problem to fix and a bill to pay.
+#
+# Measured from the previous poll rather than over the third of a second the
+# processor is measured over: a quiet-looking disk finishes nothing at all in
+# a third of a second, and "no operations" is not an answer to "how fast does
+# it answer". The short window is kept as a fallback for the first poll after
+# a reboot, when there is nothing to compare against yet.
+_disk_io() {
+  cache=${TMPDIR:-/tmp}/health-zoo-diskstats
+  # Uptime rather than the clock: it cannot jump, and it resets on a reboot,
+  # which is exactly when the previous counters stop being comparable.
+  now=$(cut -d. -f1 /proc/uptime 2>/dev/null || echo 0)
+  before=$1
+  window_ms=$3
+  if [ -r "$cache" ]; then
+    was=$(head -1 "$cache")
+    gap=$(( now - was ))
+    if [ "$gap" -ge 20 ] && [ "$gap" -le 3600 ]; then
+      before=$(tail -n +2 "$cache")
+      window_ms=$(( gap * 1000 ))
+    fi
+  fi
+  { echo "$now"; printf '%s\n' "$2"; } > "$cache" 2>/dev/null
+  printf '%s\n@\n%s\n' "$before" "$2" | awk -F'\t' -v ms="$window_ms" '
+    $1 == "@" { second = 1; next }
+    !second   { ios[$1] = $2; spent[$1] = $3; busy[$1] = $4; next }
+    {
+      d_ios = $2 - ios[$1]; d_spent = $3 - spent[$1]; d_busy = $4 - busy[$1]
+      if (d_ios <= 0 && d_busy <= 0) next
+      # Tenths, not whole units: an SSD answering in 0.3 ms and one answering
+      # in 0.9 ms are both "0 ms" as integers, and the difference between them
+      # is the whole reason for measuring.
+      printf "%s\t%.1f\t%.1f\t%.1f\t%d\n", $1, d_ios * 1000 / ms,
+             (d_ios > 0 ? d_spent / d_ios : 0), d_busy * 100 / ms, d_ios
+    }
+  ' | while IFS='	' read -r dev iops await util ops; do
+    # Fifty milliseconds is a stalled SSD and an ordinary afternoon for a
+    # spinning disk, so the reader of these numbers is told which it is.
+    rot=$(cat "/sys/block/$dev/queue/rotational" 2>/dev/null || echo 0)
+    row "@diskio	$dev	$iops	$await	$util	$rot	$ops	$window_ms"
+  done
+}
+
+# Pressure stall information, when the kernel keeps it: the share of the last
+# ten seconds in which at least one task ("some") or every runnable task
+# ("full") was waiting for storage. iowait answers the same question only when
+# the processor has nothing else to do — on a busy box one stalled task hides
+# behind the work the other cores are doing, and this number does not let it.
+_io_pressure() {
+  [ -r /proc/pressure/io ] || return 0
+  awk -v kind="$1" '$1 == kind { sub("avg10=", "", $2); print $2; exit }' \
+      /proc/pressure/io
+}
+
+# Processes in uninterruptible sleep: the ones the kernel will not even let be
+# killed, because they are inside a call that has not come back. wchan names
+# the call, which is usually the whole diagnosis.
+_io_stuck() {
+  printf '%s\n' "$1" | awk -F'\t' '$3 == "D" { print $1 "\t" $4 }' |
+  head -5 | while IFS='	' read -r pid name; do
+    wchan=$(tr -d '\000' < "/proc/$pid/wchan" 2>/dev/null | cut -c1-40)
+    cmd=$(tr '\000\n\t\r' '    ' < "/proc/$pid/cmdline" 2>/dev/null |
+          cut -c1-120 | sed 's/[[:space:]]*$//')
+    row "@stuck	$pid	$name	${cmd:-[$name]}	${wchan:-?}"
+  done
 }
 
 # The two snapshots, subtracted. Percentages are of the whole machine and of
@@ -257,7 +378,7 @@ _cpu_blame() {
     {
       # A process born inside the window spent everything it has inside it.
       used = ($1 in was) ? $2 - was[$1] : $2
-      if (used > 0) printf "%s\t%d\t%s\n", $1, used * 100 / total, $3
+      if (used > 0) printf "%s\t%d\t%s\n", $1, used * 100 / total, $4
     }
   ' | sort -t'	' -k2,2rn | head -4 | while IFS='	' read -r pid pct name; do
     [ "${pct:-0}" -ge 1 ] || continue

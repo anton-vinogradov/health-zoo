@@ -370,6 +370,59 @@ def test_busy_processor_names_what_is_using_it():
         "процессор занят на 93%"
 
 
+def _waiting_host(await_ms, iops, ops=600):
+    """A host that is waiting on storage, with one disk to blame."""
+    host = host_named(fleet(), lambda h: h.get("cpu_load_pct") is not None)
+    host["cpu_load_pct"] = 8
+    host["cpu_iowait_pct"] = 61
+    host["io_stall_pct"] = 55.0
+    host["diskios"] = [{"dev": "vda", "iops": iops, "await": await_ms, "util": 90.0,
+                        "rotational": False, "ops": ops, "window_ms": 180000}]
+    return host
+
+
+def test_slow_storage_is_told_apart_from_our_own_load():
+    """The verdict has to end somewhere different in each case.
+
+    Same latency, different queue: one is a disk that answers slowly with
+    nothing asked of it, the other is our own work waiting for its turn. The
+    first is a decision about hosting, the second about what runs here.
+    """
+    theirs = _waiting_host(await_ms=48.0, iops=20.0)      # queue ≈ 1
+    theirs["stucks"] = [{"pid": 811, "name": "postgres", "cmd": "postgres: writer",
+                         "wchan": "io_schedule"}]
+    issues.annotate([theirs], CFG, None)
+    text = [i for i in theirs["issues"] if i["key"] == "slowdisk"][0]["text"]
+    assert "vda отвечает 48 мс" in text
+    assert "очереди к нему при этом нет" in text and "выделенным диском" in text
+    assert "postgres" in text
+
+    ours = _waiting_host(await_ms=48.0, iops=250.0)       # queue ≈ 12
+    issues.annotate([ours], CFG, None)
+    text = [i for i in ours["issues"] if i["key"] == "slowdisk"][0]["text"]
+    assert "в очереди 12 запросов" in text and "нашей же работой" in text
+    assert "выделенным диском" not in text
+
+
+def test_lazy_disk_nobody_waits_for_is_not_a_finding():
+    """An archive answering slowly while nothing needs it is not a fault."""
+    quiet = _waiting_host(await_ms=90.0, iops=15.0)
+    quiet["cpu_iowait_pct"] = 1
+    quiet["io_stall_pct"] = 0.4
+    issues.annotate([quiet], CFG, None)
+    assert not [i for i in quiet["issues"] if i["key"] == "slowdisk"]
+
+
+def test_a_disk_that_barely_moved_is_not_blamed():
+    """Four operations averaged is one slow request, not a measurement."""
+    host = _waiting_host(await_ms=120.0, iops=0.2, ops=4)
+    issues.annotate([host], CFG, None)
+    assert not [i for i in host["issues"] if i["key"] == "slowdisk"]
+    # …and the iowait finding must not invent a culprit from it either.
+    assert [i for i in host["issues"] if i["key"] == "iowait"][0]["text"] == \
+        "процессор ждёт диск 61% времени"
+
+
 def test_restart_between_polls_is_a_finding():
     before = fleet()
     after = fleet()

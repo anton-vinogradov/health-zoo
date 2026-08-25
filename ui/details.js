@@ -297,6 +297,46 @@ function showHost(host) {
     ])));
   }
 
+  /* Not capacity but speed — the two are unrelated and a full disk that
+     answers instantly is a different problem from an empty one that does
+     not. The queue column is what separates slow storage from our own load. */
+  if ((host.diskios || []).length) {
+    body.appendChild(section('Отклик дисков', h('div', null, [
+      h('p', { class: 'set-hint', text:
+        'Замер от прошлого опроса. Очередь — сколько операций в среднем висело ' +
+        'одновременно: если ответ долгий, а очереди нет, медленный сам диск, ' +
+        'а не наша нагрузка.' }),
+      table(['устройство', 'оп/с', 'мс на операцию', 'занят', 'очередь', 'операций'],
+        host.diskios.map(function (d) {
+          var depth = (d.await || 0) * (d.iops || 0) / 1000;
+          return h('tr', null, [
+            h('td', { class: 'mono', text: d.dev + (d.rotational ? ' · шпиндель' : '') }),
+            h('td', { class: 'mono right', text: String(d.iops) }),
+            h('td', { class: 'mono right', text: String(d.await) }),
+            h('td', { class: 'mono right', text: (d.util || 0) + '%' }),
+            h('td', { class: 'mono right', text: depth.toFixed(1) }),
+            h('td', { class: 'mono right', text: String(d.ops) })
+          ]);
+        }))
+    ])));
+  }
+
+  /* A process in uninterruptible sleep uses no processor time, so it can
+     never show up in the list above — and when the machine feels slow with
+     nothing running, it is the only thing worth looking at. */
+  if ((host.stucks || []).length) {
+    body.appendChild(section('Застряли в ожидании диска',
+      table(['процесс', 'pid', 'ждёт в', 'команда'],
+        host.stucks.map(function (s) {
+          return h('tr', null, [
+            h('td', { text: s.name }),
+            h('td', { class: 'mono right', text: String(s.pid) }),
+            h('td', { class: 'mono', text: s.wchan }),
+            h('td', { class: 'mono wrap', text: s.cmd })
+          ]);
+        }))));
+  }
+
   if ((host.disks || []).length) {
     body.appendChild(section('Диски', table(['точка', 'устройство', 'занято', 'всего', '%'],
       host.disks.map(function (d) {

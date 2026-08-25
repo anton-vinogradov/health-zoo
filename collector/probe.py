@@ -87,6 +87,13 @@ LIST_FIELDS = {
     # order. Sent only when the host is loaded enough for the question to have
     # an answer worth reading.
     "proc": ["pid", "pct", "name", "cmd"],
+    # How the storage behaved: operations a second, how long each took, how
+    # much of the time it was busy, whether the kernel calls it rotating, how
+    # many operations the numbers rest on and how long the window was.
+    "diskio": ["dev", "iops", "await", "util", "rotational", "ops", "window_ms"],
+    # Processes the kernel will not let be interrupted, because they are inside
+    # a call that has not returned. "wchan" is the call.
+    "stuck": ["pid", "name", "cmd", "wchan"],
     "listen": ["port", "process", "scope"],
     "udp": ["port", "process", "scope"],
     # Same shape the RouterOS parser builds by hand, so both kinds of router
@@ -109,6 +116,7 @@ NUMERIC = {
     "pkg_list_mtime", "reboot_required", "zoneminder", "surveillance",
     "zm_events_count", "zm_last_event", "zm_events_bytes", "zm_oldest_event", "ok",
     "cpu_load_pct", "cpu_iowait_pct", "cpu_steal_pct",
+    "io_stall_pct", "io_stall_full_pct",
     "free_flash", "total_flash",
 }
 
@@ -176,6 +184,13 @@ def _post_process(data: dict) -> dict:
     for proc in data.get("procs", []):
         proc["pid"] = int(_num(proc.get("pid", 0)) or 0)
         proc["pct"] = int(_num(proc.get("pct", 0)) or 0)
+
+    for disk in data.get("diskios", []):
+        for field in ("iops", "await", "util"):
+            disk[field] = _num(disk.get(field, 0)) or 0
+        for field in ("ops", "window_ms"):
+            disk[field] = int(_num(disk.get(field, 0)) or 0)
+        disk["rotational"] = str(disk.get("rotational", "")).strip() == "1"
 
     for link in data.get("links", []):
         for field in ("speed", "errors", "crc", "flaps", "capable",
