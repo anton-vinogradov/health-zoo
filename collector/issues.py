@@ -140,6 +140,42 @@ def _channels_ruled_out(radio: dict, limits: dict) -> dict:
     return out
 
 
+def _retry_culprits(host: dict, band: str) -> tuple[str, bool]:
+    """Whose retransmissions the radio's percentage is made of.
+
+    An access point reports one figure for everything it sends, so a single
+    cheap device that needs three attempts per frame raises it exactly like a
+    contended channel does — and then the dashboard sends somebody hunting for
+    a better channel. The per-client counters tell the two apart: when most of
+    the repeats belong to two devices the radio hears perfectly well, the air
+    is not the problem and moving to another channel takes them along.
+
+    Returns the names to show, and whether the devices explain the number.
+    """
+    ranked = []
+    for client in host.get("wireless") or []:
+        if client.get("band") != band:
+            continue
+        sent = client.get("tx_packets") or 0
+        again = client.get("tx_retries") or 0
+        # Counted since the client associated, so a device that has barely
+        # spoken carries no evidence either way.
+        if sent < 200 or not again:
+            continue
+        ranked.append(dict(client, share=round(again * 100.0 / sent)))
+    if not ranked:
+        return "", False
+    ranked.sort(key=lambda c: -c["tx_retries"])
+    total = sum(c["tx_retries"] for c in ranked)
+    top = ranked[:2]
+    named = ", ".join(
+        f"{c.get('name') or c.get('mac')} {c['share']}% при {c.get('signal')} дБм"
+        for c in top)
+    concentrated = total and sum(c["tx_retries"] for c in top) >= 0.6 * total
+    audible = all((c.get("signal") or -100) >= -70 for c in top)
+    return named, bool(concentrated and audible)
+
+
 def _ago(hours: float) -> str:
     if hours < 1:
         return "только что"
@@ -195,8 +231,13 @@ def _channel_advice(radio: dict, limits: dict) -> tuple:
     retries = radio.get("retries")
     busy = (isinstance(util, (int, float))
             and util >= limits.get("airtime_warn_24", 40))
+    # Repeats that belong to two well-heard devices are not a symptom of this
+    # channel: they would move to the next one with them. Counting them as one
+    # is how a dashboard sends somebody to re-measure the whole band because a
+    # smart socket cannot hold a conversation.
     losing = (isinstance(retries, (int, float))
-              and retries >= limits.get("retries_warn_24", 35))
+              and retries >= limits.get("retries_warn_24", 35)
+              and not radio.get("retries_are_clients"))
     if not (busy or losing):
         return "", ""
     symptom = f"эфир {util}%" if busy else f"{retries}% передач повторно"
@@ -893,9 +934,17 @@ def host_issues(host: dict, cfg: dict | None = None) -> list[dict]:
         # transmissions repeated is the case airtime alone would have missed.
         retries = radio.get("retries")
         retry_at = limits.get("retries_warn_24" if band == "2.4" else "retries_warn_5", 40)
+        named, theirs = _retry_culprits(host, band)
+        # The radio's own number cannot say whose frames those were, so the
+        # finding used to send the reader looking at the channel — the one
+        # thing this turns out not to depend on.
+        radio["retries_are_clients"] = theirs
         if isinstance(retries, (int, float)) and retries >= retry_at:
             add("warn", f"radioretry:{name}",
-                f"{label}: {retries}% передач уходят повторно")
+                f"{label}: {retries}% передач уходят повторно"
+                + (f" — {named}" if named else "")
+                + ("; слышно их хорошо, так что дело в самих устройствах, "
+                   "а не в канале" if theirs else ""))
 
         # Which channel to sit on is decided on measurements taken from that
         # channel — and a radio only ever measures the one it is on. What it
@@ -1425,7 +1474,10 @@ def checks_for(host: dict, cfg: dict | None = None) -> list[dict]:
         f"Доля кадров, ушедших повторно: с {limits.get('retries_warn_24', 35)}% "
         f"в 2.4 ГГц и {limits.get('retries_warn_5', 45)}% в 5 ГГц. Показывает "
         "то, чего не видно по загрузке эфира: канал может быть свободен, а наши "
-        "кадры всё равно не доходить",
+        "кадры всё равно не доходить. Точка отдаёт одно число на всё, что "
+        "передаёт, поэтому находка называет и виновников по счётчикам клиентов: "
+        "если повторы собрались на паре устройств, которые слышно хорошо, дело "
+        "в них, и смена канала увезёт их с собой",
         applies=any(r.get("retries") is not None for r in host.get("radios", [])),
         skipped="точка не отдаёт долю повторов", keys=("radioretry",))
     add("network", "Ширина канала 2.4 ГГц",

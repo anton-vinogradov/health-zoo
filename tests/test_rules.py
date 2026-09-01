@@ -174,6 +174,67 @@ def test_a_couple_of_failed_attempts_are_not_a_finding():
     assert not fires(host, "authfail:38:A5:C9:11:22:33")
 
 
+def retry_host(clients):
+    """An access point whose 2.4 GHz radio repeats a third of its frames."""
+    host = host_named(fleet(), lambda h: h.get("radios"))
+    host["radios"] = [{"name": "ng", "band": "2.4", "channel": 6, "width": 20,
+                       "utilization": 35, "own_utilization": 22,
+                       "foreign_utilization": 13, "retries": 37.5,
+                       "clients": len(clients), "satisfaction": 100}]
+    host["wireless"] = clients
+    return host
+
+
+def client(name, signal, sent, again, band="2.4"):
+    return {"mac": f"aa:bb:cc:00:00:{abs(hash(name)) % 100:02d}", "name": name,
+            "band": band, "signal": signal, "tx_packets": sent, "tx_retries": again}
+
+
+def test_repeats_that_belong_to_two_devices_are_not_blamed_on_the_channel():
+    """The number the radio reports cannot say whose frames those were.
+
+    One smart socket that needs three attempts per frame moves it exactly like
+    a contended channel does — and the dashboard used to answer that by asking
+    for a survey of the whole band, which those devices would have survived
+    unchanged.
+    """
+    host = retry_host([
+        client("Yandex-Smart-Socket", -60, 12000, 26000),
+        client("Yandex-Smart-Lightstrip", -53, 9000, 10800),
+        client("iPad", -60, 40000, 3300),
+    ])
+    issues.annotate([host], CFG, None)
+    text = [i for i in host["issues"] if i["key"] == "radioretry:ng"][0]["text"]
+    assert "Yandex-Smart-Socket 217% при -60 дБм" in text
+    assert "дело в самих устройствах" in text
+    # …and no invitation to go hunting for a better channel.
+    assert not [i for i in host["issues"] if i["key"].startswith("radioneighbours")]
+
+
+def test_repeats_spread_across_the_room_still_point_at_the_air():
+    """Everybody repeating equally is what a bad channel actually looks like."""
+    host = retry_host([
+        client("iPad", -58, 20000, 7000),
+        client("iPhone", -61, 20000, 7000),
+        client("Mac", -59, 20000, 7000),
+        client("Station", -62, 20000, 7000),
+    ])
+    issues.annotate([host], CFG, None)
+    text = [i for i in host["issues"] if i["key"] == "radioretry:ng"][0]["text"]
+    assert "дело в самих устройствах" not in text
+
+
+def test_a_device_nobody_can_hear_is_not_the_whole_story():
+    """Repeats from a client at the edge of coverage can be the channel too."""
+    host = retry_host([
+        client("esp32-far", -84, 12000, 26000),
+        client("iPad", -60, 40000, 900),
+    ])
+    issues.annotate([host], CFG, None)
+    text = [i for i in host["issues"] if i["key"] == "radioretry:ng"][0]["text"]
+    assert "esp32-far" in text and "дело в самих устройствах" not in text
+
+
 def camera_host(quiet_hours):
     host = host_named(fleet(), lambda h: h.get("cameras"))
     host["cameras"] = [{"id": "cam1", "name": "Outdoor", "status": "Connected",

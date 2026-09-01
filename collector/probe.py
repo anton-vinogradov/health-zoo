@@ -2144,6 +2144,15 @@ def poll_unifi_controller(cfg: dict, results: list[dict]) -> None:
                 "ssid": client.get("essid") or "",
                 "band": "5" if (client.get("channel") or 0) > 14 else "2.4",
                 "signal": client.get("signal") or client.get("rssi") or 0,
+                # Counters since the client associated. The radio reports one
+                # retransmission percentage for everything it sends, which
+                # cannot tell a channel being lost from one device that hears
+                # badly; these can, and the difference decides whether moving
+                # channel is worth anything at all.
+                "tx_packets": client.get("tx_packets") or 0,
+                "tx_retries": client.get("tx_retries") or 0,
+                "rate": round((client.get("tx_rate") or 0) / 1000),
+                "proto": client.get("radio_proto", ""),
             })
     except Exception:
         pass  # the radios and their counts are still worth having
