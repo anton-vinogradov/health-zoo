@@ -468,27 +468,46 @@ class Fleet:
         excluded = set(conf.get("exclude") or [])
         min_gap = int(conf.get("min_interval_hours", 20)) * 3600
         now = int(time.time())
+        waiting = []
         for host in hosts:
             host_id = host.get("id")
             if not host.get("reboot_required") or host_id in excluded:
                 continue
             source = next((h for h in self.hosts() if h.get("id") == host_id), None)
-            if not source or source.get("local") or source.get("update_last"):
+            if not source:
                 continue
             if now - self.settings.last_reboot(host_id) < min_gap:
                 continue
-            if not self.jobs_ref:
-                return
-            job_id, err = self.jobs_ref.start_reboot(source, self)
-            if not job_id:
-                # Another job holds the slot; try again next poll rather than
-                # queueing reboots up behind an update run.
+            waiting.append((source, host))
+        if not waiting or not self.jobs_ref:
+            return
+
+        source, host = choose_reboot_target(waiting)
+        host_id = str(host.get("id"))
+        why = (host.get("reboot_pkgs") or "").strip() or "система просит перезагрузку"
+
+        if source.get("local"):
+            # Everything that has to be said, saved or answered happens before
+            # the command, because the command ends the process saying it.
+            announced = self.alerts.notify(
+                f"перезагружаю {host.get('name', host_id)} — {why}; это машина "
+                "самого дашборда, так что минуту его и уведомлений не будет")
+            if self.alerts.enabled and not announced:
+                # Going down unannounced is how a planned reboot becomes an
+                # unexplained outage. It can wait for the next window.
                 return
             self.settings.note_reboot(host_id, now)
-            self.alerts.notify(
-                f"перезагружаю {host.get('name', host_id)} — "
-                f"{(host.get('reboot_pkgs') or '').strip() or 'система просит перезагрузку'}")
+            self.jobs_ref.start_reboot(source, self)
             return
+
+        job_id, err = self.jobs_ref.start_reboot(source, self)
+        if not job_id:
+            # Another job holds the slot; try again next poll rather than
+            # queueing reboots up behind an update run.
+            return
+        self.settings.note_reboot(host_id, now)
+        self.alerts.notify(f"перезагружаю {host.get('name', host_id)} — {why}")
+        return
 
     def refresh_hosts(self, host_ids: list[str]) -> int:
         """Re-poll just these hosts and splice them into the current snapshot.
@@ -808,9 +827,14 @@ class Jobs:
         agent = host.get("agent", "linux")
 
         if agent in ("linux", "openwrt"):
+            # A minute of warning when the machine is the one running this:
+            # the announcement, the bookkeeping and the reply to whoever asked
+            # all have to finish first, and none of them survive the reboot.
+            when = "+1" if host.get("local") else "+0"
             # Detached: the ssh session dies with the machine, and without
             # backgrounding the command can be killed before it takes effect.
-            cmd = "shutdown -r +0 health-zoo >/dev/null 2>&1 || reboot >/dev/null 2>&1 &"
+            cmd = (f"shutdown -r {when} health-zoo >/dev/null 2>&1 || "
+                   "reboot >/dev/null 2>&1 &")
             if host.get("user") != "root":
                 cmd = "sudo -n " + cmd
             return cmd + " exit 0", ""
@@ -1082,6 +1106,20 @@ def order_targets(hosts: list[dict]) -> list[dict]:
     """Updatable hosts, with the dashboard's own host deliberately last."""
     targets = [h for h in hosts if h.get("updatable")]
     return sorted(targets, key=lambda h: (bool(h.get("update_last")), h.get("id", "")))
+
+
+def choose_reboot_target(waiting: list[tuple]) -> tuple:
+    """Which of the hosts waiting for a reboot to take first.
+
+    Same rule as updates, for a sharper reason: while the machine running the
+    dashboard is down there is nothing left to reboot the others, and nothing
+    to notice if it does not come back. So it goes last, and only in a window
+    where it is the last one waiting.
+    """
+    def deferred(pair: tuple) -> bool:
+        return bool(pair[0].get("local") or pair[0].get("update_last"))
+
+    return next((pair for pair in waiting if not deferred(pair)), waiting[0])
 
 
 class Handler(BaseHTTPRequestHandler):

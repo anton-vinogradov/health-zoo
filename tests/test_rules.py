@@ -370,12 +370,12 @@ def test_busy_processor_names_what_is_using_it():
         "процессор занят на 93%"
 
 
-def test_the_dashboards_own_host_says_why_it_is_not_rebooted():
+def test_the_dashboards_own_host_says_when_it_gets_rebooted():
     """Otherwise the automation looks broken.
 
-    Automatic reboots skip the machine the dashboard runs on — it would take
-    down the job reporting its own progress and the alert channel with it — so
-    that finding sits on the card for days looking ignored.
+    The machine the dashboard runs on is rebooted after every other one, so
+    the finding can sit on its card for a window or two — and did, for days,
+    with nothing on the card explaining why.
     """
     host = host_named(fleet(), lambda h: h.get("id"))
     host["reboot_required"] = 1
@@ -384,7 +384,8 @@ def test_the_dashboards_own_host_says_why_it_is_not_rebooted():
     cfg["hosts"] = [{"id": host["id"], "local": True}]
     issues.annotate([host], cfg, None)
     assert [i for i in host["issues"] if i["key"] == "reboot"][0]["text"] == \
-        "нужна перезагрузка: новое ядро — сам себя дашборд не перезагружает, только кнопкой"
+        "нужна перезагрузка: новое ядро — свою машину дашборд перезагружает " \
+        "последней и только в окно"
 
     elsewhere = host_named(fleet(), lambda h: h.get("id"))
     elsewhere["reboot_required"] = 1

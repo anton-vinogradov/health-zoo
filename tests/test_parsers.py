@@ -633,6 +633,32 @@ def test_clearing_a_camera_threshold_follows_the_fleet_again(tmp_path):
     assert store.camera_limits("rec", "3") == {}
 
 
+def test_the_dashboard_reboots_itself_last():
+    """While it is down, nothing is left to reboot anything else."""
+    import hub
+
+    dashboard = ({"id": "watchcats", "local": True}, {"id": "watchcats"})
+    router = ({"id": "rt-88"}, {"id": "rt-88"})
+    vps = ({"id": "vps"}, {"id": "vps"})
+
+    assert hub.choose_reboot_target([dashboard, router, vps])[0]["id"] == "rt-88"
+    assert hub.choose_reboot_target([router, dashboard])[0]["id"] == "rt-88"
+    # Alone in the window it is finally its own turn — otherwise the kernel it
+    # is waiting for would never be applied.
+    assert hub.choose_reboot_target([dashboard])[0]["id"] == "watchcats"
+
+
+def test_a_host_reboots_itself_with_a_minute_of_warning():
+    """Its own reboot has to outlive the announcement and the bookkeeping."""
+    import hub
+
+    jobs = hub.Jobs({})
+    local, _ = jobs._reboot_command({"agent": "linux", "user": "root", "local": True}, None)
+    remote, _ = jobs._reboot_command({"agent": "linux", "user": "root"}, None)
+    assert "shutdown -r +1" in local
+    assert "shutdown -r +0" in remote
+
+
 def test_reboot_job_follows_the_host_down_and_back(monkeypatch):
     """The log used to go silent for exactly the stretch being watched."""
     import hub

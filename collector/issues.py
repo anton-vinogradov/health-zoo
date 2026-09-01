@@ -1064,11 +1064,11 @@ def host_issues(host: dict, cfg: dict | None = None) -> list[dict]:
         else:
             detail = why
         text = f"нужна перезагрузка: {detail}" if detail else "нужна перезагрузка"
-        # The one host the automatic reboot never picks up is the machine the
-        # dashboard itself runs on. Left unsaid, that reads as the automation
-        # being broken — the finding just sits there for days.
+        # The machine the dashboard runs on is rebooted after every other one,
+        # so this finding can sit on the card for a window or two. Left unsaid,
+        # that reads as the automation having stopped working.
         if _config_entry(host, cfg).get("local"):
-            text += " — сам себя дашборд не перезагружает, только кнопкой"
+            text += " — свою машину дашборд перезагружает последней и только в окно"
         add("warn", "reboot", text)
 
     orphans = host.get("orphan_count") or 0
@@ -1454,9 +1454,11 @@ def checks_for(host: dict, cfg: dict | None = None) -> list[dict]:
 
     add("updates", "Требуется перезагрузка",
         "reboot-required у Debian, непринятая прошивка RouterBOARD — с причиной"
-        + (". Автоматическая перезагрузка этот хост не берёт: на нём работает "
-           "сам дашборд, и он оборвал бы отчёт о собственной перезагрузке "
-           "вместе с каналом уведомлений"
+        + (". На этом хосте работает сам дашборд, поэтому его он перезагружает "
+           "последним и только когда в окне больше некого: пока он выключен, "
+           "некому ни перезагружать остальных, ни заметить, что он не вернулся. "
+           "Сообщение об этом уходит до команды и только если доставлено — иначе "
+           "перезагрузка откладывается до следующего окна"
            if _config_entry(host, cfg).get("local") else ""),
         keys=("reboot",))
     add("updates", "Сертификаты TLS",

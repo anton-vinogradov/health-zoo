@@ -95,10 +95,15 @@ orphan installs on the second pass.
 
 The same view can turn on **automatic reboots**: hosts that report a pending
 reboot themselves are rebooted inside a chosen window of hours, one per poll,
-never twice within a day, never the host running the dashboard, and never one
-on the exclusion list. Every automatic reboot announces itself in Telegram
-first. It is off by default — a dashboard that reboots machines without being
-asked is a surprise, and the first surprise lands during a recording.
+never twice within a day, and never one on the exclusion list. The machine
+running the dashboard goes last of all, and only in a window where nothing
+else is waiting: while it is down there is nothing left to reboot the others
+or to notice that it did not come back. Every automatic reboot announces
+itself in Telegram first — and its own it announces before the command and
+only if the message actually went out.
+
+It is off by default — a dashboard that reboots machines without being asked is
+a surprise, and the first surprise lands during a recording.
 
 Stored in `/var/lib/health-zoo/settings.json`, which the service owns; the
 hand-written `/etc/health-zoo.json` stays the description of the fleet.

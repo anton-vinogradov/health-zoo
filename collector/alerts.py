@@ -464,11 +464,16 @@ class Alerts:
               f"{(done.stderr or '').strip()[:80]}", flush=True)
         return False
 
-    def notify(self, text: str) -> None:
-        """Send one line the rules did not produce — an action being taken."""
+    def notify(self, text: str) -> bool:
+        """Send one line the rules did not produce — an action being taken.
+
+        Returns whether it actually went out, which matters for the one
+        announcement that cannot be repeated afterwards: the dashboard host
+        saying it is about to reboot itself.
+        """
         if not self.enabled:
-            return
-        self._send("🔄 health-zoo: " + text)
+            return False
+        return self._send("🔄 health-zoo: " + text)
 
     def test(self) -> tuple[bool, str]:
         """Send a probe message; used by /api/alerts/test."""
