@@ -370,6 +370,30 @@ def test_busy_processor_names_what_is_using_it():
         "процессор занят на 93%"
 
 
+def test_the_dashboards_own_host_says_why_it_is_not_rebooted():
+    """Otherwise the automation looks broken.
+
+    Automatic reboots skip the machine the dashboard runs on — it would take
+    down the job reporting its own progress and the alert channel with it — so
+    that finding sits on the card for days looking ignored.
+    """
+    host = host_named(fleet(), lambda h: h.get("id"))
+    host["reboot_required"] = 1
+    host["reboot_pkgs"] = "linux-image-6.8.0-138-generic"
+    cfg = dict(CFG)
+    cfg["hosts"] = [{"id": host["id"], "local": True}]
+    issues.annotate([host], cfg, None)
+    assert [i for i in host["issues"] if i["key"] == "reboot"][0]["text"] == \
+        "нужна перезагрузка: новое ядро — сам себя дашборд не перезагружает, только кнопкой"
+
+    elsewhere = host_named(fleet(), lambda h: h.get("id"))
+    elsewhere["reboot_required"] = 1
+    elsewhere["reboot_pkgs"] = "linux-image-6.8.0-138-generic"
+    issues.annotate([elsewhere], CFG, None)
+    assert [i for i in elsewhere["issues"] if i["key"] == "reboot"][0]["text"] == \
+        "нужна перезагрузка: новое ядро"
+
+
 def test_busy_processor_says_what_the_wires_were_doing():
     """A tunnel at its encryption ceiling should read as one, not as a mystery.
 

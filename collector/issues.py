@@ -102,6 +102,15 @@ def thresholds_for(host: dict, cfg: dict | None = None) -> dict:
     return limits
 
 
+def _config_entry(host: dict, cfg: dict | None) -> dict:
+    """What the configuration says about this host, as opposed to what it said
+    about itself. Flags like `local` never travel in a probe result."""
+    for entry in (cfg or {}).get("hosts") or []:
+        if entry.get("id") == host.get("id"):
+            return entry
+    return {}
+
+
 def _channels_ruled_out(radio: dict, limits: dict) -> dict:
     """Candidates already known to be worse than where the radio is now.
 
@@ -1054,7 +1063,13 @@ def host_issues(host: dict, cfg: dict | None = None) -> list[dict]:
             detail = ", ".join(packages[:3]) + f" и ещё {len(packages) - 3}"
         else:
             detail = why
-        add("warn", "reboot", f"нужна перезагрузка: {detail}" if detail else "нужна перезагрузка")
+        text = f"нужна перезагрузка: {detail}" if detail else "нужна перезагрузка"
+        # The one host the automatic reboot never picks up is the machine the
+        # dashboard itself runs on. Left unsaid, that reads as the automation
+        # being broken — the finding just sits there for days.
+        if _config_entry(host, cfg).get("local"):
+            text += " — сам себя дашборд не перезагружает, только кнопкой"
+        add("warn", "reboot", text)
 
     orphans = host.get("orphan_count") or 0
     if orphans:
@@ -1438,7 +1453,11 @@ def checks_for(host: dict, cfg: dict | None = None) -> list[dict]:
         applies=agent == "linux", skipped="только для apt", keys=("orphans",))
 
     add("updates", "Требуется перезагрузка",
-        "reboot-required у Debian, непринятая прошивка RouterBOARD — с причиной",
+        "reboot-required у Debian, непринятая прошивка RouterBOARD — с причиной"
+        + (". Автоматическая перезагрузка этот хост не берёт: на нём работает "
+           "сам дашборд, и он оборвал бы отчёт о собственной перезагрузке "
+           "вместе с каналом уведомлений"
+           if _config_entry(host, cfg).get("local") else ""),
         keys=("reboot",))
     add("updates", "Сертификаты TLS",
         f"Предупреждение за {limits.get('cert_warn_days', 21)} сут до истечения, "
