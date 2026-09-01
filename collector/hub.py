@@ -811,6 +811,10 @@ class Jobs:
                 "current": host["id"], "log": [], "results": {},
             }
             self.active = job_id
+        # Every reboot that starts here is one somebody asked for, by button or
+        # by schedule. Recorded before the machine goes, or it comes back and
+        # is reported as having restarted on its own.
+        fleet.settings.note_reboot(str(host.get("id")), int(time.time()))
         thread = threading.Thread(target=self._run_reboot, args=(job_id, host, fleet),
                                   daemon=True)
         thread.start()
