@@ -169,6 +169,14 @@ function showHost(host) {
     class: 'btn btn-sm', text: 'переименовать',
     onclick: function () { renameHost(host); }
   })];
+  /* Only where rent is a thing: a NAS in the hallway is not paid for by the
+     month, and a button offering to record when it was would be noise. */
+  if (host.paid_until || host.role === 'server') {
+    actions.push(h('button', {
+      class: 'btn btn-sm', text: 'продлил оплату',
+      onclick: function () { setPaidUntil(host); }
+    }));
+  }
   if (host.reachable) {
     if (host.updatable && host.agent === 'linux') {
       actions.push(h('button', {

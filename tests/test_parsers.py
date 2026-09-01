@@ -633,6 +633,31 @@ def test_clearing_a_camera_threshold_follows_the_fleet_again(tmp_path):
     assert store.camera_limits("rec", "3") == {}
 
 
+def test_paid_until_is_recorded_by_hand_and_falls_back_to_the_config(tmp_path):
+    """Renewing takes a minute; writing it down must not take longer."""
+    import settings as settings_mod
+
+    store = settings_mod.Settings(str(tmp_path / "settings.json"))
+    cfg = {"hosts": [{"id": "vps", "name": "vps", "paid_until": "2026-09-10"}]}
+
+    store.set_paid_until("vps", "2027-03-01")
+    store.apply_to(cfg)
+    assert cfg["hosts"][0]["paid_until"] == "2027-03-01"
+
+    # Cleared means "whatever the fleet file says", not "never paid".
+    store.set_paid_until("vps", "")
+    store.apply_to(cfg)
+    assert cfg["hosts"][0]["paid_until"] == "2026-09-10"
+
+    # A typo in the year would otherwise report the host as unpaid.
+    for wrong in ("01.03.2027", "2027-13-01", "2019-01-01", "скоро"):
+        try:
+            store.set_paid_until("vps", wrong)
+        except ValueError:
+            continue
+        raise AssertionError(f"принял {wrong!r}")
+
+
 def test_the_dashboard_reboots_itself_last():
     """While it is down, nothing is left to reboot anything else."""
     import hub

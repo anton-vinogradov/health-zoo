@@ -17,6 +17,7 @@ import json
 import os
 import re
 import threading
+import time
 
 # What the UI is allowed to change, with enough description to render a form
 # nobody has to guess at. Anything not listed here is not editable from the
@@ -367,6 +368,43 @@ class Settings:
             self._save()
         return name
 
+    def paid_until(self) -> dict:
+        return dict(self.data.get("paid_until") or {})
+
+    def set_paid_until(self, host_id: str, date: str) -> str:
+        """Record that the rent on a machine has been paid to a date.
+
+        Renewing a VPS takes a minute on the provider's site and used to take
+        longer here: the date lives in the fleet file, so writing it down meant
+        an ssh session and an editor, which is exactly the kind of chore that
+        does not get done — and then the dashboard warns about an expiry that
+        was paid weeks ago, until nobody reads that warning any more.
+
+        Empty clears the override and falls back to whatever the file says.
+        """
+        host_id = str(host_id).strip()
+        if not host_id:
+            raise ValueError("не сказано, для какого хоста")
+        date = str(date).strip()
+        if date:
+            try:
+                stamp = time.strptime(date, "%Y-%m-%d")
+            except ValueError:
+                raise ValueError("дата нужна в виде ГГГГ-ММ-ДД") from None
+            # A date in the past is how a typo announces itself: it would put
+            # the host straight into "не оплачен" instead of clearing it.
+            if time.mktime(stamp) < time.time() - 86400:
+                raise ValueError("эта дата уже прошла — проверьте год")
+        with self.lock:
+            dates = dict(self.data.get("paid_until") or {})
+            if date:
+                dates[host_id] = date
+            else:
+                dates.pop(host_id, None)
+            self.data["paid_until"] = dates
+            self._save()
+        return date
+
     def apply_to(self, cfg: dict) -> None:
         """Layer the stored thresholds and names over the config, in place.
 
@@ -383,8 +421,15 @@ class Settings:
         if not hasattr(self, "_base_names"):
             self._base_names = {str(h.get("id")): h.get("name")
                                 for h in cfg.get("hosts") or []}
+        if not hasattr(self, "_base_paid"):
+            self._base_paid = {str(h.get("id")): h.get("paid_until")
+                               for h in cfg.get("hosts") or []}
         chosen = self.names()
+        paid = self.paid_until()
         for host in cfg.get("hosts") or []:
             host_id = str(host.get("id"))
             renamed = chosen.get(host_id)
             host["name"] = renamed or self._base_names.get(host_id) or host.get("name")
+            host["paid_until"] = (paid.get(host_id)
+                                  or self._base_paid.get(host_id)
+                                  or host.get("paid_until") or "")

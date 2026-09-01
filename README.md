@@ -105,6 +105,14 @@ only if the message actually went out.
 It is off by default — a dashboard that reboots machines without being asked is
 a surprise, and the first surprise lands during a recording.
 
+Two more things are edited from a host's card rather than from the file: its
+**name**, and the date its rent runs to. Renewing a VPS takes a minute on the
+provider's site, and writing the new date into the fleet file over ssh takes
+longer than that — so it does not get done, and the dashboard keeps warning
+about rent that was paid a fortnight ago until nobody reads that warning any
+more. Both are layered over the config: clearing the field gives the file's own
+value back.
+
 Stored in `/var/lib/health-zoo/settings.json`, which the service owns; the
 hand-written `/etc/health-zoo.json` stays the description of the fleet.
 

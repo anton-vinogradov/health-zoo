@@ -1421,6 +1421,37 @@ class Handler(BaseHTTPRequestHandler):
             self._json({"ok": True, "name": name})
             return
 
+        if path == "/api/paid":
+            req = self._request()
+            if req is None:
+                self._json({"error": "bad json"}, 400)
+                return
+            host_id = str(req.get("host") or "")
+            known = {str(h.get("id")) for h in self.fleet.hosts()}
+            if host_id not in known:
+                self._json({"error": "нет такого хоста"}, 404)
+                return
+            try:
+                date = self.fleet.settings.set_paid_until(host_id, req.get("date") or "")
+            except ValueError as exc:
+                self._json({"error": str(exc)}, 400)
+                return
+            # Straight into the live config and the current snapshot: renewing
+            # is done to make a warning go away, and a warning that stays until
+            # the next cycle reads as the renewal not having registered.
+            self.fleet.settings.apply_to(self.fleet.cfg)
+            # Cleared means "whatever the file said", which apply_to has just
+            # put back in place.
+            effective = next((h.get("paid_until") for h in self.fleet.hosts()
+                              if str(h.get("id")) == host_id), "")
+            with self.fleet.lock:
+                for host in self.fleet.snapshot.get("hosts", []):
+                    if str(host.get("id")) == host_id:
+                        host["paid_until"] = effective
+            self.fleet.reannotate([host_id])
+            self._json({"ok": True, "paid_until": effective})
+            return
+
         if path in ("/api/ack", "/api/ack/remove"):
             # Reading a finding is not the same as accepting it: no reason, no
             # expiry, no entry in a list to review. It holds only while the

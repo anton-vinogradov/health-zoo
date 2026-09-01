@@ -78,6 +78,29 @@ function renameHost(host) {
   }).catch(function (e) { alert('Ошибка запроса: ' + e); });
 }
 
+/* Renewing a VPS takes a minute on the provider's site; writing the new date
+   into the fleet file over ssh takes longer than that, so it does not happen,
+   and the dashboard keeps warning about rent that was paid a fortnight ago.
+   Same layering as the rename: an empty answer falls back to the config. */
+function setPaidUntil(host) {
+  var date = prompt('До какого числа оплачен ' + host.name + '?\n' +
+                    'Формат ГГГГ-ММ-ДД, пусто — вернуть значение из конфига.',
+                    host.paid_until || '');
+  if (date === null) return;
+  fetch('/api/paid', {
+    method: 'POST', headers: actionHeaders(),
+    body: JSON.stringify({ host: host.id, date: date })
+  }).then(function (r) { return r.json(); }).then(function (res) {
+    if (res.error) { if (!actionFailed(res)) alert('Не вышло: ' + res.error); return; }
+    /* The answer carries the date that ended up in force — the one just typed,
+       or the config's own after clearing — so the open card can show it
+       without waiting for the next state to arrive. */
+    host.paid_until = res.paid_until || '';
+    showHost(host);
+    load();
+  }).catch(function (e) { alert('Ошибка запроса: ' + e); });
+}
+
 function unack(id) {
   fetch('/api/ack/remove', {
     method: 'POST', headers: actionHeaders(), body: JSON.stringify({ id: id })
