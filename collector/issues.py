@@ -464,6 +464,11 @@ def host_issues(host: dict, cfg: dict | None = None) -> list[dict]:
                 "ключ хоста сменился — ssh отклонён, данные не собираются; "
                 "это переустановка, восстановление из копии или чужая машина "
                 "на этом адресе")
+        elif host.get("agent") == "unifi":
+            # Nothing was logged into and nothing was meant to be: the sentence
+            # already says what is wrong, and "нет доступа" in front of it
+            # would point at the access point instead of the controller.
+            add("warn", "noaccess", host["error"])
         else:
             add("warn", "noaccess", f"нет доступа: {host['error']}")
 

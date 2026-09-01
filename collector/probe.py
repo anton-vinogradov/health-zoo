@@ -1609,7 +1609,13 @@ def probe_host(host: dict, key: str | None) -> dict:
         result["probe_ms"] = int((time.time() - started) * 1000)
         return result
 
-    if agent == "none":
+    # A UniFi access point is described by its controller, never by itself:
+    # Network 10 dropped per-device SSH authentication, and the credentials a
+    # device does keep are whatever the controller last pushed — ours stopped
+    # working the moment it re-provisioned them. Logging in was already
+    # pointless; it also produced "Permission denied" as the explanation for
+    # what was really a controller that could not be reached.
+    if agent in ("none", "unifi"):
         # Nothing to log into, but an open 80/443 is still a usable web UI
         # (cameras, appliances).
         result["web"] = [
@@ -2085,8 +2091,11 @@ def poll_unifi_controller(cfg: dict, results: list[dict]) -> None:
             data=json.dumps({"within": 1}).encode(),
             headers={"Content-Type": "application/json"}), timeout=20).read())
     except Exception as exc:
+        # Every access point, not just the ones that fail to answer a ping: an
+        # AP that pings but has no controller behind it is exactly the case
+        # that went unnoticed for five days, its card quietly empty.
         for host in results:
-            if host.get("agent") == "unifi" and not host.get("reachable"):
+            if host.get("agent") == "unifi":
                 host["error"] = f"контроллер UniFi недоступен: {exc}"
         return
 
@@ -2140,6 +2149,7 @@ def poll_unifi_controller(cfg: dict, results: list[dict]) -> None:
         pass  # the radios and their counts are still worth having
 
     by_addr = {h.get("addr"): h for h in results}
+    described: set = set()
     for device in devices.get("data", []):
         host = by_addr.get(device.get("ip"))
         if not host:
@@ -2239,6 +2249,14 @@ def poll_unifi_controller(cfg: dict, results: list[dict]) -> None:
         if ssids:
             host["ssids"] = ssids
         _post_process(host)
+        described.add(host.get("id"))
+
+    # An access point the controller has never heard of has nobody to describe
+    # it: it cannot be logged into either, so the card would otherwise show a
+    # ping and nothing else, with no hint that anything is missing.
+    for host in results:
+        if host.get("agent") == "unifi" and host.get("id") not in described:
+            host["error"] = "контроллер UniFi не знает это устройство"
 
 
 # The controller reports a device it is happy with as state 1. Every other

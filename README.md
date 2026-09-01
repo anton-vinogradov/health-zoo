@@ -161,6 +161,11 @@ application, so access points are read through the controller's API instead —
 which is the better route anyway: one login returns every AP's radios, client
 counts, airtime and firmware state without touching the access points at all.
 
+So a host with `"agent": "unifi"` is never logged into — it is pinged and then
+described by the controller. When the controller cannot be reached, every
+access point says so; before, they simply went blank, and the last SSH error
+stayed on the card pointing at the wrong machine entirely.
+
 Configure it with an account that can also act, not a view-only one: reading
 statistics and rebooting a radio go through the same endpoint, so a read-only
 account means the reboot and firmware buttons cannot work.

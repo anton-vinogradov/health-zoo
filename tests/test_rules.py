@@ -370,6 +370,29 @@ def test_busy_processor_names_what_is_using_it():
         "процессор занят на 93%"
 
 
+def test_an_access_point_blames_the_controller_not_itself():
+    """The message has to point where the problem is.
+
+    Access points are described by their controller and never logged into, so
+    "нет доступа: ubnt@10.88.88.10: Permission denied" was three kinds of
+    wrong: the user is stale, the login is not attempted any more, and the
+    thing that was actually down was the controller.
+    """
+    ap = host_named(fleet(), lambda h: h.get("id"))
+    ap["agent"] = "unifi"
+    ap["error"] = "контроллер UniFi недоступен: HTTP Error 404: Not Found"
+    issues.annotate([ap], CFG, None)
+    text = [i for i in ap["issues"] if i["key"] == "noaccess"][0]["text"]
+    assert text == "контроллер UniFi недоступен: HTTP Error 404: Not Found"
+
+    box = host_named(fleet(), lambda h: h.get("id"))
+    box["agent"] = "linux"
+    box["error"] = "connection refused"
+    issues.annotate([box], CFG, None)
+    assert [i for i in box["issues"] if i["key"] == "noaccess"][0]["text"] == \
+        "нет доступа: connection refused"
+
+
 def test_the_dashboards_own_host_says_when_it_gets_rebooted():
     """Otherwise the automation looks broken.
 
