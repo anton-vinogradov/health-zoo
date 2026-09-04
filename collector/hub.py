@@ -10,6 +10,7 @@ page hang.
 from __future__ import annotations
 
 import concurrent.futures
+import datetime
 import hmac
 import json
 import os
@@ -22,6 +23,7 @@ import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import acks as acks_mod  # noqa: E402
@@ -105,6 +107,9 @@ class Fleet:
         self.settings = settings_mod.Settings(
             cfg.get("settings_file", "/var/lib/health-zoo/settings.json"))
         self.settings.apply_to(cfg)
+        # One zone for the whole dashboard: the reboot window and the daily
+        # digest are both "in the morning" to the same person.
+        self.alerts.timezone = self.settings.timezone()
         probe.configure(cfg)
         self.version = read_version()
         self.history = history.History(
@@ -459,11 +464,8 @@ class Fleet:
         conf = self.settings.auto_reboot()
         if not conf.get("enabled"):
             return
-        hour = time.localtime().tm_hour
-        start, end = int(conf.get("from_hour", 4)), int(conf.get("to_hour", 6))
-        # A window may wrap past midnight (23 -> 5).
-        inside = start <= hour < end if start <= end else (hour >= start or hour < end)
-        if not inside:
+        if not inside_window(conf.get("from_hour", 8), conf.get("to_hour", 9),
+                             self.settings.timezone()):
             return
         excluded = set(conf.get("exclude") or [])
         min_gap = int(conf.get("min_interval_hours", 20)) * 3600
@@ -1112,6 +1114,31 @@ def order_targets(hosts: list[dict]) -> list[dict]:
     return sorted(targets, key=lambda h: (bool(h.get("update_last")), h.get("id", "")))
 
 
+def inside_window(start, end, timezone: str | None = None, when=None) -> bool:
+    """Is it now inside the operator's chosen hours?
+
+    Whose hours matters. A server keeps UTC because that is the sane thing for
+    a machine, and the person setting "reboot at eight in the morning" means
+    eight where they live — so the first version of this rebooted the fleet at
+    eleven, which is exactly the hour a window exists to avoid. The zone is
+    part of the setting; without one the machine's own is used, which is right
+    for a box that keeps local time.
+    """
+    start, end = int(start), int(end)
+    moment = when or datetime.datetime.now(datetime.timezone.utc)
+    if timezone:
+        try:
+            hour = moment.astimezone(ZoneInfo(str(timezone))).hour
+        except Exception:
+            # A zone that stopped resolving must not silently move the window
+            # to somewhere else: fall back to the machine's own time.
+            hour = moment.astimezone().hour
+    else:
+        hour = moment.astimezone().hour
+    # A window may wrap past midnight (23 -> 5).
+    return start <= hour < end if start <= end else (hour >= start or hour < end)
+
+
 def choose_reboot_target(waiting: list[tuple]) -> tuple:
     """Which of the hosts waiting for a reboot to take first.
 
@@ -1317,6 +1344,16 @@ class Handler(BaseHTTPRequestHandler):
             if req is None:
                 self._json({"error": "bad json"}, 400)
                 return
+            # Checked before anything is written: this form saves several
+            # things, and a mistyped zone refused halfway through would leave
+            # the thresholds saved and the window not.
+            zone = (req.get("auto_reboot") or {}).get("timezone")
+            if zone:
+                try:
+                    ZoneInfo(str(zone))
+                except Exception:
+                    self._json({"error": f"неизвестный часовой пояс: {zone}"}, 400)
+                    return
             if isinstance(req.get("thresholds"), dict):
                 # What "default" means here is the built-in value plus whatever
                 # the config file pins — the layers the UI never edits.
@@ -1325,6 +1362,7 @@ class Handler(BaseHTTPRequestHandler):
                 self.fleet.settings.set_thresholds(req["thresholds"], defaults)
             if isinstance(req.get("auto_reboot"), dict):
                 self.fleet.settings.set_auto_reboot(req["auto_reboot"])
+                self.fleet.alerts.timezone = self.fleet.settings.timezone()
             if isinstance(req.get("cameras"), dict):
                 self.fleet.settings.set_cameras(req["cameras"])
             if isinstance(req.get("auto_cleanup"), dict):

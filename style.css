@@ -550,6 +550,8 @@ table.list td.right { text-align: right; }
 .card-head .card-addr { margin-left: auto; }
 .card-head .head-action { margin-left: 0; }
 table.list td.warn { color: var(--warn); }
+/* A zone name is a word, not a number, and needs room for "Europe/Moscow". */
+.set-input.set-zone { width: 11em; text-align: left; }
 table.list td.nowrap { white-space: nowrap; }
 table.list td.nowrap .btn + .btn { margin-left: 4px; }
 /* A command line has no spaces to break on where it matters most — a long

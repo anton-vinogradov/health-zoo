@@ -17,7 +17,9 @@ import json
 import os
 import subprocess
 import threading
+import datetime
 import time
+from zoneinfo import ZoneInfo
 
 import secrets
 
@@ -64,6 +66,10 @@ class Alerts:
         # A standing problem nobody has fixed (security updates, a pending
         # reboot) is worth one reminder a day, not one every poll.
         self.digest_hour = self.cfg.get("digest_hour", 10)
+        # Whose ten in the morning: the machine keeps UTC, the reader
+        # does not. Set from the settings, same zone as the reboot
+        # window — one dashboard, one idea of what time it is.
+        self.timezone = ""
         self.startup_cooldown = int(self.cfg.get("startup_cooldown_hours", 6)) * 3600
         self.state_path = self.cfg.get(
             "state_file", "/var/lib/health-zoo/alerts-state.json")
@@ -240,7 +246,15 @@ class Alerts:
             return False
         if now - self.last_digest < 20 * 3600:
             return False
-        return time.localtime(now).tm_hour == int(self.digest_hour)
+        moment = datetime.datetime.fromtimestamp(now, datetime.timezone.utc)
+        if self.timezone:
+            try:
+                hour = moment.astimezone(ZoneInfo(self.timezone)).hour
+            except Exception:
+                hour = moment.astimezone().hour
+        else:
+            hour = moment.astimezone().hour
+        return hour == int(self.digest_hour)
 
     def _digest_text(self, hosts: list[dict]) -> str:
         """Everything still outstanding — the nag for things nobody fixed."""

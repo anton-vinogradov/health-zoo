@@ -18,6 +18,7 @@ import os
 import re
 import threading
 import time
+from zoneinfo import ZoneInfo
 
 # What the UI is allowed to change, with enough description to render a form
 # nobody has to guess at. Anything not listed here is not editable from the
@@ -93,6 +94,10 @@ AUTO_REBOOT_DEFAULT = {
     # is found in minutes instead of at breakfast.
     "from_hour": 8,
     "to_hour": 9,
+    # Whose eight in the morning. The machine keeps UTC because that is right
+    # for a machine; the person setting the window means the time where they
+    # live. Empty falls back to the host's own zone.
+    "timezone": "",
     # Hosts that must never be rebooted automatically, by id.
     "exclude": [],
     # Never reboot the same host twice within this many hours, whatever the
@@ -323,6 +328,16 @@ class Settings:
                         pass
             if isinstance(values.get("exclude"), list):
                 current["exclude"] = [str(x) for x in values["exclude"]]
+            if "timezone" in values:
+                zone = str(values["timezone"] or "").strip()
+                # An unknown zone would move the window somewhere nobody chose,
+                # so it is refused here rather than silently ignored at 3am.
+                if zone:
+                    try:
+                        ZoneInfo(zone)
+                    except Exception:
+                        raise ValueError(f"неизвестный часовой пояс: {zone}") from None
+                current["timezone"] = zone
             self.data["auto_reboot"] = current
             self._save()
             return current
@@ -367,6 +382,15 @@ class Settings:
             self.data["names"] = names
             self._save()
         return name
+
+    def timezone(self) -> str:
+        """The zone the dashboard speaks in — one for the whole dashboard.
+
+        Stored with the reboot window because that is where it is edited, but
+        it is not a property of rebooting: the daily digest goes out by it too.
+        Two places to set "what time is it here" is how they end up disagreeing.
+        """
+        return str((self.data.get("auto_reboot") or {}).get("timezone") or "")
 
     def paid_until(self) -> dict:
         return dict(self.data.get("paid_until") or {})

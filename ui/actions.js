@@ -511,6 +511,11 @@ function showSettings() {
                                 value: auto.from_hour });
     var toHour = h('input', { class: 'set-input', type: 'number', min: 0, max: 23,
                               value: auto.to_hour });
+    /* Offered rather than demanded: the browser knows where its owner is, and
+       typing "Europe/Moscow" from memory is how zones get mistyped. */
+    var zone = h('input', { class: 'set-input set-zone', type: 'text',
+                            placeholder: Intl.DateTimeFormat().resolvedOptions().timeZone || 'Europe/Moscow',
+                            value: auto.timezone || '' });
     var excludeBoxes = {};
     var excludeList = h('div', { class: 'set-exclude' },
       (cfg.hosts || []).map(function (host) {
@@ -563,8 +568,15 @@ function showSettings() {
       h('div', { class: 'set-row' }, [
         h('span', { text: 'перезагружать между' }), fromHour,
         h('span', { text: 'и' }), toHour,
-        h('span', { text: 'часами по местному времени' })
+        h('span', { text: 'часами по времени' }), zone
       ]),
+      h('p', { class: 'set-hint', text:
+        'Часовой пояс — именно ваш, а не серверный: машина с дашбордом ' +
+        'живёт в UTC, и «восемь утра» без этого поля означало восемь по ' +
+        'Гринвичу. Пусто — считать по времени самого хоста (' +
+        (Intl.DateTimeFormat().resolvedOptions().timeZone || 'ваш браузер') +
+        ' — это ваш браузер). По этому же поясу уходит ежедневная сводка ' +
+        'о том, что осталось нерешённым.' }),
       h('div', { class: 'set-row' }, [h('span', { text: 'никогда не перезагружать:' })]),
       excludeList
     ])));
@@ -602,7 +614,8 @@ function showSettings() {
             auto_cleanup: { enabled: cleanup.checked },
       auto_security: { enabled: security.checked },
             auto_reboot: { enabled: enabled.checked, from_hour: Number(fromHour.value),
-                           to_hour: Number(toHour.value), exclude: exclude }
+                           to_hour: Number(toHour.value), exclude: exclude,
+                           timezone: zone.value.trim() }
           })
         }).then(function (r) { return r.json(); }).then(function (res) {
           if (res.error) { if (!actionFailed(res)) alert('Не вышло: ' + res.error); return; }

@@ -16,6 +16,7 @@ a host nobody touched fails here, and so does one that goes quiet.
 
 from __future__ import annotations
 
+import calendar
 import copy
 import json
 import re
@@ -429,6 +430,22 @@ def test_busy_processor_names_what_is_using_it():
     issues.annotate([quiet], CFG, None)
     assert [i for i in quiet["issues"] if i["key"] == "cpu"][0]["text"] == \
         "процессор занят на 93%"
+
+
+def test_the_daily_digest_goes_out_by_the_readers_clock(tmp_path):
+    """Same bug as the reboot window, same fix: the host keeps UTC."""
+    import alerts as alerts_mod
+
+    box = alerts_mod.Alerts({"telegram": {"digest_hour": 10,
+                                          "state_file": str(tmp_path / "s.json")}})
+    box.timezone = "Europe/Moscow"
+    box.last_digest = 0
+    # 10:00 Moscow is 07:00 UTC. Built as UTC on purpose: a test that leans on
+    # the zone of the machine running it proves nothing about zones.
+    seven_utc = calendar.timegm((2026, 9, 4, 7, 0, 0, 0, 0, 0))
+    assert box._digest_due(int(seven_utc))
+    # 10:00 UTC is one in the afternoon there — not the morning digest.
+    assert not box._digest_due(int(seven_utc + 3 * 3600))
 
 
 def test_an_access_point_blames_the_controller_not_itself():

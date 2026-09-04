@@ -658,6 +658,33 @@ def test_paid_until_is_recorded_by_hand_and_falls_back_to_the_config(tmp_path):
         raise AssertionError(f"принял {wrong!r}")
 
 
+def test_the_reboot_window_is_the_operators_hours_not_the_servers():
+    """The bug this exists for: a fleet rebooted at eleven, not at eight.
+
+    The dashboard host keeps UTC, which is right for a machine and wrong for
+    the sentence "reboot at eight in the morning" — that means eight where the
+    person setting it lives.
+    """
+    import datetime
+    import hub
+
+    # 08:30 Moscow is 05:30 UTC. The window is 8-9 in Moscow.
+    moscow_morning = datetime.datetime(2026, 9, 4, 5, 30, tzinfo=datetime.timezone.utc)
+    assert hub.inside_window(8, 9, "Europe/Moscow", moscow_morning)
+    # …and 08:30 UTC is 11:30 in Moscow: outside, which is what used to happen.
+    assert not hub.inside_window(8, 9, "Europe/Moscow",
+                                 moscow_morning.replace(hour=8))
+
+    # A window may wrap past midnight.
+    night = datetime.datetime(2026, 9, 4, 0, 30, tzinfo=datetime.timezone.utc)
+    assert hub.inside_window(23, 5, "UTC", night)
+    assert not hub.inside_window(23, 5, "UTC", night.replace(hour=6))
+
+    # A zone that does not resolve must not silently move the window: it falls
+    # back to the machine's own time rather than to some other continent.
+    assert hub.inside_window(0, 24, "Nowhere/Nothing", night)
+
+
 def test_the_dashboard_reboots_itself_last():
     """While it is down, nothing is left to reboot anything else."""
     import hub
