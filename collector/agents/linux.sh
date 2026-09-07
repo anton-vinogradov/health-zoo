@@ -422,7 +422,8 @@ if [ -d /etc/zm ] && command -v mysql >/dev/null 2>&1 && sudo -n true 2>/dev/nul
   | while IFS='	' read -r id name en path w h st cfps afps bw cap ana rec age; do
       # rtsp://user:pass@10.0.0.5:554/path -> 10.0.0.5:554
       addr=$(printf '%s' "$path" | sed -e 's|^[a-zA-Z]*://||' -e 's|^[^@/]*@||' -e 's|/.*$||')
-      row "@camera	$id	$name	$en	$addr	${w}x${h}	$st	$cfps	$afps	$bw	$cap	$ana	$rec	$age"
+      row "@camera	$id	$name	$en	$addr	${w}x${h}	$st	$cfps	$afps	$bw"
+      row "@cammode	$id	$cap	$ana	$rec	$age"
     done
   # Archive stats come from the database, not the filesystem: `du` over a
   # multi-gigabyte events tree took ~40s on the N5105 and stalled every cycle.

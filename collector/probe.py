@@ -66,8 +66,14 @@ LIST_FIELDS = {
     # status is — without them "no events" cannot be told from "no events
     # expected", which is the whole question a camera card has to answer.
     "camera": ["id", "name", "enabled", "addr", "resolution", "status",
-               "fps", "afps", "bandwidth", "capturing", "analysing",
-               "recording", "status_age", "last_event", "retention_days"],
+               "fps", "afps", "bandwidth", "last_event", "retention_days"],
+    # What the monitor is *meant* to do and how fresh its status is — the
+    # difference between "nothing happened" and "nothing could have". Its own
+    # row rather than more fields on "@camera": that row is positional, two
+    # agents fill it to different lengths, and fields inserted in the middle
+    # quietly became somebody else's — a Synology camera reported the time of
+    # its last event as its capture mode.
+    "cammode": ["id", "capturing", "analysing", "recording", "status_age"],
     "camlink": ["addr", "proto"],
     "camfw": ["addr", "model", "firmware", "released"],
     "camevent": ["id", "name", "day_count", "last", "oldest"],
@@ -268,14 +274,20 @@ def _post_process(data: dict) -> dict:
     data["update_count"] = len(updates)
     data["security_count"] = sum(1 for u in updates if u.get("security") == "1")
 
+    modes = {m.get("id"): m for m in data.get("cammodes", [])}
     for cam in data.get("cameras", []):
         for field in ("fps", "afps", "bandwidth", "last_event", "retention_days"):
             if field in cam:
                 cam[field] = _num(cam[field])
-        # Seconds since the capture process last wrote its status row; -1 when
-        # it has never written one at all.
-        if cam.get("status_age") not in (None, ""):
-            cam["status_age"] = int(_num(cam["status_age"]) or 0)
+        mode = modes.get(cam.get("id"))
+        if mode:
+            for field in ("capturing", "analysing", "recording"):
+                cam[field] = mode.get(field, "")
+            # Seconds since the capture process last wrote its status row; -1
+            # when it never has. Absent means this recorder does not report it,
+            # which is not the same as zero.
+            raw = mode.get("status_age")
+            cam["status_age"] = int(_num(raw) or 0) if raw not in (None, "") else None
 
     # Recording activity per camera, merged onto the camera it belongs to.
     activity = {}

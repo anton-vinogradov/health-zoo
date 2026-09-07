@@ -58,6 +58,30 @@ def test_parse_report_reads_who_took_the_processor():
     assert [p["pct"] for p in data["procs"]] == [61, 24, 3]
 
 
+def test_a_second_recorders_camera_row_keeps_its_own_meaning():
+    """Positional rows punish inserting a field in the middle.
+
+    Two agents fill "@camera" to different lengths: ZoneMinder stops at the
+    bandwidth, Surveillance Station adds the last event and the retention. The
+    pipeline fields were first put before those two, and a Synology camera
+    started reporting the time of its last event as its capture mode — and
+    then, since its frame counter reads zero, as a dead camera.
+    """
+    data = probe._post_process(probe.parse_report(
+        "@camera\t6612\tStreet\t1\t10.0.0.9\t2688x1520\trecording\t0\t0\t0"
+        "\t1788741023\t155\n"
+        "@camera\t2\tOutdoor\t1\t10.0.0.5:554\t1920x1080\tConnected\t25\t8\t198528\n"
+        "@cammode\t2\tAlways\tAlways\tOnMotion\t9\n"
+    ))
+    synology = {c["id"]: c for c in data["cameras"]}["6612"]
+    assert synology["last_event"] == 1788741023 and synology["retention_days"] == 155
+    # Nothing was said about its pipeline, so nothing is claimed about it.
+    assert synology.get("capturing", "") == "" and synology.get("status_age") is None
+
+    zm = {c["id"]: c for c in data["cameras"]}["2"]
+    assert zm["recording"] == "OnMotion" and zm["status_age"] == 9
+
+
 def test_parse_report_reads_disk_response():
     data = probe._post_process(probe.parse_report(
         "io_stall_pct\t57.4\n"

@@ -73,6 +73,7 @@ lists both. An agent that cannot tell leaves it empty, which reads as `user`.
 | `@container` | name, image, state, status |
 | `@repo` | path, branch, commit, describe, commit time |
 | `@camera` | id, name, enabled, address, resolution, status, fps, analysis fps, bandwidth, last event, retention days |
+| `@cammode` | monitor id, capture mode, analysis mode, recording mode, seconds since its status row was written |
 | `@camlink` | address of a camera this host has an open RTSP session with |
 | `@smart` | device, health, °C, power-on hours, reallocated, pending, wear %, model |
 | `@proc` | pid, % of the whole machine, short name, command line |
