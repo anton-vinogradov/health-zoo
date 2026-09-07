@@ -631,16 +631,33 @@ function showHost(host) {
   }
 
   if ((host.cameras || []).length) {
+    /* Silence only means something next to the two columns that say whether
+       anything could have been recorded: frames arriving, and something
+       looking at them. Read together they answer "should I worry" without
+       anybody opening ZoneMinder. */
     body.appendChild(section('Камеры', table(
-      ['камера', 'адрес', 'состояние', 'fps', 'событий/сут', 'молчит', 'архив'],
+      ['камера', 'адрес', 'состояние', 'поток', 'детекция', 'режим',
+       'событий/сут', 'молчит', 'архив'],
       host.cameras.map(function (c) {
         var live = c.status === 'Connected' || c.status === 'recording';
         var quiet = c.quiet_hours;
+        var stale = typeof c.status_age === 'number' && c.status_age > 180;
+        var mode = c.recording === 'OnMotion' ? 'по движению'
+                 : c.recording === 'Always' ? 'непрерывно'
+                 : c.recording === 'None' ? 'запись выключена'
+                 : (c.recording || '');
         return h('tr', null, [
           h('td', null, [h('span', { class: 'dot ' + (live ? 'ok' : 'bad') }), h('span', { text: c.name })]),
           h('td', { class: 'mono', text: c.addr || '' }),
-          h('td', { class: 'mono', text: c.status || '' }),
-          h('td', { class: 'mono right', text: c.fps ? Number(c.fps).toFixed(1) : '' }),
+          h('td', { class: 'mono' + (stale ? ' warn' : ''),
+                    title: typeof c.status_age === 'number' && c.status_age >= 0
+                      ? 'состояние обновлено ' + c.status_age + ' с назад' : '',
+                    text: (c.status || '') + (stale ? ' (данные старые)' : '') }),
+          h('td', { class: 'mono right', text: c.fps ? Number(c.fps).toFixed(1) + ' к/с' : '' }),
+          h('td', { class: 'mono right' + (c.analysing && c.analysing !== 'None' && !c.afps ? ' warn' : ''),
+                    text: c.analysing === 'None' ? 'выключена'
+                        : c.afps ? Number(c.afps).toFixed(1) + ' к/с' : '' }),
+          h('td', { class: 'mono', text: mode }),
           h('td', { class: 'mono right', text: c.day_count === undefined ? '' : String(c.day_count) }),
           h('td', { class: 'mono right' + (quiet >= 12 ? ' warn' : ''),
                     text: quiet === undefined || quiet === null ? '' : quiet + ' ч' }),

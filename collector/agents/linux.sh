@@ -399,15 +399,30 @@ fi
 # Camera addresses are extracted without their credentials.
 if [ -d /etc/zm ] && command -v mysql >/dev/null 2>&1 && sudo -n true 2>/dev/null; then
   emit zoneminder 1
+  # What the monitor is *meant* to do, not only what it is doing. A camera set
+  # to record on motion produces nothing all night when nothing moves, and one
+  # with analysis switched off produces nothing ever: without these three
+  # columns "no events" cannot be told from "no events expected". ZoneMinder
+  # before 1.37 keeps a single Function column instead, so their absence is
+  # not an error — the fields simply arrive empty.
+  if sudo -n mysql zm -N -B -e "SHOW COLUMNS FROM Monitors LIKE 'Recording'" \
+       2>/dev/null | grep -q Recording; then
+    zm_modes='m.Capturing, m.Analysing, m.Recording'
+  else
+    zm_modes='"", "", ""'
+  fi
+  # How long ago the capture process last wrote its status. A row saying
+  # "Connected, 25 fps" is worthless if it was written before zmc died.
   sudo -n mysql zm -N -B -e \
-    'SELECT m.Id, m.Name, m.Enabled, m.Path, m.Width, m.Height,
-            COALESCE(s.Status,""), COALESCE(s.CaptureFPS,0), COALESCE(s.AnalysisFPS,0),
-            COALESCE(s.CaptureBandwidth,0)
-     FROM Monitors m LEFT JOIN Monitor_Status s ON s.MonitorId = m.Id;' 2>/dev/null \
-  | while IFS='	' read -r id name en path w h st cfps afps bw; do
+    "SELECT m.Id, m.Name, m.Enabled, m.Path, m.Width, m.Height,
+            COALESCE(s.Status,''), COALESCE(s.CaptureFPS,0), COALESCE(s.AnalysisFPS,0),
+            COALESCE(s.CaptureBandwidth,0), $zm_modes,
+            COALESCE(TIMESTAMPDIFF(SECOND, s.UpdatedOn, NOW()), -1)
+     FROM Monitors m LEFT JOIN Monitor_Status s ON s.MonitorId = m.Id;" 2>/dev/null \
+  | while IFS='	' read -r id name en path w h st cfps afps bw cap ana rec age; do
       # rtsp://user:pass@10.0.0.5:554/path -> 10.0.0.5:554
       addr=$(printf '%s' "$path" | sed -e 's|^[a-zA-Z]*://||' -e 's|^[^@/]*@||' -e 's|/.*$||')
-      row "@camera	$id	$name	$en	$addr	${w}x${h}	$st	$cfps	$afps	$bw"
+      row "@camera	$id	$name	$en	$addr	${w}x${h}	$st	$cfps	$afps	$bw	$cap	$ana	$rec	$age"
     done
   # Archive stats come from the database, not the filesystem: `du` over a
   # multi-gigabyte events tree took ~40s on the N5105 and stalled every cycle.

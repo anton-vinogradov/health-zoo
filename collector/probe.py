@@ -62,8 +62,12 @@ LIST_FIELDS = {
     "unitpkg": ["unit", "pkg", "version"],
     "container": ["name", "image", "state", "status"],
     "repo": ["path", "branch", "commit", "describe", "committed"],
+    # The last four say what the monitor is *meant* to do and how fresh its
+    # status is — without them "no events" cannot be told from "no events
+    # expected", which is the whole question a camera card has to answer.
     "camera": ["id", "name", "enabled", "addr", "resolution", "status",
-               "fps", "afps", "bandwidth", "last_event", "retention_days"],
+               "fps", "afps", "bandwidth", "capturing", "analysing",
+               "recording", "status_age", "last_event", "retention_days"],
     "camlink": ["addr", "proto"],
     "camfw": ["addr", "model", "firmware", "released"],
     "camevent": ["id", "name", "day_count", "last", "oldest"],
@@ -268,6 +272,10 @@ def _post_process(data: dict) -> dict:
         for field in ("fps", "afps", "bandwidth", "last_event", "retention_days"):
             if field in cam:
                 cam[field] = _num(cam[field])
+        # Seconds since the capture process last wrote its status row; -1 when
+        # it has never written one at all.
+        if cam.get("status_age") not in (None, ""):
+            cam["status_age"] = int(_num(cam["status_age"]) or 0)
 
     # Recording activity per camera, merged onto the camera it belongs to.
     activity = {}

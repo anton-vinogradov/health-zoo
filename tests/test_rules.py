@@ -236,6 +236,71 @@ def test_a_device_nobody_can_hear_is_not_the_whole_story():
     assert "esp32-far" in text and "дело в самих устройствах" not in text
 
 
+def recorder(quiet_hours, **fields):
+    """A camera on a recorder that reports what its pipeline is doing."""
+    host = host_named(fleet(), lambda h: h.get("cameras"))
+    cam = {"id": "2", "name": "Outdoor", "enabled": "1", "status": "Connected",
+           "fps": 25.1, "afps": 8.7, "status_age": 8, "capturing": "Always",
+           "analysing": "Always", "recording": "OnMotion",
+           "quiet_hours": quiet_hours}
+    cam.update(fields)
+    host["cameras"] = [cam]
+    return host
+
+
+def test_a_verified_pipeline_turns_silence_into_a_fact():
+    """Nothing happened is not a fault, and the card should say which it is."""
+    host = recorder(20)                       # дольше порога предупреждения
+    issues.annotate([host], CFG, None)
+    found = [i for i in host["issues"] if i["key"] == "camquiet:2"][0]
+    assert found["level"] == "info"
+    assert "конвейер проверен" in found["text"]
+    assert "поток 25.1 к/с" in found["text"] and "детекция 8.7 к/с" in found["text"]
+
+
+def test_a_stuck_analysis_thread_is_the_finding_silence_used_to_hide():
+    """Frames arrive, nothing looks at them: events can never appear."""
+    host = recorder(30, afps=0)
+    issues.annotate([host], CFG, None)
+    broken = [i for i in host["issues"] if i["key"] == "campipe:2"]
+    assert broken and broken[0]["level"] == "bad"
+    assert "детекция стоит" in broken[0]["text"]
+    # …and the silence is not reported twice, in two different voices.
+    assert not [i for i in host["issues"] if i["key"] == "camquiet:2"]
+
+
+def test_a_status_row_written_before_the_process_died_is_not_evidence():
+    host = recorder(30, status_age=1800)
+    issues.annotate([host], CFG, None)
+    broken = [i for i in host["issues"] if i["key"] == "campipe:2"][0]
+    assert broken["level"] == "bad" and "не обновлял состояние 30 мин" in broken["text"]
+
+
+def test_recording_switched_off_is_a_setting_not_an_outage():
+    host = recorder(40, recording="None")
+    issues.annotate([host], CFG, None)
+    found = [i for i in host["issues"] if i["key"] == "camquiet:2"][0]
+    assert found["level"] == "info" and "запись выключена" in found["text"]
+    assert not [i for i in host["issues"] if i["key"] == "campipe:2"]
+
+
+def test_a_healthy_camera_that_never_triggers_still_gets_asked_about():
+    """Three days of proven-alive silence is a detection zone, not a camera."""
+    host = recorder(24 * 4)
+    issues.annotate([host], CFG, None)
+    found = [i for i in host["issues"] if i["key"] == "camquiet:2"][0]
+    assert found["level"] == "warn" and "зону детекции" in found["text"]
+
+
+def test_without_pipeline_numbers_the_old_alarm_stands():
+    """Nothing to verify with: silence goes back to being suspicious."""
+    host = recorder(30, fps=None, afps=None, status_age=None,
+                    capturing="", analysing="", recording="")
+    issues.annotate([host], CFG, None)
+    found = [i for i in host["issues"] if i["key"] == "camquiet:2"][0]
+    assert found["level"] == "bad" and "детекция молчит" in found["text"]
+
+
 def camera_host(quiet_hours):
     host = host_named(fleet(), lambda h: h.get("cameras"))
     host["cameras"] = [{"id": "cam1", "name": "Outdoor", "status": "Connected",

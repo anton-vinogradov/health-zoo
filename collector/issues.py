@@ -140,6 +140,57 @@ def _channels_ruled_out(radio: dict, limits: dict) -> dict:
     return out
 
 
+def _camera_pipeline(cam: dict) -> tuple[str, str]:
+    """Is this camera's recording chain actually working right now?
+
+    "No events" is two different sentences wearing the same clothes: nothing
+    happened, or nothing can happen. Only the second is a fault, and the
+    difference is not in the events — it is in whether frames are arriving,
+    whether anything is looking at them, and whether the recorder is meant to
+    write an event at all. ZoneMinder knows all three; nobody was asking.
+
+    Returns (verdict, evidence) where verdict is "ok" — the chain is proven
+    alive, "idle" — it is switched off on purpose, or "broken".
+    """
+    fps = cam.get("fps")
+    afps = cam.get("afps")
+    age = cam.get("status_age")
+    capturing = (cam.get("capturing") or "").strip()
+    analysing = (cam.get("analysing") or "").strip()
+    recording = (cam.get("recording") or "").strip()
+
+    # Only a recorder that reports its pipeline may be judged on it. Surveillance
+    # Station lists its cameras with no frame counters at all, and reading that
+    # silence as "zero frames per second" declared a working camera dead.
+    if age is None and not (capturing or analysing or recording):
+        return "", ""
+
+    if capturing == "None":
+        return "idle", "захват выключен в настройках ZoneMinder"
+    # A status row saying "Connected, 25 fps" proves nothing if it was written
+    # before the capture process died: the row stays, the camera does not.
+    if isinstance(age, int) and age >= 0 and age > 180:
+        return "broken", (f"ZoneMinder не обновлял состояние {round(age / 60)} мин — "
+                          "процесс записи не отвечает, а цифры на карточке от него")
+    if isinstance(fps, (int, float)) and fps <= 0:
+        return "broken", "поток не идёт: 0 кадров/с при включённом захвате"
+    if recording == "None":
+        return "idle", "запись выключена в настройках — событий не будет"
+    if analysing == "None":
+        return "idle", "анализ движения выключен в настройках — событий не будет"
+    if analysing and isinstance(afps, (int, float)) and afps <= 0:
+        return "broken", ("поток идёт, а детекция стоит: 0 кадров/с на анализе — "
+                          "события не появятся, даже если перед камерой ходят")
+    if not isinstance(fps, (int, float)) or fps <= 0:
+        return "", ""       # рекордер не отдал цифр — врать нечем
+    evidence = f"поток {fps:g} к/с"
+    if isinstance(afps, (int, float)) and afps > 0:
+        evidence += f", детекция {afps:g} к/с"
+    if isinstance(age, int) and 0 <= age <= 180:
+        evidence += f", состояние обновлено {age} с назад"
+    return "ok", evidence
+
+
 def _retry_culprits(host: dict, band: str) -> tuple[str, bool]:
     """Whose retransmissions the radio's percentage is made of.
 
@@ -863,11 +914,45 @@ def host_issues(host: dict, cfg: dict | None = None) -> list[dict]:
                 return "больше суток"
             return f"больше {int(floor)} ч"
 
-        if quiet is not None and quiet >= quiet_bad:
+        # Whether the silence needs explaining at all. A chain that is proven
+        # to be running turns "no events" from an alarm into a fact, and one
+        # that is switched off turns it into a setting — neither is a fault,
+        # and saying so is the difference between a dashboard somebody reads
+        # and one somebody learns to ignore.
+        state, evidence = _camera_pipeline(cam)
+        if state == "broken":
+            add("bad", f"campipe:{cam.get('id')}", f"камера {name}: {evidence}")
+            continue
+
+        if quiet is None:
+            continue
+        if state == "idle":
+            # Reported once, as information: an operator who set this expects
+            # it, and an operator who did not needs to know it is set.
+            if quiet >= quiet_warn:
+                add("info", f"camquiet:{cam.get('id')}",
+                    f"камера {name}: событий нет — {evidence}")
+        elif state == "ok":
+            # The chain answers for itself, so a long silence stops being
+            # about the camera. What it can still be about is where it looks:
+            # a detection zone drawn around nothing is invisible from here and
+            # produces exactly this — a healthy camera that never triggers.
+            if quiet >= quiet_bad * 3:
+                add("warn", f"camquiet:{cam.get('id')}",
+                    f"камера {name}: событий нет {_silence(quiet, quiet_bad)}, "
+                    f"хотя {evidence} — стоит проверить зону детекции",
+                    episodic=True)
+            elif quiet >= quiet_warn:
+                add("info", f"camquiet:{cam.get('id')}",
+                    f"камера {name}: тихо {_silence(quiet, quiet_warn)}, "
+                    f"но конвейер проверен — {evidence}")
+        elif quiet >= quiet_bad:
+            # No numbers from the recorder: the old behaviour, which is the
+            # honest one when there is nothing to verify with.
             add("bad", f"camquiet:{cam.get('id')}",
                 f"камера {name}: нет событий {_silence(quiet, quiet_bad)} — "
                 "детекция молчит", episodic=True)
-        elif quiet is not None and quiet >= quiet_warn:
+        elif quiet >= quiet_warn:
             add("warn", f"camquiet:{cam.get('id')}",
                 f"камера {name}: нет событий {_silence(quiet, quiet_warn)}",
                 episodic=True)
@@ -1544,9 +1629,19 @@ def checks_for(host: dict, cfg: dict | None = None) -> list[dict]:
         "Статус монитора у того хоста, который камеру пишет",
         applies=bool(host.get("cameras")), skipped="камер не записывает",
         keys=("cam",))
+    add("cameras", "Конвейер записи жив",
+        "Кадры идут, детекция их считает, а состояние монитора обновлено только "
+        "что. Это то, что отличает «ничего не происходило» от «ничего и не могло "
+        "произойти»: строка «Connected, 25 к/с» ничего не стоит, если её записал "
+        "процесс, который с тех пор умер",
+        applies=any(c.get("fps") is not None for c in host.get("cameras", [])),
+        skipped="рекордер не отдаёт состояние мониторов", keys=("campipe",))
     add("cameras", "Детекция не молчит",
         f"Нет событий {limits.get('camera_quiet_warn_hours', 12)} ч — предупреждение, "
-        f"{limits.get('camera_quiet_bad_hours', 24)} ч — проблема",
+        f"{limits.get('camera_quiet_bad_hours', 24)} ч — проблема. Но если конвейер "
+        "проверен, тишина перестаёт быть тревогой и остаётся фактом; предупреждение "
+        f"возвращается втрое позже ({limits.get('camera_quiet_bad_hours', 24) * 3} ч) "
+        "и уже про зону детекции, а не про камеру",
         applies=any(c.get("quiet_hours") is not None for c in host.get("cameras", [])),
         skipped="событийная статистика недоступна", keys=("camquiet",))
 
