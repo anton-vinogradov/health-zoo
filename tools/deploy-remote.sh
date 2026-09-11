@@ -12,7 +12,7 @@ user=${user:-root}
 test -d "$dir"
 test -f "$config"
 test "$(systemctl show "$service" -p WorkingDirectory --value)" = "$dir"
-HEALTH_ZOO_CONFIG="$config" python3 "$stage/collector/hub.py" --check-config
+HEALTH_ZOO_CONFIG="$config" python3 -B "$stage/collector/hub.py" --check-config
 curl -fsS --max-time 10 "http://127.0.0.1:$port/api/job" | python3 -c '
 import json, sys
 j = json.load(sys.stdin)
@@ -61,7 +61,8 @@ cp -a "$stage/collector" "$stage/ui" "$stage/tools" "$dir/"
 cp "$stage/index.html" "$stage/style.css" "$stage/VERSION" "$stage/install.sh" \
    "$stage/deploy.sh" "$stage/sync-config.sh" "$stage/README.md" "$stage/README.ru.md" "$dir/"
 chown -R "$user": "$dir/collector" "$dir/ui" "$dir/tools"
-python3 "$dir/collector/migrate.py" "$config" "$user" --legacy-policy
+python3 -B "$dir/collector/migrate.py" "$config" "$user" --legacy-policy
+runuser -u "$user" -- env HEALTH_ZOO_CONFIG="$config" python3 -B "$dir/collector/hub.py" --check-config
 install -d -m 755 "$(dirname "$dropin")"
 printf '[Service]\nStateDirectory=health-zoo\nStateDirectoryMode=0700\n' > "$dropin"
 systemctl daemon-reload

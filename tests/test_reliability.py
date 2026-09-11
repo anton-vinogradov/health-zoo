@@ -359,3 +359,16 @@ def test_api_reports_running_version_with_restored_observations(tmp_path):
     obj.do_GET()
     assert obj.response['version']['commit'] == 'current'
     assert obj.response['generated'] == 100 and obj.response['restored']
+
+
+def test_migrated_private_config_belongs_to_service_account(tmp_path, monkeypatch):
+    import migrate
+    config = tmp_path / 'config.json'; config.write_text('{"hosts":[]}')
+    state = tmp_path / 'state'
+    owners = {}
+    monkeypatch.setattr(migrate.pwd, 'getpwnam', lambda name: SimpleNamespace(pw_uid=1234, pw_gid=5678))
+    monkeypatch.setattr(migrate.os, 'chown', lambda path, uid, gid: owners.update({str(path):(uid,gid)}))
+    migrate.prepare(config, 'service-account', state_dir=state)
+    assert owners[str(config)] == (1234,5678)
+    assert owners[str(state / 'settings.json')] == (1234,5678)
+    assert config.stat().st_mode & 0o777 == 0o600

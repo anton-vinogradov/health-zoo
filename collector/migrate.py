@@ -44,9 +44,10 @@ def prepare(config_path, user, legacy=False, state_dir='/var/lib/health-zoo'):
         os.chown(key_path, account.pw_uid, account.pw_gid)
         os.chmod(key_path, 0o600)
         cfg['action_token_file'] = str(key_path)
-        owner = path.stat()
         write_json(path, cfg)
-        os.chown(path, owner.st_uid, owner.st_gid)
+        # Atomic writes use mode 0600. A previously root-owned, world-readable
+        # config must remain readable by the account that actually runs the hub.
+        os.chown(path, account.pw_uid, account.pw_gid)
     return cfg
 
 
