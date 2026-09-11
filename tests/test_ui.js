@@ -84,3 +84,19 @@ test('lost job after restart stops polling with an explicit unknown outcome',asy
   assert.equal(ctx.jobTimer,null);
   assert.match(ctx.elements.get('job-status').text,/недоступен после перезапуска/);
 });
+
+test('attention count and filter respect accepted outages',()=>{
+  const ctx=context();
+  const accepted={reachable:false,level:'off',issues:[{level:'info',suppressed:true}]};
+  const outage={reachable:false,level:'off',issues:[{level:'bad',text:'offline'}]};
+  const warning={reachable:true,level:'warn',issues:[{level:'warn',text:'hot'}]};
+  ctx.state={hosts:[accepted,outage,warning]};ctx.renderOverview();
+  const attention=ctx.elements.get('overview').children[2];
+  assert.equal(attention.children[1].textContent,'2');
+  ctx.onlyProblems=true;
+  assert.equal(ctx.hostMatches(accepted),false);
+  assert.equal(ctx.hostMatches(outage),true);
+  assert.equal(ctx.hostMatches(warning),true);
+  ctx.onlyProblems=false;ctx.fleetFilter='offline';
+  assert.equal(ctx.hostMatches(accepted),true);
+});

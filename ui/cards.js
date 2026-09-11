@@ -614,10 +614,17 @@ function renderUnmanaged(root, devices) {
 }
 
 var onlyProblems = localStorage.getItem('hz-only-problems') === '1';
+
+function attentionLevel(host) {
+  var live = hostIssues(host).filter(function (issue) { return !issue.suppressed && !issue.acked; });
+  if (live.some(function (issue) { return issue.level === 'bad'; })) return 'bad';
+  if (live.some(function (issue) { return issue.level === 'warn'; })) return 'warn';
+  return '';
+}
 var searchText = '';
 
 function hostMatches(host) {
-  if (onlyProblems && (host.level === 'ok' || !host.level)) return false;
+  if (onlyProblems && !attentionLevel(host)) return false;
   if (fleetFilter === 'offline' && host.reachable) return false;
   if (fleetFilter === 'updates' && !(host.updatable && host.update_count)) return false;
   if (!searchText) return true;
@@ -709,8 +716,8 @@ function render() {
 
 function renderOverview() {
   var hosts = state.hosts || [];
-  var bad = hosts.filter(function (x) { return x.level === 'bad' || !x.reachable; }).length;
-  var warn = hosts.filter(function (x) { return x.level === 'warn'; }).length;
+  var bad = hosts.filter(function (x) { return attentionLevel(x) === 'bad'; }).length;
+  var warn = hosts.filter(function (x) { return attentionLevel(x) === 'warn'; }).length;
   var online = hosts.filter(function (x) { return x.reachable; }).length;
   var pending = hosts.filter(function (x) { return x.updatable && x.update_count; }).length;
   var stats = [
