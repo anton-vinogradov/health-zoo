@@ -1,82 +1,44 @@
 <!doctype html>
-<html lang="ru">
+<html lang="ru" data-theme="light">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<title>health-zoo</title>
-<link rel="stylesheet" href="style.css">
-<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>🩺</text></svg>">
+<meta name="description" content="Состояние вашей сети: устройства, проверки и действия в одном месте.">
+<title>health-zoo · Обзор сети</title>
+<link rel="stylesheet" href="/style.css">
+<link rel="stylesheet" href="/ui/theme.css">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='9' fill='%23107660'/%3E%3Cpath d='M5 17h6l3-8 5 16 3-8h5' fill='none' stroke='white' stroke-width='2.5' stroke-linejoin='round'/%3E%3C/svg%3E">
 </head>
 <body>
-
-<header class="topbar">
-  <div class="brand">
-    <span class="logo">🩺</span>
-    <div>
-      <h1>health-zoo</h1>
-      <p class="sub" id="summary">загрузка…</p>
-    </div>
-  </div>
-  <div class="actions">
-    <input id="search" class="search" type="search" placeholder="поиск" autocomplete="off">
-    <button id="btn-problems" class="btn" title="Показывать только хосты с проблемами">Только проблемы</button>
-    <button id="btn-sites" class="btn" title="Все веб-интерфейсы парка">Сайты</button>
-    <button id="btn-suppressions" class="btn" title="Исключённые проверки по всем хостам">Исключения</button>
-    <button id="btn-refresh" class="btn" title="Переопросить все хосты">Обновить данные</button>
-    <button id="btn-upgrade-all" class="btn btn-primary" title="Обновить пакеты на всех серверах">Обновить всё</button>
-    <button id="btn-settings" class="btn" title="Пороги проверок и автоперезапуск">Настройки</button>
-    <button id="btn-theme" class="btn btn-icon" title="Тема">◐</button>
-  </div>
-</header>
-
-<div id="pollbar" class="pollbar hidden"><i></i><span></span></div>
-
-<div id="alert" class="alert hidden"></div>
-
-<nav class="tabs view-tabs">
-  <button class="tab active" data-view="fleet">Парк</button>
-  <button class="tab" data-view="egress" title="Через что каждый сервис выходит в интернет">Наружу</button>
-  <button class="tab" data-view="topology" title="Что к чему подключено: порты, скорости, радио">Схема</button>
-</nav>
-
-<main id="fleet" class="fleet"></main>
-<main id="egress" class="fleet hidden"></main>
-<main id="topology" class="fleet hidden"></main>
-
-<footer class="foot">
-  <span id="foot-note"></span>
-</footer>
-
-<!-- host detail -->
-<div id="modal" class="modal hidden">
-  <div class="modal-card">
-    <header class="modal-head">
-      <h2 id="modal-title"></h2>
-      <button class="btn btn-icon" data-close>✕</button>
-    </header>
-    <div id="modal-body" class="modal-body"></div>
-  </div>
+<a class="skip-link" href="#fleet">Перейти к устройствам</a>
+<aside class="sidebar">
+ <a class="brand" href="/" aria-label="health-zoo — главная"><span class="brand-symbol" aria-hidden="true"><svg viewBox="0 0 32 32"><path d="M4 17h7l3-9 5 17 3-8h6"/></svg></span><span>health<span class="brand-dim">-zoo</span><small>СЕТЬ ПОД НАБЛЮДЕНИЕМ</small></span></a>
+ <div class="nav-caption">МОЯ ИНФРАСТРУКТУРА</div>
+ <nav class="view-tabs" aria-label="Основные разделы">
+  <button class="tab active" data-view="fleet"><span class="nav-icon" aria-hidden="true">▦</span>Обзор сети<span class="nav-count" id="nav-count">—</span></button>
+  <button class="tab" data-view="topology"><span class="nav-icon" aria-hidden="true">⌘</span>Связи устройств</button>
+  <button class="tab" data-view="egress"><span class="nav-icon" aria-hidden="true">↗</span>Выход в интернет</button>
+ </nav>
+ <div class="nav-caption nav-tools">УПРАВЛЕНИЕ</div>
+ <div class="sidebar-tools">
+  <button id="btn-sites" class="tab"><span class="nav-icon" aria-hidden="true">◫</span>Веб-интерфейсы</button>
+  <button id="btn-suppressions" class="tab"><span class="nav-icon" aria-hidden="true">◷</span>Исключения</button>
+  <button id="btn-settings" class="tab"><span class="nav-icon" aria-hidden="true">⚙</span>Настройки</button>
+  <button id="btn-theme-mobile" class="tab mobile-theme" aria-label="Переключить цветовую тему"><span class="nav-icon" aria-hidden="true">◐</span>Тема</button>
+ </div>
+ <div class="sidebar-bottom"><div class="observer"><span class="observer-mark" aria-hidden="true">⌁</span><div>Пульс сети<small id="connection-label">Подключение…</small></div></div><button id="btn-theme" class="theme-switch" aria-label="Переключить цветовую тему">◐ <span>Сменить тему</span></button></div>
+</aside>
+<div class="workspace">
+ <header class="topbar"><div><p class="eyebrow">HEALTH-ZOO / <span id="view-crumb">ОБЗОР</span></p><h1 id="view-title">Обзор сети</h1><p class="sub" id="summary" aria-live="polite">Подключаемся к дашборду…</p></div><div class="actions"><span class="demo-badge hidden" id="demo-badge">Демонстрация</span><button id="btn-refresh" class="btn">↻ Обновить данные</button></div></header>
+ <div id="pollbar" class="pollbar hidden" role="status"><i></i><span></span></div>
+ <section id="overview" class="overview" aria-label="Сводка по устройствам"></section>
+ <section id="alert" class="alert hidden" aria-label="Требует внимания"></section>
+ <div class="fleet-toolbar" id="fleet-toolbar"><div class="section-heading"><h2>Устройства</h2><span id="visible-count" class="count-label"></span></div><div class="fleet-controls"><label class="search-wrap"><span aria-hidden="true">⌕</span><input id="search" class="search" type="search" placeholder="Имя, адрес или сервис…" aria-label="Поиск устройств" autocomplete="off"><kbd>/</kbd></label><button id="btn-problems" class="btn" aria-pressed="false">Только проблемы</button><button id="btn-upgrade-all" class="btn btn-primary">Обновить пакеты</button></div></div>
+ <main id="fleet" class="fleet" tabindex="-1"></main><main id="egress" class="fleet hidden" tabindex="-1"></main><main id="topology" class="fleet hidden" tabindex="-1"></main>
+ <footer class="foot"><span id="foot-note"></span><span class="foot-hint"><kbd>/</kbd> поиск · <kbd>Esc</kbd> закрыть</span></footer>
 </div>
-
-<!-- update job log -->
-<div id="joblog" class="modal hidden">
-  <div class="modal-card">
-    <header class="modal-head">
-      <h2 id="job-title">Обновление</h2>
-      <button class="btn btn-icon" data-close>✕</button>
-    </header>
-    <div class="job-tabs" id="job-tabs"></div>
-    <div class="job-status" id="job-status"></div>
-    <pre id="job-output" class="job-output"></pre>
-  </div>
-</div>
-
-<script src="ui/core.js"></script>
-<script src="ui/cards.js"></script>
-<script src="ui/details.js"></script>
-<script src="ui/egress.js"></script>
-<script src="ui/topology.js"></script>
-<script src="ui/actions.js"></script>
-<script src="ui/wiring.js"></script>
+<div id="modal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="modal-title" tabindex="-1"><div class="modal-card"><header class="modal-head"><h2 id="modal-title"></h2><button class="btn btn-icon" data-close aria-label="Закрыть детали">✕</button></header><div id="modal-body" class="modal-body"></div></div></div>
+<div id="joblog" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="job-title" tabindex="-1"><div class="modal-card"><header class="modal-head"><h2 id="job-title">Выполнение задания</h2><button class="btn btn-icon" data-close aria-label="Закрыть журнал">✕</button></header><div class="job-tabs" id="job-tabs"></div><div class="job-status" id="job-status" aria-live="polite"></div><pre id="job-output" class="job-output" aria-label="Журнал выполнения"></pre></div></div>
+<script src="/ui/core.js"></script><script src="/ui/cards.js"></script><script src="/ui/details.js"></script><script src="/ui/egress.js"></script><script src="/ui/topology.js"></script><script src="/ui/actions.js"></script><script src="/ui/wiring.js"></script>
 </body>
 </html>

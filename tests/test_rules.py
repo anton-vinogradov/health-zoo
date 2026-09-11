@@ -351,9 +351,9 @@ def test_a_host_can_be_renamed_and_the_rename_undone(tmp_path):
     assert cfg["hosts"][0]["name"] == "ubuntu-1cpu-1gb-fi-hel2"
 
 
-def test_a_name_cannot_break_a_card():
+def test_a_name_cannot_break_a_card(tmp_path):
     import settings as settings_mod
-    store = settings_mod.Settings("/dev/null")
+    store = settings_mod.Settings(str(tmp_path / "settings.json"))
     assert store.set_name("h1", "две\nстроки\tи\tтабы") == "две строки и табы"
     assert len(store.set_name("h1", "я" * 200)) == 40
 
@@ -517,7 +517,7 @@ def test_an_access_point_blames_the_controller_not_itself():
     """The message has to point where the problem is.
 
     Access points are described by their controller and never logged into, so
-    "нет доступа: ubnt@10.88.88.10: Permission denied" was three kinds of
+    "нет доступа: ubnt@192.0.2.10: Permission denied" was three kinds of
     wrong: the user is stale, the login is not attempted any more, and the
     thing that was actually down was the controller.
     """
@@ -970,9 +970,12 @@ class FakeJobs:
         self.busy = busy
         self.started = []
 
-    def start(self, targets, fleet):
+    def start(self, targets, fleet, automatic=False):
         if self.busy:
             return None, "занято"
+        if automatic:
+            for target in targets:
+                fleet.settings.note_update(target["id"], int(time.time()))
         self.started.append([t["id"] for t in targets])
         return "job1", ""
 

@@ -191,3 +191,24 @@ Marked: **✓** done, **▶** in progress, **○** deliberately not done.
 - Firewall rules referring to interfaces and address lists that no longer exist.
 - DHCP reservations for devices long gone from the network.
 - Show what the neighbours are doing to the 2.4 GHz band, not just the percentage.
+
+## Reliability and interaction contract
+
+- Every management POST requires a resolved action key and passes Origin validation.
+  Missing credentials disable actions; new installations bind to loopback.
+- Settings and suppressions commit atomically. Failed writes return 503 and roll
+  back the requested change; automatic-action cooldowns persist before admission.
+- RAID findings use the same `raids` report field throughout probing, rules and UI.
+- One-poll events (reboots and service transitions) have a durable delivery queue;
+  sustained conditions retain debounce. Planned-reboot mute survives restart.
+- Job logs follow a specific job ID, end on both success and failure, and report
+  unavailable history after a hub restart. Failed apt steps remain failures;
+  the final explicit install pass uses `--no-remove`.
+- Summary tiles filter the fleet; search includes services. All findings are
+  accessible. Staleness advances even while requests fail, and first-poll state
+  never implies a healthy fleet. Dialogs support keyboard focus and dismissal.
+- New installs require opt-in for automatic security updates. Upgrade migration
+  preserves the previous effective policy, exclusions and cooldown history.
+- Deployments use committed source, validate config before stopping the service,
+  back up code/config/state, and roll back a failed startup. Process version is
+  independent of the age of the restored observations.

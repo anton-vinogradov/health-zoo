@@ -30,7 +30,7 @@ else
 fi
 
 # --- which user runs the service (it needs the ssh key to the fleet) ---
-if [ "$(id -u)" -eq 0 ]; then RUN_USER="${SUDO_USER:-root}"; SUDO=""; else RUN_USER="$(id -un)"; SUDO="sudo"; fi
+if [ "$(id -u)" -eq 0 ]; then RUN_USER="${HZ_RUN_USER:-${SUDO_USER:-root}}"; SUDO=""; else RUN_USER="$(id -un)"; SUDO="sudo"; fi
 command -v python3 >/dev/null || { echo "✗ need python3"; exit 1; }
 
 if [ "$SRC" != "$DIR" ]; then
@@ -53,6 +53,14 @@ else
   echo "→ keeping existing $CONFIG"
 fi
 
+# Pin the old effective automatic-update policy only for existing services.
+legacy=()
+if systemctl cat "$SVC" >/dev/null 2>&1; then
+  legacy=(--legacy-policy)
+  $SUDO systemctl stop "$SVC"
+fi
+$SUDO python3 "$DIR/collector/migrate.py" "$CONFIG" "$RUN_USER" "${legacy[@]}"
+
 # --- ssh key for polling the fleet ---
 KEY_PATH=$(python3 - "$CONFIG" <<'PY'
 import json, sys
@@ -62,10 +70,20 @@ except Exception:
     print("~/.ssh/id_health_zoo")
 PY
 )
-KEY_REAL=$(eval echo "${KEY_PATH/#\~/$(getent passwd "$RUN_USER" | cut -d: -f6)}")
+USER_DIR=$(getent passwd "$RUN_USER" | cut -d: -f6)
+KEY_REAL="$KEY_PATH"
+case "$KEY_PATH" in
+  \~/*) KEY_REAL="$USER_DIR/${KEY_PATH#\~/}" ;;
+esac
+as_user() {
+  if [ "$(id -un)" = "$RUN_USER" ]; then "$@"
+  elif [ "$(id -u)" -eq 0 ]; then runuser -u "$RUN_USER" -- "$@"
+  else sudo -u "$RUN_USER" -- "$@"; fi
+}
 if [ ! -f "$KEY_REAL" ]; then
   echo "→ generating $KEY_REAL"
-  $SUDO -u "$RUN_USER" ssh-keygen -t ed25519 -N "" -C "health-zoo@$(hostname)" -f "$KEY_REAL"
+  as_user mkdir -p -m 700 "$(dirname "$KEY_REAL")"
+  as_user ssh-keygen -t ed25519 -N "" -C "health-zoo@$(hostname)" -f "$KEY_REAL"
   echo
   echo "  Public key — install it on every host you want polled:"
   cat "$KEY_REAL.pub"
@@ -79,7 +97,7 @@ fi
 #   printf %s 'secret' | sudo systemd-creds encrypt --name=telegram-token - \
 #       /etc/health-zoo.d/telegram-token.cred
 CREDS=""
-for cred in telegram-token unifi-password; do
+for cred in telegram-token unifi-password action-token; do
   if [ -f "/etc/health-zoo.d/$cred.cred" ]; then
     CREDS="${CREDS}LoadCredentialEncrypted=$cred:/etc/health-zoo.d/$cred.cred"$'\n'
   fi
@@ -96,6 +114,8 @@ Wants=network-online.target
 [Service]
 Type=simple
 User=$RUN_USER
+StateDirectory=health-zoo
+StateDirectoryMode=0700
 $CREDS
 WorkingDirectory=$DIR
 ExecStart=/usr/bin/python3 $DIR/collector/hub.py
@@ -121,5 +141,5 @@ else
   exit 1
 fi
 
-IP=$(hostname -I 2>/dev/null | awk '{print $1}')
-echo "✓ dashboard: http://${IP:-localhost}:$PORT"
+echo "✓ dashboard port: $PORT (loopback by default; set listen for LAN access)"
+echo "  Management key: sudo cat /var/lib/health-zoo/action-token (unless configured separately)"

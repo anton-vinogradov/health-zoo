@@ -6,11 +6,22 @@ A single page showing whether every box on your network is healthy — servers, 
 units, routers, cameras and mesh radios — drawn as the network tree they actually
 form, with a button to install pending OS updates.
 
-No agents to install, no database, no dependencies beyond `python3`. The hub logs
+No agents to install and no dependencies beyond `python3`; history uses built-in SQLite. The hub logs
 into each host over SSH, runs a small shell script there, and renders what comes
 back.
 
 
+
+## Reading the dashboard
+
+Start with the four summary tiles: all devices, connectivity, findings, and
+available updates. Click a tile to filter the fleet. The incident queue puts
+critical findings first and expands to show every finding. Search matches names,
+addresses and discovered services; `/` focuses it. Device details open alongside
+the fleet, with a separate Checks tab. `Esc` closes the panel and returns focus.
+
+A failed connection, an old snapshot, and the first unfinished poll have distinct
+states. Light/dark themes and mobile navigation keep the same controls available.
 
 ## What it shows
 
@@ -86,6 +97,10 @@ near-full), and they are listed there rather than hidden. Cameras get a row
 each: a street camera silent for six hours is broken, a garage camera silent
 for two days is a garage nobody entered, and one fleet-wide number makes one of
 them wrong by construction.
+
+**Automatic security updates** are off for new installations until enabled in
+Settings. Upgrades preserve an existing installation's effective policy and
+exclude lists.
 
 **Automatic cleanup** removes packages nothing depends on any more, as part of
 an update rather than on its own schedule. It is on by default, and unlike a
@@ -234,8 +249,31 @@ and prints its public half. Then:
 2. Edit `/etc/health-zoo.json` — the host list, subnets and their parents.
 3. `sudo systemctl restart health-zoo`
 
-The dashboard listens on port 8816. Re-running the installer is the upgrade path;
-it never overwrites your config.
+New installations listen on `127.0.0.1:8816`. Use an SSH tunnel
+(`ssh -L 8816:127.0.0.1:8816 user@dashboard`) or explicitly configure `listen`
+for your trusted network. Existing bind addresses are preserved. The read API
+is visible to anyone who can reach the dashboard; use a VPN or an HTTPS reverse
+proxy with access control when exposing it beyond a trusted LAN.
+
+Every management POST requires a key. The installer generates
+`/var/lib/health-zoo/action-token` with mode 0600 and puts only its path in the
+config. Retrieve it on the server with `sudo cat /var/lib/health-zoo/action-token`
+and enter it when the dashboard first asks. It is retained for the browser tab's
+session. `action_token_credential`, `action_token_file`, and legacy inline
+`action_token` are supported. Without a key, management is disabled.
+
+For an existing installation, deploy a committed checkout:
+
+```bash
+./deploy.sh user@dashboard
+```
+
+The script requires local pytest, Node and shellcheck, and passwordless sudo on
+the dashboard host. It validates the config before stopping the hub, refuses to
+interrupt an active management job, backs up code/config/state under
+`/var/backups/health-zoo/`, and restores them if the new service fails its
+startup checks. The existing fleet config, private files and automation policy
+are preserved. The dashboard displays the exact deployed Git commit.
 
 ### Access needed per host type
 
@@ -293,3 +331,17 @@ member. The browser is only ever served the last completed snapshot.
 ## Licence
 
 MIT.
+
+## Development checks and offline preview
+
+```bash
+python3 -m pytest tests/ -q
+node --test tests/test_ui.js
+shellcheck --shell=sh collector/agents/*.sh
+shellcheck --shell=bash install.sh sync-config.sh deploy.sh tools/deploy-remote.sh
+HEALTH_ZOO_CONFIG=collector/config.example.json python3 collector/hub.py --check-config
+python3 tools/demo.py --port 8817
+```
+
+The preview at `http://127.0.0.1:8817/` uses the anonymous fixture and never
+probes, changes devices or sends notifications. Runtime still needs only Python.

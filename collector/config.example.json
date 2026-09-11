@@ -22,7 +22,7 @@
   ],
   "poll_interval": 180,
   "ssh_key": "~/.ssh/id_health_zoo",
-  "listen": "0.0.0.0",
+  "listen": "127.0.0.1",
   "port": 8816,
   "subnets": [
     {

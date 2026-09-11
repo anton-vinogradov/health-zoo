@@ -332,7 +332,7 @@ def _post_process(data: dict) -> dict:
         repo["size"] = _num(repo.get("size", 0)) or 0
         repo["age_days"] = round((time.time() - repo["last"]) / 86400, 1) if repo["last"] else None
 
-    data["degraded_raid"] = [r for r in data.get("raid", []) if "_" in r.get("state", "")]
+    data["degraded_raid"] = [r for r in data.get("raids", []) if "_" in r.get("state", "")]
     # RouterOS and Meshtastic probes already know their own UI; only derive
     # links from listening ports when nobody set them.
     if not data.get("web"):

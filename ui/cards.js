@@ -371,7 +371,7 @@ function hostCard(host) {
   }, [
     h('div', { class: 'card-head' }, [
       h('span', { class: 'card-role', text: ROLE_ICON[host.role] || ROLE_ICON.other }),
-      h('span', { class: 'card-name', text: host.name }),
+      h('span', { class: 'card-name' }, [h('button', { class: 'host-open', text: host.name, 'data-host': host.id, onclick: function (e) { e.stopPropagation(); showHost(host); } })]),
       // Pending work belongs next to the host's identity, not mixed in with
       // the chips describing what it runs.
       // Spelled out: a lone glyph reads as decoration, not as "this box is
@@ -402,6 +402,7 @@ function hostCard(host) {
       }) : null
     ]),
     h('div', { class: 'card-os', text: subtitle }),
+    h('div', { class: 'host-status ' + level, text: !host.reachable ? '○ Нет связи' : level === 'bad' ? '! Есть проблема' : level === 'warn' ? '! Требует внимания' : '✓ Проверки в порядке' }),
     h('div', { class: 'metrics' }, metrics),
     chipRow('', chips),
     chipRow('сервисы', svcChips),
@@ -522,99 +523,54 @@ function snapshotAge() {
   return { seconds: seconds, level: 'ok' };
 }
 
+var incidentExpanded = false;
 function renderAlert(hosts) {
-  /* One banner for the whole fleet: red if anything is actually broken,
-     amber for things that merely want attention, green when all clear. */
   var box = document.getElementById('alert');
-  var bad = [], warn = [];
-
+  if (!state || !state.generated) {
+    box.className = 'alert';
+    box.innerHTML = '';
+    box.appendChild(h('div',{class:'alert-title',text:connectionLost ? 'Нет связи с дашбордом' : state && state.error ? 'Первый опрос не завершён: ' + state.error : 'Ожидаем первый завершённый опрос…'}));
+    return;
+  }
+  var entries = [];
   hosts.forEach(function (host) {
     hostIssues(host).forEach(function (issue) {
-      // A suppressed finding keeps its place in the host's own list, with the
-      // reason next to it — but it has been accepted, so the fleet banner is
-      // exactly where it must not appear. It carries level "info", and
-      // "anything not bad is a warning" quietly put it back on the banner.
-      if (issue.suppressed) return;
-      // The issue travels with the row: the dismiss button needs to name the
-      // finding it is dismissing, not the text it happens to show.
-      if (issue.level === 'bad') bad.push({ host: host, text: issue.text, issue: issue });
-      else if (issue.level === 'warn') warn.push({ host: host, text: issue.text, issue: issue });
+      if (!issue.suppressed && (issue.level === 'bad' || issue.level === 'warn')) entries.push({host:host, issue:issue});
     });
   });
-
+  entries.sort(function (a,b) { return (a.issue.level === 'bad' ? 0 : 1) - (b.issue.level === 'bad' ? 0 : 1); });
+  var bad = entries.filter(function (e) { return e.issue.level === 'bad'; }).length;
   var age = snapshotAge();
-  var level = age.level === 'bad' ? 'bad'
-            : (bad.length ? 'bad'
-            : ((warn.length || age.level === 'warn') ? 'warn' : 'ok'));
+  var disconnected = typeof connectionLost !== 'undefined' && connectionLost;
+  var level = disconnected || age.level === 'bad' || bad ? 'bad' : entries.length || age.level === 'warn' ? 'warn' : 'ok';
   box.className = 'alert ' + level;
-
-  var title;
-  if (age.level !== 'ok') {
-    title = (age.level === 'bad' ? '✕ ДАННЫЕ УСТАРЕЛИ' : '⚠ данные устаревают') +
-      ' — последний успешный опрос ' + duration(age.seconds) + ' назад,' +
-      ' ожидается каждые ' + Math.round((state.poll_interval || 180) / 60) + ' мин.' +
-      ' Показанное ниже может уже не соответствовать действительности.';
-  } else if (level === 'ok') {
-    title = '✓ Всё в порядке — проблем не обнаружено';
-  } else {
-    var parts = [];
-    if (bad.length) parts.push(bad.length + ' ' + plural(bad.length, 'проблема', 'проблемы', 'проблем'));
-    if (warn.length) parts.push(warn.length + ' ' + plural(warn.length, 'замечание', 'замечания', 'замечаний'));
-    title = (level === 'bad' ? '✕ ' : '⚠ ') + parts.join(' · ');
-  }
-
-  var items = bad.concat(warn).slice(0, 40).map(function (entry) {
-    var isBad = bad.indexOf(entry) >= 0;
-    /* Read-and-move-on belongs where the finding is read, not three clicks
-       away inside the host. One press, no reason asked: it comes back when the
-       finding says something different. */
-    /* Only where there is a next time. A port that negotiated 100 Mbit will go
-       on saying so until somebody changes the cable, and a button that hides it
-       "until it happens again" would hide it for good. Those take a reason, in
-       the host's own list. */
-    var dismiss = entry.issue && entry.issue.episodic ? h('button', {
-      class: 'alert-dismiss', text: '✓',
-      title: 'принято — скрыть до следующего раза; вернётся, если изменится',
-      onclick: function (e) {
-        e.stopPropagation();
-        ackIssue(entry.host, entry.issue, e.currentTarget.parentNode);
-      }
-    }) : null;
-    return h('span', {
-      class: 'alert-item ' + (isBad ? 'bad' : 'warn'),
-      onclick: function () { showHost(entry.host); }
-    }, [h('b', { text: entry.host.name }),
-        document.createTextNode(': ' + entry.text), dismiss]);
-  });
-
   box.innerHTML = '';
-  /* The one failure a dashboard cannot report through its own alerts, so it
-     says it here — above everything else, because until it is fixed nothing on
-     this page reaches anybody. */
-  var post = state.alerting || {};
-  if (post.ok === false) {
-    box.appendChild(h('div', { class: 'alert-title', text:
-      '✉ уведомления не доставляются' + (post.error ? ': ' + post.error : '') +
-      (post.queued ? ' · в очереди ' + post.queued : '') }));
+  if (disconnected || age.level !== 'ok') {
+    box.appendChild(h('div', {class:'connection-warning',role:'status',text:
+      (disconnected ? 'Нет связи с дашбордом. ' : 'Снимок устарел. ') +
+      'Последние данные: ' + ago(state.generated) + '. Состояние устройств могло измениться.'}));
   }
-  box.appendChild(h('div', { class: 'alert-title', text: title }));
-  if (items.length) {
-    // Collapsed by default on narrow screens (CSS decides): the banner must
-    // not push the fleet below the fold on a phone.
-    var list = h('div', { class: 'alert-list collapsed' }, items);
-    box.appendChild(list);
-    if (items.length > 4) {
-      var more = h('button', {
-        class: 'alert-more', text: 'показать все (' + items.length + ')',
-        onclick: function () {
-          var collapsed = list.classList.toggle('collapsed');
-          more.textContent = collapsed ? 'показать все (' + items.length + ')' : 'свернуть';
-        }
-      });
-      box.appendChild(more);
-    }
-  }
-  box.classList.remove('hidden');
+  if (state.error) box.appendChild(h('div',{class:'connection-warning',text:'Опрос не завершён: '+state.error}));
+  if ((state.alerting || {}).ok === false) box.appendChild(h('div',{class:'connection-warning',text:'Уведомления не доставляются: '+(state.alerting.error || 'проверьте Telegram')}));
+  (state.storage_errors || []).forEach(function (error) { box.appendChild(h('div',{class:'connection-warning',text:error})); });
+  if (state.actions_enabled === false && !state.demo) box.appendChild(h('div',{class:'connection-warning',text:'Управление отключено: на сервере не настроен ключ доступа. Мониторинг продолжает работать.'}));
+  var title = entries.length ? 'Требует внимания' : (level === 'ok' ? 'Все проверки в порядке' : 'Состояние требует проверки');
+  box.appendChild(h('div',{class:'alert-title'},[h('span',{text:entries.length ? '!' : '✓','aria-hidden':'true'}),h('span',{text:title}),h('span',{class:'count-label',text:entries.length ? bad + ' критических · ' + (entries.length - bad) + ' замечаний' : 'По последнему завершённому опросу'})]));
+  if (!entries.length) return;
+  var list = h('div',{class:'alert-list' + (incidentExpanded ? '' : ' collapsed')});
+  entries.forEach(function (entry) {
+    var issue = entry.issue, host = entry.host;
+    var row = h('div',{class:'alert-item '+issue.level},[
+      h('span',{class:'incident-label',text:issue.level === 'bad' ? 'ПРОБЛЕМА' : 'ВНИМАНИЕ'}),
+      h('button',{class:'host-open',text:host.name,onclick:function(){showHost(host);}}),
+      h('span',{class:'incident-text',text:issue.text}),
+      h('span',{class:'incident-arrow',text:'↗','aria-hidden':'true'})
+    ]);
+    if (issue.episodic) row.appendChild(h('button',{class:'alert-dismiss',text:'✓',title:'Отметить как прочитанное',onclick:function(e){ackIssue(host,issue,e.currentTarget.parentNode);}}));
+    list.appendChild(row);
+  });
+  box.appendChild(list);
+  if (entries.length > 4) box.appendChild(h('button',{class:'alert-more',text:incidentExpanded ? 'Свернуть список ↑' : 'Ещё ' + (entries.length - 4) + ' ' + plural(entries.length - 4,'находка','находки','находок') + ' ↓',onclick:function(){incidentExpanded=!incidentExpanded;renderAlert(state.hosts || []);}}));
 }
 
 function renderUnmanaged(root, devices) {
@@ -662,12 +618,14 @@ var searchText = '';
 
 function hostMatches(host) {
   if (onlyProblems && (host.level === 'ok' || !host.level)) return false;
+  if (fleetFilter === 'offline' && host.reachable) return false;
+  if (fleetFilter === 'updates' && !(host.updatable && host.update_count)) return false;
   if (!searchText) return true;
   var needle = searchText.toLowerCase();
-  return (host.name || '').toLowerCase().indexOf(needle) >= 0 ||
-         (host.addr || '').indexOf(needle) >= 0 ||
-         (host.os_name || '').toLowerCase().indexOf(needle) >= 0 ||
-         (host.note || '').toLowerCase().indexOf(needle) >= 0;
+  var fields = [host.id, host.name, host.addr, host.os_name, host.note, ROLE_NAME[host.role]];
+  (host.services || []).forEach(function (x) { fields.push(x.name); });
+  (host.web || []).forEach(function (x) { fields.push(x.title, x.host_name, x.label); });
+  return fields.join(' ').toLowerCase().indexOf(needle) >= 0;
 }
 
 function render() {
@@ -684,7 +642,10 @@ function render() {
     return;
   }
 
+  renderOverview();
+  syncFleetControls();
   var visible = (state.hosts || []).filter(hostMatches);
+  document.getElementById("visible-count").textContent = visible.length + " из " + (state.hosts || []).length;
   buildTree(state.subnets || [], visible).forEach(function (node) {
     root.appendChild(subnetSection(node, 0));
   });
@@ -719,15 +680,16 @@ function render() {
 
   var updatable = hosts.filter(function (x) { return x.updatable && x.update_count > 0; });
   var btn = document.getElementById('btn-upgrade-all');
-  btn.disabled = updatable.length === 0;
-  btn.textContent = updatable.length ? 'Обновить всё (' + updatable.length + ')' : 'Всё обновлено';
+  btn.disabled = updatable.length === 0 || state.actions_enabled === false;
+  btn.title = state.demo ? 'Демонстрация: управление отключено' : state.actions_enabled === false ? 'На сервере не настроен ключ доступа' : 'Установить пакеты на выбранных устройствах';
+  btn.textContent = updatable.length ? 'Обновить пакеты (' + updatable.length + ')' : 'Всё обновлено';
 
   /* The dashboard watches every service in the house except itself. Saying
      which commit is running — and whether the repository has moved on since —
      is the smallest version of watching itself that is worth anything. */
   var version = state.version || {};
   var build = version.commit && version.commit !== 'unknown'
-    ? ' · версия ' + version.commit +
+    ? ' · версия ' + version.commit.slice(0, 10) +
       (version.dirty ? ' (с правками вне коммита)' : '') +
       (version.behind ? ', отстала на ' + version.behind +
         plural(version.behind, ' коммит', ' коммита', ' коммитов') : '')
@@ -744,3 +706,47 @@ function render() {
     build;
 }
 
+
+function renderOverview() {
+  var hosts = state.hosts || [];
+  var bad = hosts.filter(function (x) { return x.level === 'bad' || !x.reachable; }).length;
+  var warn = hosts.filter(function (x) { return x.level === 'warn'; }).length;
+  var online = hosts.filter(function (x) { return x.reachable; }).length;
+  var pending = hosts.filter(function (x) { return x.updatable && x.update_count; }).length;
+  var stats = [
+    ['Всего устройств', hosts.length, 'Вся инфраструктура', '▦', '', 'all'],
+    ['На связи', online, (hosts.length - online ? (hosts.length - online) + ' не отвечает' : 'Все устройства доступны'), '⌁', '', hosts.length === online ? 'all' : 'offline'],
+    ['Требуют внимания', bad + warn, bad + ' с проблемами · ' + warn + ' с замечаниями', '!', bad ? 'bad' : warn ? 'warn' : '', 'problems'],
+    ['Ждут обновления', pending, 'Устройства с новыми пакетами', '↥', '', 'updates']
+  ];
+  var root = document.getElementById('overview');
+  root.innerHTML = '';
+  stats.forEach(function (s) {
+    var segments = hosts.map(function (x) { return h('i', {class: x.level || 'ok'}); });
+    root.appendChild(h('button', {class: 'stat-card ' + s[4], 'data-filter': s[5], onclick: function () { setFleetFilter(s[5]); }}, [
+      h('div', {class: 'stat-top'}, [h('span', {text:s[0]}), h('span', {class:'stat-icon',text:s[3], 'aria-hidden':'true'})]),
+      h('div', {class:'stat-value',text:String(s[1])}),
+      h('div', {class:'stat-note',text:s[2]}),
+      h('div', {class:'stat-track', 'aria-hidden':'true'}, segments)
+    ]));
+  });
+  document.getElementById('nav-count').textContent = hosts.length;
+  document.getElementById('demo-badge').classList.toggle('hidden', !state.demo);
+}
+var fleetFilter = 'all';
+function setFleetFilter(filter) {
+  fleetFilter = filter;
+  onlyProblems = filter === 'problems';
+  localStorage.setItem('hz-only-problems', onlyProblems ? '1' : '0');
+  if (typeof showView === 'function') showView('fleet');
+  render();
+  document.getElementById('fleet-toolbar').scrollIntoView({block:'nearest',behavior:'smooth'});
+}
+
+function syncFleetControls() {
+  var btn = document.getElementById('btn-problems');
+  btn.classList.toggle('btn-primary', onlyProblems);
+  btn.setAttribute('aria-pressed', String(onlyProblems));
+  btn.textContent = onlyProblems ? 'Сбросить фильтр' : fleetFilter === 'offline' ? 'Только недоступные ×' : fleetFilter === 'updates' ? 'С обновлениями ×' : 'Только проблемы';
+  document.querySelectorAll('.stat-card').forEach(function (card) { card.setAttribute('aria-pressed', String(card.dataset.filter === (onlyProblems ? 'problems' : fleetFilter))); });
+}

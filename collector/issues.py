@@ -1267,6 +1267,7 @@ def annotate(hosts: list[dict], cfg: dict | None = None,
             if not entry:
                 continue
             issue["suppressed"] = True
+            issue["suppression_id"] = f"{host['id']}/{entry['key']}"
             issue["suppress_reason"] = entry.get("reason", "")
             issue["suppress_since"] = entry.get("created", 0)
             issue["suppress_expires"] = entry.get("expires", 0)
@@ -1347,7 +1348,7 @@ def checks_for(host: dict, cfg: dict | None = None) -> list[dict]:
         muted_hits = [h for h in hits if h.get("suppressed")]
         if muted_hits:
             entry["suppressed"] = [{
-                "key": h["key"], "reason": h.get("suppress_reason", ""),
+                "key": h["key"], "suppression_id": h.get("suppression_id"), "reason": h.get("suppress_reason", ""),
                 "since": h.get("suppress_since", 0),
                 "expires": h.get("suppress_expires", 0),
                 "text": h["text"],
@@ -1509,7 +1510,7 @@ def checks_for(host: dict, cfg: dict | None = None) -> list[dict]:
         keys=("smart",))
     add("disks", "RAID-массивы",
         "Состояние каждого массива: [U_] вместо [UU] — деградация",
-        applies=bool(host.get("raid")), skipped="массивов нет", keys=("raid",))
+        applies=bool(host.get("raids")), skipped="массивов нет", keys=("raid",))
 
     # ---------- services ----------
     add("services", "Упавшие сервисы",

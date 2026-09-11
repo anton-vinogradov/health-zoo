@@ -21,11 +21,14 @@ import sys
 import urllib.request
 import threading
 import time
+from storage import StateSaveError
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+import secrets as secrets_mod  # noqa: E402
+from configuration import validate as validate_config  # noqa: E402
 import acks as acks_mod  # noqa: E402
 import alerts  # noqa: E402
 import history  # noqa: E402
@@ -52,6 +55,7 @@ STATIC_FILES = {
     "/ui/egress.js": ("ui/egress.js", "application/javascript; charset=utf-8"),
     "/ui/topology.js": ("ui/topology.js", "application/javascript; charset=utf-8"),
     "/ui/wiring.js": ("ui/wiring.js", "application/javascript; charset=utf-8"),
+    "/ui/theme.css": ("ui/theme.css", "text/css; charset=utf-8"),
     "/style.css": ("style.css", "text/css; charset=utf-8"),
 }
 
@@ -73,6 +77,7 @@ def load_config() -> dict:
         if path and path.is_file():
             with path.open(encoding="utf-8") as fh:
                 cfg = json.load(fh)
+            validate_config(cfg)
             cfg["_path"] = str(path)
             return cfg
     raise SystemExit("health-zoo: no config found (tried /etc/health-zoo.json)")
@@ -440,12 +445,11 @@ class Fleet:
                 continue
             if not self.jobs_ref:
                 return
-            job_id, _ = self.jobs_ref.start([source], self)
+            job_id, _ = self.jobs_ref.start([source], self, automatic=True)
             if not job_id:
                 # Another job holds the slot; the next poll will try again
                 # rather than queueing updates behind one another.
                 return
-            self.settings.note_update(str(host_id), now)
             self.alerts.notify(
                 f"ставлю обновления на {host.get('name', host_id)}: "
                 f"{host['security_count']} из {host.get('update_count', 0)} "
@@ -498,7 +502,6 @@ class Fleet:
                 # Going down unannounced is how a planned reboot becomes an
                 # unexplained outage. It can wait for the next window.
                 return
-            self.settings.note_reboot(host_id, now)
             self.jobs_ref.start_reboot(source, self)
             return
 
@@ -507,7 +510,6 @@ class Fleet:
             # Another job holds the slot; try again next poll rather than
             # queueing reboots up behind an update run.
             return
-        self.settings.note_reboot(host_id, now)
         self.alerts.notify(f"перезагружаю {host.get('name', host_id)} — {why}")
         return
 
@@ -545,6 +547,8 @@ class Fleet:
         self.attach_link_history(fresh)
         issues.annotate(fresh, self.cfg, self.suppressions, self.acks)
         issues.annotate_checks(fresh, self.cfg)
+        for host in fresh:
+            host["polled_at"] = int(time.time())
         by_id = {h["id"]: h for h in fresh}
         with self.lock:
             hosts = list(self.snapshot.get("hosts", []))
@@ -561,7 +565,6 @@ class Fleet:
             # recomputed here too: adding one and not seeing it take effect
             # until the next full cycle looks like the button did nothing.
             self.snapshot["suppressions"] = self.suppressions.listing(hosts)
-            self.snapshot["generated"] = int(time.time())
         return len(fresh)
 
     def reannotate(self, host_ids: list[str]) -> None:
@@ -604,10 +607,13 @@ class Jobs:
         self.counter += 1
         return f"job{self.counter}"
 
-    def start(self, targets: list[dict], fleet: Fleet) -> tuple[str | None, str]:
+    def start(self, targets: list[dict], fleet: Fleet, automatic: bool = False) -> tuple[str | None, str]:
         with self.lock:
             if self.active and self.jobs[self.active]["state"] == "running":
                 return None, "another update is already running"
+            if automatic:
+                for target in targets:
+                    fleet.settings.note_update(str(target["id"]), int(time.time()))
             job_id = self._new_id()
             self.jobs[job_id] = {
                 "id": job_id,
@@ -626,13 +632,44 @@ class Jobs:
                 "results": {},
             }
             self.active = job_id
-        thread = threading.Thread(target=self._run, args=(job_id, targets, fleet), daemon=True)
+        thread = threading.Thread(target=self._worker, args=(self._run, job_id, targets, fleet), daemon=True)
         thread.start()
         return job_id, ""
+
+    def _worker(self, operation, job_id, *args):
+        with self.lock:
+            job = self.jobs[job_id]
+            hosts = args[0] if isinstance(args[0], list) else [args[0]]
+            if "hosts" not in job:
+                job["hosts"] = {h["id"]: {"name": h.get("name", h["id"]),
+                    "state": "running", "log": [], "started": int(time.time()),
+                    "finished": 0} for h in hosts}
+        error = ""
+        try:
+            operation(job_id, *args)
+        except Exception as exc:
+            error = str(exc)
+            self._log(job_id, "! " + error)
+        finally:
+            with self.lock:
+                job = self.jobs[job_id]
+                for host_id, entry in job["hosts"].items():
+                    if entry["state"] in ("pending", "running"):
+                        result = job["results"].get(host_id, "failed (interrupted)")
+                        entry["state"] = "ok" if result == "ok" and not error else "failed"
+                        entry["finished"] = int(time.time())
+                        if entry["state"] == "failed":
+                            entry["reason"] = error or result
+                            job["results"][host_id] = result
+                job["state"] = "done"
+                job["finished"] = int(time.time())
+                job["current"] = ""
 
     def _log(self, job_id: str, line: str, host_id: str = "") -> None:
         with self.lock:
             job = self.jobs[job_id]
+            if host_id not in job.get("hosts", {}) and len(job.get("hosts", {})) == 1:
+                host_id = next(iter(job["hosts"]))
             stream = job["hosts"][host_id]["log"] if host_id in job.get("hosts", {}) \
                 else job["log"]
             stream.append(line)
@@ -698,7 +735,6 @@ class Jobs:
             run_one(host)
 
         with self.lock:
-            self.jobs[job_id]["state"] = "done"
             self.jobs[job_id]["finished"] = int(time.time())
             self.jobs[job_id]["current"] = ""
             self.jobs[job_id]["refreshed"] = True
@@ -716,7 +752,7 @@ class Jobs:
         # below rather than being quietly forced through.
         remote = (
             "export DEBIAN_FRONTEND=noninteractive; "
-            "sudo -n apt-get update -qq && "
+            "sudo -n apt-get update -qq || exit $?; "
             "sudo -n apt-get -y --with-new-pkgs -o Dpkg::Options::=--force-confdef "
             "-o Dpkg::Options::=--force-confold upgrade; "
             "rc=$?; "
@@ -727,12 +763,12 @@ class Jobs:
             # libgl1-amber-dri was stuck behind libglapi-mesa — which was
             # itself in the autoremove list. Clean first, then ask again.
             + ("echo '--- чистка ненужных пакетов ---'; "
-               "sudo -n apt-get -y autoremove; "
+               "sudo -n apt-get -y autoremove; step=$?; [ $step -eq 0 ] || rc=$step; "
                "echo '--- повторная попытка после чистки ---'; "
                "sudo -n apt-get -y --with-new-pkgs "
                "-o Dpkg::Options::=--force-confdef "
                "-o Dpkg::Options::=--force-confold upgrade; "
-               "[ $rc -eq 0 ] && rc=$?; " if cleanup else "")
+               "step=$?; [ $step -eq 0 ] || rc=$step; " if cleanup else "")
             + "left=$(apt list --upgradable 2>/dev/null | tail -n +2 | cut -d/ -f1); "
             # Third pass, by name and without recommendations. A package is
             # also held back when its new version recommends something that is
@@ -743,9 +779,9 @@ class Jobs:
             # still gets reported below.
             "[ -n \"$left\" ] && { "
             "  echo '--- третья попытка: без необязательных рекомендаций ---'; "
-            "  sudo -n apt-get -y --no-install-recommends "
+            "  sudo -n apt-get -y --no-remove --no-install-recommends "
             "-o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold "
-            "install $left; "
+            "install $left; step=$?; [ $step -eq 0 ] || rc=$step; "
             "  left=$(apt list --upgradable 2>/dev/null | tail -n +2 | cut -d/ -f1); }; "
             "[ -n \"$left\" ] && { "
             "  echo 'ОСТАЛОСЬ (нужно удаление пакетов, вручную):'; "
@@ -806,6 +842,7 @@ class Jobs:
         with self.lock:
             if self.active and self.jobs[self.active]["state"] == "running":
                 return None, "another job is already running"
+            fleet.settings.note_reboot(str(host.get("id")), int(time.time()))
             job_id = self._new_id()
             self.jobs[job_id] = {
                 "id": job_id, "kind": "reboot", "state": "running",
@@ -816,8 +853,7 @@ class Jobs:
         # Every reboot that starts here is one somebody asked for, by button or
         # by schedule. Recorded before the machine goes, or it comes back and
         # is reported as having restarted on its own.
-        fleet.settings.note_reboot(str(host.get("id")), int(time.time()))
-        thread = threading.Thread(target=self._run_reboot, args=(job_id, host, fleet),
+        thread = threading.Thread(target=self._worker, args=(self._run_reboot, job_id, host, fleet),
                                   daemon=True)
         thread.start()
         return job_id, ""
@@ -940,7 +976,6 @@ class Jobs:
             code = self._await_return(job_id, host, fleet)
         with self.lock:
             self.jobs[job_id]["results"][host["id"]] = "ok" if code == 0 else f"failed ({code})"
-            self.jobs[job_id]["state"] = "done"
             self.jobs[job_id]["finished"] = int(time.time())
             self.jobs[job_id]["current"] = ""
 
@@ -997,8 +1032,8 @@ class Jobs:
                 "current": host["id"], "log": [], "results": {},
             }
             self.active = job_id
-        thread = threading.Thread(target=self._run_service_action,
-                                  args=(job_id, host, unit, action, fleet), daemon=True)
+        thread = threading.Thread(target=self._worker,
+                                  args=(self._run_service_action, job_id, host, unit, action, fleet), daemon=True)
         thread.start()
         return job_id, ""
 
@@ -1014,7 +1049,9 @@ class Jobs:
             # DSM wraps services in packages; synopkg is the supported way in.
             remote = f"synopkg {action} {quoted} 2>&1 || sudo -n synopkg {action} {quoted}"
         else:
-            remote = f"sudo -n systemctl {action} {quoted} && systemctl is-active {quoted}"
+            remote = f"sudo -n systemctl {action} {quoted}"
+            if action != "stop":
+                remote += f" && systemctl is-active {quoted}"
             if host.get("user") == "root":
                 remote = remote.replace("sudo -n ", "")
 
@@ -1025,7 +1062,6 @@ class Jobs:
             self._log(job_id, f"(переопрос не удался: {exc})")
         with self.lock:
             self.jobs[job_id]["results"][host["id"]] = "ok" if code == 0 else f"failed ({code})"
-            self.jobs[job_id]["state"] = "done"
             self.jobs[job_id]["finished"] = int(time.time())
             self.jobs[job_id]["current"] = ""
 
@@ -1045,8 +1081,8 @@ class Jobs:
                 "results": {},
             }
             self.active = job_id
-        thread = threading.Thread(target=self._run_removal,
-                                  args=(job_id, host, unit, fleet), daemon=True)
+        thread = threading.Thread(target=self._worker,
+                                  args=(self._run_removal, job_id, host, unit, fleet), daemon=True)
         thread.start()
         return job_id, ""
 
@@ -1091,7 +1127,6 @@ class Jobs:
         except Exception as exc:
             self._log(job_id, f"(переопрос не удался: {exc})")
         with self.lock:
-            self.jobs[job_id]["state"] = "done"
             self.jobs[job_id]["finished"] = int(time.time())
             self.jobs[job_id]["current"] = ""
             self.jobs[job_id]["refreshed"] = True
@@ -1200,17 +1235,20 @@ class Handler(BaseHTTPRequestHandler):
             if netloc != host:
                 return f"cross-origin request refused (Origin {netloc} != Host {host})"
 
-        token = self.fleet.cfg.get("action_token") or ""
+        token = secrets_mod.load(self.fleet.cfg, "action_token")
+        if not token:
+            return "actions_disabled"
         if token:
             given = self.headers.get("X-Health-Zoo-Token") or ""
             if not hmac.compare_digest(given, token):
-                return "token required"
+                return "token_required"
         return ""
 
     def _request(self):
         """The POST body as JSON, or None when it is not valid JSON."""
         try:
-            return json.loads(self._body.decode("utf-8") or "{}")
+            value = json.loads(self._body.decode("utf-8") or "{}")
+            return value if isinstance(value, dict) else None
         except (json.JSONDecodeError, UnicodeDecodeError):
             return None
 
@@ -1241,7 +1279,12 @@ class Handler(BaseHTTPRequestHandler):
 
         if path == "/api/state":
             snap = dict(self.fleet.get())
-            snap["needs_token"] = bool(self.fleet.cfg.get("action_token"))
+            # A restored observation belongs to an earlier poll; the running
+            # software version is available before the next poll completes.
+            snap["version"] = self.fleet.version
+            snap["actions_enabled"] = bool(secrets_mod.load(self.fleet.cfg, "action_token"))
+            snap["needs_token"] = snap["actions_enabled"]
+            snap["storage_errors"] = [store.storage_error for store in (self.fleet.settings, self.fleet.suppressions, self.fleet.acks, self.fleet.alerts) if store.storage_error]
             self._json(snap)
             return
 
@@ -1260,8 +1303,11 @@ class Handler(BaseHTTPRequestHandler):
                 "overridden": sorted(stored.keys()),
                 "by_role": issues.ROLE_THRESHOLDS,
                 "auto_reboot": self.fleet.settings.auto_reboot(),
+                "firmware": self.fleet.settings.firmware(),
+                "models": sorted({h.get("model") for h in self.fleet.get().get("hosts", [])
+                                  if h.get("role") == "camera" and h.get("model")}),
                 "auto_cleanup": self.fleet.settings.auto_cleanup(),
-            "auto_security": self.fleet.settings.auto_security(),
+                "auto_security": self.fleet.settings.auto_security(),
                 "hosts": [{"id": h.get("id"), "name": h.get("name")}
                           for h in self.fleet.hosts()],
                 # Cameras come from the snapshot rather than the config: they
@@ -1325,6 +1371,14 @@ class Handler(BaseHTTPRequestHandler):
         self._send(404, b"not found", "text/plain")
 
     def do_POST(self):  # noqa: N802
+        try:
+            self._post()
+        except StateSaveError as exc:
+            self._json({"error": str(exc), "code": "state_save_failed"}, 503)
+        except (ValueError, TypeError, AttributeError) as exc:
+            self._json({"error": "Некорректный запрос", "code": "bad_request"}, 400)
+
+    def _post(self):
         path = self.path.split("?", 1)[0]
         # Read before anything can answer. A response sent while the request
         # body is still in the socket leaves a kept-alive connection out of
@@ -1332,11 +1386,16 @@ class Handler(BaseHTTPRequestHandler):
         # every early "return" below would do: a refused origin, an unknown
         # path, a missing token.
         length = int(self.headers.get("Content-Length") or 0)
+        if length < 0 or length > 1024 * 1024:
+            self.close_connection = True
+            self._json({"error": "Слишком большой запрос"}, 413)
+            return
+        self.connection.settimeout(15)
         self._body = self.rfile.read(length) if length > 0 else b""
 
         denied = self._authorized()
         if denied:
-            self._json({"error": denied}, 403)
+            self._json({"error": denied, "code": denied}, 403)
             return
 
         if path == "/api/settings":
@@ -1354,28 +1413,31 @@ class Handler(BaseHTTPRequestHandler):
                 except Exception:
                     self._json({"error": f"неизвестный часовой пояс: {zone}"}, 400)
                     return
-            if isinstance(req.get("thresholds"), dict):
-                # What "default" means here is the built-in value plus whatever
-                # the config file pins — the layers the UI never edits.
-                defaults = dict(issues.DEFAULT_THRESHOLDS)
-                defaults.update(getattr(self.fleet.settings, "_base", {}))
-                self.fleet.settings.set_thresholds(req["thresholds"], defaults)
-            if isinstance(req.get("auto_reboot"), dict):
-                self.fleet.settings.set_auto_reboot(req["auto_reboot"])
-                self.fleet.alerts.timezone = self.fleet.settings.timezone()
-            if isinstance(req.get("cameras"), dict):
-                self.fleet.settings.set_cameras(req["cameras"])
-            if isinstance(req.get("auto_cleanup"), dict):
-                self.fleet.settings.set_auto_cleanup(req["auto_cleanup"])
-            if isinstance(req.get("auto_security"), dict):
-                self.fleet.settings.set_auto_security(req["auto_security"])
+            with self.fleet.settings.transaction():
+                if isinstance(req.get("thresholds"), dict):
+                    # What "default" means here is the built-in value plus whatever
+                    # the config file pins — the layers the UI never edits.
+                    defaults = dict(issues.DEFAULT_THRESHOLDS)
+                    defaults.update(getattr(self.fleet.settings, "_base", {}))
+                    self.fleet.settings.set_thresholds(req["thresholds"], defaults)
+                if isinstance(req.get("auto_reboot"), dict):
+                    self.fleet.settings.set_auto_reboot(req["auto_reboot"])
+                if isinstance(req.get("firmware"), dict):
+                    self.fleet.settings.set_firmware(req["firmware"])
+                if isinstance(req.get("cameras"), dict):
+                    self.fleet.settings.set_cameras(req["cameras"])
+                if isinstance(req.get("auto_cleanup"), dict):
+                    self.fleet.settings.set_auto_cleanup(req["auto_cleanup"])
+                if isinstance(req.get("auto_security"), dict):
+                    self.fleet.settings.set_auto_security(req["auto_security"])
+            self.fleet.alerts.timezone = self.fleet.settings.timezone()
             # Applied to the live config and the current snapshot at once: a
             # threshold changed in the browser has to recolour the fleet now,
             # not at the next poll — otherwise it reads as having been ignored.
             self.fleet.settings.apply_to(self.fleet.cfg)
             hosts = self.fleet.get().get("hosts", [])
             self.fleet.apply_camera_limits(hosts)
-            issues.annotate(hosts, self.fleet.cfg, self.fleet.suppressions)
+            issues.annotate(hosts, self.fleet.cfg, self.fleet.suppressions, self.fleet.acks)
             issues.annotate_checks(hosts, self.fleet.cfg)
             self._json({"ok": True,
                         "thresholds": self.fleet.settings.thresholds(),
@@ -1546,28 +1608,33 @@ class Handler(BaseHTTPRequestHandler):
                 if removed:
                     # Re-poll that host straight away: waiting a full cycle to
                     # see the finding come back reads as the button failing.
-                    self.fleet.refresh_hosts([suppression_id.split("/", 1)[0]])
+                    self.fleet.reannotate([suppression_id.split("/", 1)[0]])
                 self._json({"ok": removed} if removed else {"error": "не найдено"},
                            200 if removed else 404)
                 return
 
-            host_id, key = req.get("host"), (req.get("key") or "").strip()
+            host_id = req.get("host")
+            keys = req.get("keys") if isinstance(req.get("keys"), list) else [req.get("key")]
+            if not keys or len(keys) > 30 or any(not isinstance(key, str) or not key.strip() for key in keys):
+                self._json({"error": "не указана проверка"}, 400)
+                return
             if not any(h.get("id") == host_id for h in self.fleet.hosts()):
                 self._json({"error": "unknown host"}, 404)
                 return
-            if not key:
-                self._json({"error": "не указана проверка"}, 400)
-                return
             days = req.get("days")
-            ok, error = self.fleet.suppressions.add(
-                host_id, key, req.get("reason", ""),
-                int(days) if days else None, req.get("note", ""))
-            if not ok:
-                self._json({"error": error}, 400)
+            days = int(days) if days else None
+            if days is not None and not 1 <= days <= 3650:
+                self._json({"error": "срок должен быть от 1 до 3650 дней"}, 400)
                 return
+            with self.fleet.suppressions.transaction():
+                for key in dict.fromkeys(keys):
+                    ok, error = self.fleet.suppressions.add(
+                        host_id, key.strip(), req.get("reason", ""), days, req.get("note", ""))
+                    if not ok:
+                        raise ValueError(error)
             # Reflect it immediately: the point of suppressing is that the
             # dashboard stops shouting right now, not on the next cycle.
-            self.fleet.refresh_hosts([host_id])
+            self.fleet.reannotate([host_id])
             self._json({"ok": True})
             return
 
@@ -1662,6 +1729,9 @@ class Handler(BaseHTTPRequestHandler):
 
 def main() -> None:
     cfg = load_config()
+    if "--check-config" in sys.argv:
+        print("health-zoo: configuration valid")
+        return
     fleet = Fleet(cfg)
     jobs = Jobs(cfg)
     Handler.fleet = fleet
@@ -1670,7 +1740,7 @@ def main() -> None:
 
     threading.Thread(target=fleet.loop, daemon=True).start()
 
-    listen = cfg.get("listen", "0.0.0.0")
+    listen = cfg.get("listen", "127.0.0.1")
     port = int(cfg.get("port", 8816))
     httpd = ThreadingHTTPServer((listen, port), Handler)
     print(f"health-zoo: config {cfg['_path']}, listening on {listen}:{port}, "

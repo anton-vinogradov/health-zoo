@@ -26,7 +26,7 @@ function suppressKey(host, key, what) {
 
   fetch('/api/suppress', {
     method: 'POST', headers: actionHeaders(),
-    body: JSON.stringify({ host: host.id, key: key, reason: reason.trim(),
+    body: JSON.stringify({ host: host.id, keys: Array.isArray(key) ? key : [key], reason: reason.trim(),
                            days: days.trim() ? parseInt(days, 10) : null })
   }).then(function (r) { return r.json(); }).then(function (res) {
     if (res.error) { if (!actionFailed(res)) alert('Не вышло: ' + res.error); return; }
@@ -114,12 +114,12 @@ function unsuppress(id, onDone) {
     method: 'POST', headers: actionHeaders(), body: JSON.stringify({ id: id })
   }).then(function (r) { return r.json(); }).then(function (res) {
     if (res.error) { if (!actionFailed(res)) alert('Не вышло: ' + res.error); return; }
-    load();
-    if (onDone) onDone();
+    load().then(function () { if (onDone) onDone(); });
   }).catch(function (e) { alert('Ошибка запроса: ' + e); });
 }
 
 function showSuppressions() {
+  document.getElementById('modal').classList.remove('host-sheet');
   var list = (state && state.suppressions) || [];
   document.getElementById('modal-title').textContent = 'Исключения (' + list.length + ')';
   var root = document.getElementById('modal-body');
@@ -180,7 +180,7 @@ function serviceAction(host, svc, action) {
   }).then(function (r) { return r.json(); }).then(function (res) {
     if (res.error) { if (!actionFailed(res)) alert('Не вышло: ' + res.error); return; }
     document.getElementById('modal').classList.add('hidden');
-    openJobLog();
+    openJobLog(res.job);
   }).catch(function (e) { alert('Ошибка запроса: ' + e); });
 }
 
@@ -211,7 +211,7 @@ function removeService(host, svc) {
   }).then(function (r) { return r.json(); }).then(function (res) {
     if (res.error) { if (!actionFailed(res)) alert('Не вышло: ' + res.error); return; }
     document.getElementById('modal').classList.add('hidden');
-    openJobLog();
+    openJobLog(res.job);
   }).catch(function (e) { alert('Ошибка запроса: ' + e); });
 }
 
@@ -220,12 +220,13 @@ function removeService(host, svc) {
 /* When the hub is configured with an action_token, mutating calls carry it in
    a header. Kept in localStorage so it is typed once per browser. */
 function actionHeaders() {
+  localStorage.removeItem('hz-token');
   var headers = { 'Content-Type': 'application/json' };
   if (state && state.needs_token) {
-    var token = localStorage.getItem('hz-token');
+    var token = sessionStorage.getItem('hz-token');
     if (!token) {
-      token = prompt('Введите токен доступа (задан в /etc/health-zoo.json):') || '';
-      if (token) localStorage.setItem('hz-token', token);
+      token = prompt('Введите ключ управления дашбордом. Он сохранится только до закрытия этой вкладки:') || '';
+      if (token) sessionStorage.setItem('hz-token', token);
     }
     headers['X-Health-Zoo-Token'] = token;
   }
@@ -233,8 +234,9 @@ function actionHeaders() {
 }
 
 function actionFailed(res) {
+  if (res && res.code === 'actions_disabled') { alert('Управление отключено: на сервере не настроен ключ доступа.'); return true; }
   if (res && res.error && /token/i.test(res.error)) {
-    localStorage.removeItem('hz-token');
+    sessionStorage.removeItem('hz-token');
     alert('Токен не подошёл — введите заново при следующей попытке.');
     return true;
   }
@@ -242,7 +244,8 @@ function actionFailed(res) {
 }
 
 function startUpdate(ids) {
-  var what = ids && ids.length ? ids.join(', ') : 'все серверы';
+  var targets = (state && state.hosts || []).filter(function (x) { return x.updatable && (ids && ids.length ? ids.indexOf(x.id) >= 0 : x.update_count); });
+  var what = targets.map(function (x) { return x.name; }).join(', ') || 'выбранные серверы';
   if (!confirm('Обновить пакеты: ' + what + '?\n\nЭто выполнит apt-get upgrade. Хост дашборда обновится последним.')) return;
 
   fetch('/api/update', {
@@ -252,11 +255,13 @@ function startUpdate(ids) {
   }).then(function (r) { return r.json(); }).then(function (res) {
     if (res.error) { if (!actionFailed(res)) alert('Не вышло: ' + res.error); return; }
     document.getElementById('modal').classList.add('hidden');
-    openJobLog();
+    openJobLog(res.job);
   }).catch(function (e) { alert('Ошибка запроса: ' + e); });
 }
 
-function openJobLog() {
+var currentJobId = null;
+function openJobLog(id) {
+  currentJobId = id || null;
   jobTab = '';
   document.getElementById('joblog').classList.remove('hidden');
   pollJob();
@@ -306,12 +311,20 @@ function renderLog(container, lines) {
 }
 
 function pollJob() {
-  fetch('/api/job').then(function (r) { return r.json(); }).then(function (job) {
+  fetch(currentJobId ? '/api/job/' + encodeURIComponent(currentJobId) : '/api/job').then(function (r) { return r.json(); }).then(function (job) {
+    if (job && job.error) {
+      document.getElementById('job-status').textContent = 'Журнал задания недоступен после перезапуска. Проверьте состояние устройства.';
+      if (jobTimer) clearInterval(jobTimer);
+      jobTimer = null;
+      load();
+      return;
+    }
     if (!job || job.state === 'idle') {
       document.getElementById('job-status').textContent = 'нет активных заданий';
       return;
     }
     var done = job.state === 'done';
+    document.getElementById('job-title').textContent = ({update:'Обновление пакетов',reboot:'Перезагрузка',restart:'Перезапуск сервиса',stop:'Остановка сервиса',start:'Запуск сервиса',remove:'Удаление сервиса'})[job.kind] || 'Выполнение задания';
     var hosts = job.hosts || {};
     var ids = job.targets || Object.keys(hosts);
 
@@ -381,6 +394,7 @@ function pollJob() {
    actually changed are stored, so a later change to a default still applies to
    everything nobody has overridden. */
 function showSettings() {
+  document.getElementById('modal').classList.remove('host-sheet');
   document.getElementById('modal-title').textContent = 'Настройки';
   var root = document.getElementById('modal-body');
   root.innerHTML = '';
@@ -388,6 +402,7 @@ function showSettings() {
   document.getElementById('modal').classList.remove('hidden');
 
   fetch('/api/settings').then(function (r) { return r.json(); }).then(function (cfg) {
+    if (cfg.error) throw new Error(cfg.error);
     root.innerHTML = '';
     var inputs = {};
 
@@ -406,19 +421,19 @@ function showSettings() {
           var overridden = cfg.overridden.indexOf(f.key) >= 0;
           var input = h('input', {
             class: 'set-input', type: 'number', value: cfg.values[f.key],
-            min: f.min, max: f.max
+            min: f.min, max: f.max, 'aria-label': f.label
           });
           inputs[f.key] = input;
-          return h('tr', null, [
-            h('td', null, [
-              h('div', { text: f.label }),
+          return h('div', { class: 'setting-field' }, [
+            h('div', { class: 'setting-description' }, [
+              h('strong', { text: f.label }),
               f.hint ? h('div', { class: 'set-hint', text: f.hint }) : null
             ]),
-            h('td', { class: 'right nowrap' }, [
+            h('div', { class: 'setting-value' }, [
               input,
               h('span', { class: 'set-unit', text: f.unit || '' })
             ]),
-            h('td', { class: 'right nowrap' }, [
+            h('div', { class: 'setting-default' }, [
               // The default is shown, not hidden behind a reset button: the
               // useful question is "what would this be if I left it alone".
               h('span', { class: 'set-default' + (overridden ? ' changed' : ''),
@@ -430,7 +445,7 @@ function showSettings() {
             ])
           ]);
         });
-      root.appendChild(section(group, table(['проверка', 'значение', ''], rows)));
+      root.appendChild(section(group, h('div', { class: 'settings-grid' }, rows)));
     });
 
     var roles = Object.keys(cfg.by_role || {});
@@ -529,7 +544,7 @@ function showSettings() {
        scheduled because doing it at the wrong moment costs something; a
        published fix costs from the moment it is published. */
     var security = h('input', { type: 'checkbox' });
-    security.checked = !(cfg.auto_security && cfg.auto_security.enabled === false);
+    security.checked = !!(cfg.auto_security && cfg.auto_security.enabled);
 
     var cleanup = h('input', { type: 'checkbox' });
     cleanup.checked = !(cfg.auto_cleanup && cfg.auto_cleanup.enabled === false);
@@ -583,7 +598,7 @@ function showSettings() {
 
     var status = h('span', { class: 'set-status' });
     root.appendChild(h('div', { class: 'set-actions' }, [
-      h('button', { class: 'btn btn-primary', text: 'Сохранить', onclick: function () {
+      h('button', { class: 'btn btn-primary', text: 'Сохранить', disabled: state && state.actions_enabled === false ? true : null, onclick: function () {
         var thresholds = {};
         Object.keys(inputs).forEach(function (key) {
           thresholds[key] = inputs[key].value === '' ? null : Number(inputs[key].value);

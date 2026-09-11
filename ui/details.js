@@ -21,7 +21,14 @@ function section(title, node) {
 /* The detail view has two tabs: what the host looks like now, and what is
    being checked on it at all. The second answers the question a findings-only
    dashboard leaves open — "is this fine, or simply not watched?" */
-function showHost(host) {
+var currentHostId = null;
+function showHost(host, refreshing) {
+  currentHostId = host.id;
+  var modal = document.getElementById('modal');
+  modal.classList.add('host-sheet');
+  var previousScroll = document.getElementById('modal-body').scrollTop;
+  var previousTab = modal.querySelector('.tabs .tab.active');
+  var keepChecks = refreshing && previousTab && previousTab.textContent.indexOf('Проверки') === 0;
   document.getElementById('modal-title').textContent = host.name + ' · ' + host.addr;
   var root = document.getElementById('modal-body');
   root.innerHTML = '';
@@ -45,6 +52,7 @@ function showHost(host) {
   root.appendChild(h('div', { class: 'tabs' }, [tabState, tabChecks]));
   root.appendChild(body);
   root.appendChild(checksPage);
+  if (keepChecks) tabChecks.click();
 
   var facts = [];
   function fact(label, value) {
@@ -208,7 +216,7 @@ function showHost(host) {
           h('td', { class: 'right' }, [
             i.suppressed
               ? h('button', { class: 'btn btn-sm', text: 'вернуть',
-                  onclick: function () { unsuppress(host.id + '/' + i.key); } })
+                  onclick: function () { unsuppress(i.suppression_id || host.id + '/' + i.key); } })
               : i.acked
                 ? h('button', { class: 'btn btn-sm', text: 'вернуть',
                     title: 'снова показывать это замечание',
@@ -536,9 +544,9 @@ function showHost(host) {
       }))));
   }
 
-  if ((host.raid || []).length) {
+  if ((host.raids || []).length) {
     body.appendChild(section('RAID', table(['массив', 'уровень', 'состояние'],
-      host.raid.map(function (r) {
+      host.raids.map(function (r) {
         var bad = r.state.indexOf('_') >= 0;
         return h('tr', null, [
           h('td', { class: 'mono', text: r.dev }),
@@ -688,12 +696,14 @@ function showHost(host) {
       ]);
     });
     (host.backuprepos || []).forEach(function (r) {
-      var stale = r.age_days !== null && r.age_days > 2;
+      var result = hostIssues(host).find(function (i) { return i.key === 'backup:' + r.name; });
+      var backupLevel = result ? (result.suppressed ? '' : result.level) : r.age_days == null ? '' : 'ok';
+      var stale = backupLevel === 'bad' || backupLevel === 'warn';
       rows.push(h('tr', null, [
-        h('td', null, [h('span', { class: 'dot ' + (stale ? 'bad' : 'ok') }), h('span', { text: r.name })]),
+        h('td', null, [h('span', { class: 'dot ' + backupLevel }), h('span', { text: r.name })]),
         h('td', { text: '← принимает' }),
         h('td', { class: 'mono' + (stale ? ' warn' : ''),
-                  text: (r.age_days === null ? '' : r.age_days + ' сут назад') +
+                  text: (r.age_days == null ? 'нет данных о свежести' : r.age_days + ' сут назад') +
                         (r.size ? ' · ' + bytes(r.size * 1024) : '') })
       ]));
     });
@@ -781,6 +791,7 @@ function showHost(host) {
   }
 
   document.getElementById('modal').classList.remove('hidden');
+  if (refreshing) root.scrollTop = previousScroll;
 }
 
 function renderChecks(host, container) {
@@ -814,7 +825,7 @@ function renderChecks(host, container) {
           h('span', { text: 'исключено: ' + s.reason }),
           h('button', {
             class: 'link-btn', text: 'вернуть',
-            onclick: function () { unsuppress(host.id + '/' + s.key); }
+            onclick: function () { unsuppress(s.suppression_id || host.id + '/' + s.key); }
           })
         ]);
       });
@@ -826,7 +837,7 @@ function renderChecks(host, container) {
         : h('button', {
             class: 'btn btn-sm', text: 'исключить',
             title: 'принять эту проверку как известную — с причиной',
-            onclick: function () { suppressKey(host, c.keys[0], 'проверку «' + c.name + '»'); }
+            onclick: function () { suppressKey(host, c.keys, 'проверку «' + c.name + '»'); }
           });
       return h('tr', { class: c.status === 'n/a' ? 'check-na' : '' }, [
         h('td', { class: 'check-mark ' + c.status, text: mark }),
@@ -916,6 +927,7 @@ function loadHistory(host, container) {
 /* ---------- every web UI in the fleet ---------- */
 
 function showSites() {
+  document.getElementById('modal').classList.remove('host-sheet');
   var hosts = (state && state.hosts) || [];
   document.getElementById('modal-title').textContent = 'Веб-интерфейсы парка';
   var body = document.getElementById('modal-body');
@@ -965,7 +977,7 @@ function rebootHost(host) {
   }).then(function (r) { return r.json(); }).then(function (res) {
     if (res.error) { if (!actionFailed(res)) alert('Не вышло: ' + res.error); return; }
     document.getElementById('modal').classList.add('hidden');
-    openJobLog();
+    openJobLog(res.job);
   }).catch(function (e) { alert('Ошибка запроса: ' + e); });
 }
 

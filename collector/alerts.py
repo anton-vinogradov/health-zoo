@@ -22,6 +22,8 @@ import time
 from zoneinfo import ZoneInfo
 
 import secrets
+import hashlib
+from storage import write_json, StateSaveError
 
 LEVEL_ICON = {"bad": "🔴", "warn": "🟡", "ok": "🟢"}
 
@@ -87,6 +89,9 @@ class Alerts:
         # silence is indistinguishable from "nothing is wrong", which is the
         # one lie it must never tell.
         self.delivery: dict = {"ok": True, "error": "", "since": 0, "queued": 0}
+        self.storage_error = ""
+        self.events: dict[str, dict] = {}
+        self.delivered_events: dict[str, int] = {}
         self._load_state()
 
     # ---------- persistence ----------
@@ -98,9 +103,15 @@ class Alerts:
         try:
             with open(self.state_path, encoding="utf-8") as fh:
                 saved = json.load(fh)
+            if not isinstance(saved, dict) or any(not isinstance(saved.get(key, {}), dict)
+                    for key in ("active", "pending", "clearing", "events", "delivered_events", "muted")):
+                raise ValueError("alert state must contain objects")
         except (OSError, ValueError):
             saved = {}
         self.active = saved.get("active", {})
+        self.events = saved.get("events", {})
+        self.delivered_events = saved.get("delivered_events", {})
+        self.muted = saved.get("muted", {})
         # Debounce counters persist too. Without this a restart resets them,
         # and a hub restarted more often than the debounce window would never
         # finish counting — so a real problem was never announced.
@@ -112,15 +123,14 @@ class Alerts:
 
     def _save_state(self) -> None:
         try:
-            os.makedirs(os.path.dirname(self.state_path), exist_ok=True)
-            with open(self.state_path, "w", encoding="utf-8") as fh:
-                json.dump({"active": self.active,
-                           "pending": self.pending,
-                           "clearing": self.clearing,
-                           "last_startup": self.last_startup,
-                           "last_digest": self.last_digest}, fh, ensure_ascii=False)
-        except OSError:
-            pass
+            write_json(self.state_path, {"active": self.active,
+                       "pending": self.pending, "clearing": self.clearing,
+                       "last_startup": self.last_startup, "last_digest": self.last_digest,
+                       "events": self.events, "delivered_events": self.delivered_events,
+                       "muted": self.muted})
+            self.storage_error = ""
+        except StateSaveError:
+            self.storage_error = "Не сохраняется очередь уведомлений: " + self.state_path
 
     # ---------- state diffing ----------
 
@@ -141,6 +151,7 @@ class Alerts:
         would otherwise be reported as the host going down."""
         with self.lock:
             self.muted[host_id] = time.time() + seconds
+            self._save_state()
 
     def _current(self, hosts: list[dict]) -> dict[str, dict]:
         # "info" never alerts: it exists precisely for states that are normal
@@ -164,6 +175,12 @@ class Alerts:
                     "level": issue["level"],
                     "text": issue["text"],
                     "since": int(time.time()),
+                    "host_id": host["id"],
+                    "event_id": (hashlib.sha256(json.dumps([
+                        host["id"], issue["key"], host.get("polled_at", host.get("uptime")),
+                        issue["text"]], ensure_ascii=False).encode()).hexdigest()
+                        if issue["key"] == "rebooted" or issue["key"].startswith(("svcflap:", "svcgone:"))
+                        else ""),
                 }
         return out
 
@@ -174,7 +191,21 @@ class Alerts:
         now = int(time.time())
 
         with self.lock:
+            muted = {host for host, until in self.muted.items() if until > now}
             previous = dict(self.active)
+            self.delivered_events = {key: stamp for key, stamp in self.delivered_events.items()
+                                     if now - stamp < 30 * 86400}
+            for key, value in list(current.items()):
+                event_id = value.get("event_id")
+                if not event_id:
+                    continue
+                if event_id not in self.delivered_events:
+                    self.events.setdefault(event_id, value)
+                del current[key]
+            # Mute freezes both sides of the comparison, including counters.
+            def is_muted(key):
+                return key.split("/", 1)[0] in muted
+
 
             # Debounce in both directions: count how many polls in a row a
             # problem has been present (or absent) before acting on it.
@@ -191,10 +222,12 @@ class Alerts:
                 if self.pending[key] >= self.flap_cycles:
                     appeared.append((key, value))
             for key in list(self.pending):
-                if key not in current:
+                if key not in current and not is_muted(key):
                     self.pending.pop(key, None)
 
             for key, value in previous.items():
+                if is_muted(key):
+                    continue
                 if key in current:
                     continue
                 self.clearing[key] = self.clearing.get(key, 0) + 1
@@ -220,6 +253,14 @@ class Alerts:
         # Anything parked by an earlier failure goes first, so the order the
         # operator reads matches the order things happened.
         self.drain()
+        for event_id, value in list(self.events.items()):
+            if value.get("host_id") in muted:
+                continue
+            if self._send(self._change_text("Событие", [value], "🔴")):
+                with self.lock:
+                    self.events.pop(event_id, None)
+                    self.delivered_events[event_id] = now
+                    self._save_state()
 
         if appeared and self._send(self._change_text(
                 "Появилось", [v for _, v in appeared], "🔴")):
@@ -236,7 +277,7 @@ class Alerts:
                     self.clearing.pop(key, None)
                 self._save_state()
         if digest_due:
-            text = self._digest_text(hosts)
+            text = self._digest_text([h for h in hosts if h["id"] not in muted])
             if text:
                 self._send(text)
 
@@ -338,7 +379,8 @@ class Alerts:
             return
         if self.delivery.get("ok", True):
             self.delivery = {"ok": False, "error": error,
-                             "since": int(time.time()), "queued": self._queued()}
+                             "since": int(time.time()),
+"queued": self._queued()}
         else:
             self.delivery["error"] = error
             self.delivery["queued"] = self._queued()
@@ -410,10 +452,8 @@ class Alerts:
         cmd = [self.binary, "-t", token, "-a", "1", "-p"]
         for chat in chats:
             cmd += ["-c", str(chat)]
-        if self.spool:
-            # telegram.sh's own store-and-forward queue: a message survives the
-            # proxy being down, which for Telegram here is a routine event.
-            cmd += ["-q", self.spool]
+        # State changes retry from the snapshot, one-shot events from our durable
+        # queue. Do not also enqueue in telegram.sh: two owners duplicate alerts.
         # Plain text on purpose: -M would turn "SanSd_1.hbk" into an unclosed
         # Markdown entity and Telegram rejects the whole message. Host names,
         # unit names and file names are exactly the strings that break it.
@@ -493,6 +533,6 @@ class Alerts:
         """Send a probe message; used by /api/alerts/test."""
         if not self.enabled:
             return False, "алерты выключены в конфиге"
-        self._send("🩺 health-zoo: проверка связи — алерты настроены и работают"
+        ok = self._send("🩺 health-zoo: проверка связи — алерты настроены и работают"
                    + (f"\n\nдашборд: {self.dashboard_url}" if self.dashboard_url else ""))
-        return True, "отправлено"
+        return ok, "отправлено" if ok else self.delivery.get("error") or "Не удалось доставить сообщение"

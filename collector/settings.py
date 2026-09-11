@@ -17,6 +17,7 @@ import json
 import os
 import re
 import threading
+from storage import PersistentJSON, locked
 import time
 from zoneinfo import ZoneInfo
 
@@ -113,43 +114,36 @@ AUTO_REBOOT_DEFAULT = {
 # consequence of upgrading, not an event.
 AUTO_CLEANUP_DEFAULT = {"enabled": True}
 
-# Security updates install themselves unless somebody says otherwise. A machine
-# left unpatched because nobody looked at the dashboard that week is the exact
-# failure a dashboard is supposed to prevent, and "there is a fix, and it is
-# not applied" is the one finding where waiting has a cost and acting does not.
-AUTO_SECURITY_DEFAULT = {"enabled": True, "exclude": [], "min_interval_hours": 6}
+# Automatic package changes require an explicit operator choice.
+AUTO_SECURITY_DEFAULT = {"enabled": False, "exclude": [], "min_interval_hours": 6}
 
 
-class Settings:
+class Settings(PersistentJSON):
     def __init__(self, path: str):
         self.path = path
-        self.lock = threading.Lock()
+        self.lock = threading.RLock()
         self.data: dict = {}
         self._load()
+        self._storage_init("data")
 
     def _load(self) -> None:
         try:
             with open(self.path, encoding="utf-8") as fh:
                 self.data = json.load(fh)
+            if not isinstance(self.data, dict) or any(not isinstance(value, dict) for value in self.data.values()):
+                raise ValueError("settings sections must be objects")
+        except FileNotFoundError:
+            self.data = {}
         except (OSError, ValueError):
             self.data = {}
+            self.storage_error = "Не удалось прочитать состояние: " + self.path
 
-    def _save(self) -> None:
-        try:
-            directory = os.path.dirname(self.path)
-            if directory:
-                os.makedirs(directory, exist_ok=True)
-            tmp = self.path + ".tmp"
-            with open(tmp, "w", encoding="utf-8") as fh:
-                json.dump(self.data, fh, ensure_ascii=False, indent=2)
-            os.replace(tmp, self.path)
-        except OSError:
-            # A dashboard that cannot persist a threshold still has to keep
-            # showing the fleet; the value stays in memory until restart.
-            pass
+    def _save(self, strict=True) -> None:
+        self._persist(strict)
 
     # ---------- thresholds ----------
 
+    @locked
     def thresholds(self) -> dict:
         return dict(self.data.get("thresholds") or {})
 
@@ -189,9 +183,11 @@ class Settings:
     # two days is a garage nobody entered. So each camera may carry its own
     # pair, keyed "<host>/<camera id>".
 
+    @locked
     def cameras(self) -> dict:
         return dict(self.data.get("cameras") or {})
 
+    @locked
     def camera_limits(self, host_id: str, cam_id: str) -> dict:
         return dict(self.cameras().get(f"{host_id}/{cam_id}") or {})
 
@@ -227,9 +223,11 @@ class Settings:
     # substring of the model, and the dashboard complains only when there is a
     # concrete newer build to point at.
 
+    @locked
     def firmware(self) -> dict:
         return dict(self.data.get("firmware") or {})
 
+    @locked
     def firmware_for(self, model: str) -> dict:
         """The newest published build known for this model, if any."""
         model = (model or "").upper()
@@ -260,6 +258,7 @@ class Settings:
 
     # ---------- automatic cleanup ----------
 
+    @locked
     def auto_cleanup(self) -> dict:
         out = dict(AUTO_CLEANUP_DEFAULT)
         out.update(self.data.get("auto_cleanup") or {})
@@ -276,6 +275,7 @@ class Settings:
 
     # ---------- automatic security updates ----------
 
+    @locked
     def auto_security(self) -> dict:
         out = dict(AUTO_SECURITY_DEFAULT)
         out.update(self.data.get("auto_security") or {})
@@ -297,6 +297,7 @@ class Settings:
             self._save()
             return current
 
+    @locked
     def last_update(self, host_id: str) -> int:
         return int((self.data.get("last_update") or {}).get(host_id, 0))
 
@@ -309,6 +310,7 @@ class Settings:
 
     # ---------- automatic reboots ----------
 
+    @locked
     def auto_reboot(self) -> dict:
         out = dict(AUTO_REBOOT_DEFAULT)
         out.update(self.data.get("auto_reboot") or {})
@@ -349,6 +351,7 @@ class Settings:
             self.data["auto_reboot_history"] = history
             self._save()
 
+    @locked
     def last_reboot(self, host_id: str) -> int:
         return int((self.data.get("auto_reboot_history") or {}).get(host_id, 0))
 
@@ -356,6 +359,7 @@ class Settings:
 
     # ---------- names ----------
 
+    @locked
     def names(self) -> dict:
         return dict(self.data.get("names") or {})
 
@@ -383,6 +387,7 @@ class Settings:
             self._save()
         return name
 
+    @locked
     def timezone(self) -> str:
         """The zone the dashboard speaks in — one for the whole dashboard.
 
@@ -392,6 +397,7 @@ class Settings:
         """
         return str((self.data.get("auto_reboot") or {}).get("timezone") or "")
 
+    @locked
     def paid_until(self) -> dict:
         return dict(self.data.get("paid_until") or {})
 
@@ -429,6 +435,7 @@ class Settings:
             self._save()
         return date
 
+    @locked
     def apply_to(self, cfg: dict) -> None:
         """Layer the stored thresholds and names over the config, in place.
 

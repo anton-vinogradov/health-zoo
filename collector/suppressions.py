@@ -19,15 +19,17 @@ from __future__ import annotations
 import json
 import os
 import threading
+from storage import PersistentJSON
 import time
 
 
-class Suppressions:
+class Suppressions(PersistentJSON):
     def __init__(self, path: str):
         self.path = path
-        self.lock = threading.Lock()
+        self.lock = threading.RLock()
         self.items: dict[str, dict] = {}
         self._load()
+        self._storage_init("items")
 
     # ---------- storage ----------
 
@@ -35,18 +37,16 @@ class Suppressions:
         try:
             with open(self.path, encoding="utf-8") as fh:
                 self.items = json.load(fh)
+            if not isinstance(self.items, dict) or any(not isinstance(value, dict) for value in self.items.values()):
+                raise ValueError("state entries must be objects")
+        except FileNotFoundError:
+            self.items = {}
         except (OSError, ValueError):
             self.items = {}
+            self.storage_error = "Не удалось прочитать состояние: " + self.path
 
-    def _save(self) -> None:
-        try:
-            directory = os.path.dirname(self.path)
-            if directory:
-                os.makedirs(directory, exist_ok=True)
-            with open(self.path, "w", encoding="utf-8") as fh:
-                json.dump(self.items, fh, ensure_ascii=False, indent=2)
-        except OSError:
-            pass
+    def _save(self, strict=True) -> None:
+        self._persist(strict)
 
     # ---------- api ----------
 
@@ -87,7 +87,7 @@ class Suppressions:
                     if not v.get("expires") or v["expires"] > now}
             if len(live) != len(self.items):
                 self.items = live
-                self._save()
+                self._save(strict=False)
             return dict(live)
 
     def for_host(self, host_id: str) -> dict[str, dict]:
@@ -122,7 +122,7 @@ class Suppressions:
                     entry["last_fired"] = now
                     changed = True
             if changed:
-                self._save()
+                self._save(strict=False)
 
     def listing(self, hosts: list[dict]) -> list[dict]:
         """Fleet-wide view, annotated with whether it is still doing anything.

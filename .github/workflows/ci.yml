@@ -21,6 +21,17 @@ jobs:
       - name: Byte-compile the collector
         run: python -m compileall -q collector
 
+  ui:
+    name: dashboard behavior
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - run: node --test tests/test_ui.js
+      - run: for file in ui/*.js; do node --check "$file"; done
+
   shell:
     name: agents
     runs-on: ubuntu-latest
@@ -33,7 +44,7 @@ jobs:
         # and on dash, where bashisms fail at runtime rather than at review.
         run: |
           shellcheck --shell=sh collector/agents/*.sh
-          shellcheck --shell=bash install.sh sync-config.sh deploy.sh
+          shellcheck --shell=bash install.sh sync-config.sh deploy.sh tools/deploy-remote.sh
 
   config:
     name: example config
