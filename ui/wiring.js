@@ -18,6 +18,7 @@ function load() {
     render();
     updateFreshness();
     refreshHostSheet();
+    refreshManagementView();
   }).catch(function (e) {
     connectionLost = true;
     document.getElementById('summary').textContent = 'Нет связи с дашбордом. Повторяем подключение…';
@@ -98,18 +99,20 @@ document.addEventListener('DOMContentLoaded', function () {
     searchText = e.target.value.trim();
     render();
   });
-  document.getElementById('btn-sites').addEventListener('click', showSites);
-  document.getElementById('btn-suppressions').addEventListener('click', showSuppressions);
-  document.getElementById('btn-settings').addEventListener('click', showSettings);
   document.getElementById('btn-upgrade-all').addEventListener('click', function () { startUpdate([]); });
 
   /* The chosen tab survives a reload: the page reloads itself every thirty
      seconds, and a view that jumped back to the fleet each time would be
      unusable for reading anything longer than that. */
-  document.querySelectorAll('.view-tabs .tab').forEach(function (tab) {
+  document.querySelectorAll('.sidebar [data-view]').forEach(function (tab) {
     tab.addEventListener('click', function () { showView(tab.dataset.view); });
   });
-  showView(localStorage.getItem('hz-view') || 'fleet');
+  showView(window.location.hash.slice(1) || localStorage.getItem('hz-view') || 'fleet', true);
+  window.addEventListener('popstate', function () { showView(window.location.hash.slice(1) || 'fleet', true); });
+  window.addEventListener('hashchange', function () { showView(window.location.hash.slice(1) || 'fleet', true); });
+  window.addEventListener('beforeunload', function (event) {
+    if (settingsDirty) { event.preventDefault(); event.returnValue = ''; }
+  });
 
   document.querySelectorAll('[data-close]').forEach(function (el) {
     el.addEventListener('click', function () {
@@ -136,17 +139,41 @@ document.addEventListener('DOMContentLoaded', function () {
   });
 });
 
-function showView(name) {
-  if (['fleet','egress','topology'].indexOf(name) < 0) name = 'fleet';
-  document.querySelectorAll('.view-tabs .tab').forEach(function (tab) { tab.classList.toggle('active', tab.dataset.view === name); tab.setAttribute('aria-current',tab.dataset.view === name ? 'page' : 'false'); });
-  ['fleet','egress','topology'].forEach(function (view) { document.getElementById(view).classList.toggle('hidden', view !== name); });
+var currentView = 'fleet';
+var viewScroll = {};
+function showView(name, fromHistory) {
+  var titles = {fleet:'Обзор сети',egress:'Выход в интернет',topology:'Связи устройств',sites:'Веб-интерфейсы',suppressions:'Исключения',settings:'Настройки'};
+  if (!Object.prototype.hasOwnProperty.call(titles, name)) name = 'fleet';
+  var changed = currentView !== name;
+  if (changed) {
+    viewScroll[currentView] = window.scrollY;
+    document.querySelectorAll('.modal').forEach(function (modal) { modal.classList.add('hidden'); });
+    if (name === 'settings' && !settingsDirty) settingsLoaded = false;
+  }
+  currentView = name;
+  document.querySelectorAll('.sidebar [data-view]').forEach(function (tab) { tab.classList.toggle('active', tab.dataset.view === name); tab.setAttribute('aria-current',tab.dataset.view === name ? 'page' : 'false'); });
+  Object.keys(titles).forEach(function (view) { document.getElementById(view).classList.toggle('hidden', view !== name); });
   document.getElementById('fleet-toolbar').classList.toggle('hidden',name !== 'fleet');
   document.getElementById('overview').classList.toggle('hidden',name !== 'fleet');
-  var titles = {fleet:'Обзор сети',egress:'Выход в интернет',topology:'Связи устройств'};
+  document.getElementById('fleet-alert').classList.toggle('hidden',['sites','suppressions','settings'].indexOf(name) >= 0);
   document.getElementById('view-title').textContent = titles[name];
   document.getElementById('view-crumb').textContent = titles[name].toUpperCase();
   document.title = 'health-zoo · ' + titles[name];
   localStorage.setItem('hz-view',name);
+  if (window.location.hash !== '#' + name) {
+    window.history[fromHistory ? 'replaceState' : 'pushState'](null, '', '#' + name);
+  }
+  refreshManagementView();
+  if (changed) window.scrollTo(0, viewScroll[name] || 0);
+}
+function refreshManagementView() {
+  if (currentView === 'sites') renderSites();
+  if (currentView === 'suppressions') renderSuppressions();
+  // Keep the mounted form (and its unsaved values) through polling and tabs.
+  if (currentView === 'settings') {
+    if (settingsLoaded && !settingsDirty && !settingsObservedGeneration && state && state.generated) settingsLoaded = false;
+    renderSettings();
+  }
 }
 function updateFreshness() {
   var age = snapshotAge();

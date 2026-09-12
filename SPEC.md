@@ -212,3 +212,4 @@ Marked: **✓** done, **▶** in progress, **○** deliberately not done.
 - Deployments use committed source, validate config before stopping the service,
   back up code/config/state, and roll back a failed startup. Process version is
   independent of the age of the restored observations.
+- Management sections are routable workspace tabs. Switching views preserves settings drafts; background polling never replaces edited fields. Save acknowledgements cannot mark newer edits as saved.

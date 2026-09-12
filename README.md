@@ -23,6 +23,14 @@ the fleet, with a separate Checks tab. `Esc` closes the panel and returns focus.
 A failed connection, an old snapshot, and the first unfinished poll have distinct
 states. Light/dark themes and mobile navigation keep the same controls available.
 
+
+Management sections (Web interfaces, Suppressions and Settings) open as full
+workspace tabs. Links `#sites`, `#suppressions` and `#settings` open them directly;
+browser Back/Forward restores the selected section. Unsaved settings stay in
+place when changing tabs or when the fleet refreshes. Save applies them; Cancel
+changes reloads the saved values. Closing/reloading the page warns about unsaved
+edits.
+
 ## What it shows
 
 Devices are grouped by subnet, and subnets nest by their real topology — uplink

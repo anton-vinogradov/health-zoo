@@ -926,13 +926,17 @@ function loadHistory(host, container) {
 
 /* ---------- every web UI in the fleet ---------- */
 
-function showSites() {
-  document.getElementById('modal').classList.remove('host-sheet');
+function showSites() { showView('sites'); }
+
+function renderSites() {
   var hosts = (state && state.hosts) || [];
-  document.getElementById('modal-title').textContent = 'Веб-интерфейсы парка';
-  var body = document.getElementById('modal-body');
+  var body = document.getElementById('sites');
   body.innerHTML = '';
 
+  if (!state || !state.generated) {
+    body.appendChild(h('p', {class:'checks-intro', text:'Ожидаем данные об устройствах…'}));
+    return;
+  }
   var rows = [];
   hosts.forEach(function (host) {
     (host.web || []).forEach(function (link) {
@@ -956,7 +960,6 @@ function showSites() {
     body.appendChild(section('Найдено ' + rows.length,
       table(['хост', 'адрес', 'что это'], rows)));
   }
-  document.getElementById('modal').classList.remove('hidden');
 }
 
 /* ---------- reboot ---------- */

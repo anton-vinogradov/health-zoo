@@ -767,7 +767,7 @@ kbd {
     width:100%
   }
 }
-.sidebar-tools .mobile-theme { display:none }
+.mobile-theme { display:none }
 @media(max-width:780px) {
   .sidebar {
     position:relative;
@@ -796,25 +796,28 @@ kbd {
     justify-content:center
   }
   .sidebar-tools {
-    position:absolute;
-    right:14px;
-    top:21px;
+    position:static;
     flex-direction:row;
-    gap:2px
+    gap:6px;
+    margin-top:6px;
   }
   .sidebar-tools .tab {
-    width:36px;
-    overflow:hidden;
-    white-space:nowrap;
-    display:block;
-    font-size:0;
-    padding:5px
+    min-width:0;
+    font-size:12px;
+    padding:10px 5px;
+    gap:5px;
   }
-  .sidebar-tools .nav-icon {
-    font-size:22px
-  }
+  .sidebar-tools .nav-icon { display:none }
   .sidebar .brand { font-size:19px; gap:8px }
-  .sidebar-tools .mobile-theme { display:block }
+  .mobile-theme {
+    display:block;
+    position:absolute;
+    right:18px;
+    top:16px;
+    width:44px;
+    height:44px;
+    font-size:23px;
+  }
   .nav-icon {
     font-size:18px
   }
@@ -1018,4 +1021,47 @@ kbd {
 @media(max-width:650px) {
   .settings-grid { grid-template-columns:1fr }
   .modal-card { max-width:calc(100vw - 20px) }
+}
+
+
+/* Management belongs to the same workspace as fleet and network views. */
+.management-page {
+  min-width:0;
+  min-height:55vh;
+  border:1px solid var(--line);
+  border-radius:var(--radius);
+  background:var(--bg-card);
+  padding:24px;
+}
+.management-page .checks-intro {
+  font-size:14px;
+  line-height:1.6;
+  max-width:75ch;
+  margin-bottom:22px;
+}
+.management-page .section + .section { margin-top:28px }
+.management-page .section h3 {
+  margin:0 0 14px;
+  color:var(--text);
+  font-size:17px;
+  font-weight:600;
+  letter-spacing:0;
+  text-transform:none;
+}
+.management-page .list td { padding:14px 12px; font-size:14px }
+.management-page .list th { padding:12px; font-size:13px }
+.settings-page .set-actions {
+  position:sticky;
+  bottom:0;
+  padding:16px 0;
+  border-top:1px solid var(--line);
+  background:var(--bg-card);
+  z-index:2;
+}
+.settings-page .set-hint { font-size:14px; line-height:1.6 }
+.settings-page .set-block { max-width:80ch }
+.settings-page .set-status { font-size:14px }
+@media(max-width:780px) {
+  .management-page { padding:18px 14px }
+  .settings-page .set-actions { align-items:flex-start; flex-wrap:wrap }
 }

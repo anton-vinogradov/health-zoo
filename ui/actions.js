@@ -118,17 +118,20 @@ function unsuppress(id, onDone) {
   }).catch(function (e) { alert('Ошибка запроса: ' + e); });
 }
 
-function showSuppressions() {
-  document.getElementById('modal').classList.remove('host-sheet');
+function showSuppressions() { showView('suppressions'); }
+
+function renderSuppressions() {
   var list = (state && state.suppressions) || [];
-  document.getElementById('modal-title').textContent = 'Исключения (' + list.length + ')';
-  var root = document.getElementById('modal-body');
+  var root = document.getElementById('suppressions');
   root.innerHTML = '';
 
+  if (!state || !state.generated) {
+    root.appendChild(h('p', {class:'checks-intro', text:'Ожидаем данные об исключениях…'}));
+    return;
+  }
   if (!list.length) {
     root.appendChild(h('p', { class: 'checks-intro', text:
       'Исключений нет — дашборд показывает всё, что находит.' }));
-    document.getElementById('modal').classList.remove('hidden');
     return;
   }
 
@@ -161,11 +164,10 @@ function showSuppressions() {
         ]),
         h('td', { class: 'right' }, [h('button', {
           class: 'btn btn-sm', text: 'снять',
-          onclick: function () { unsuppress(s.id, showSuppressions); }
+          onclick: function () { unsuppress(s.id, renderSuppressions); }
         })])
       ]);
     })));
-  document.getElementById('modal').classList.remove('hidden');
 }
 
 /* ---------- service actions ---------- */
@@ -393,15 +395,21 @@ function pollJob() {
    dashboard — not while editing a file over ssh. Only the values that were
    actually changed are stored, so a later change to a default still applies to
    everything nobody has overridden. */
-function showSettings() {
-  document.getElementById('modal').classList.remove('host-sheet');
-  document.getElementById('modal-title').textContent = 'Настройки';
-  var root = document.getElementById('modal-body');
+var settingsLoaded = false;
+var settingsLoading = false;
+var settingsDirty = false;
+var settingsObservedGeneration = 0;
+function showSettings() { showView('settings'); }
+
+function renderSettings() {
+  if (settingsLoaded || settingsLoading) return;
+  settingsLoading = true;
+  settingsObservedGeneration = (state && state.generated) || 0;
+  var root = document.getElementById('settings');
   root.innerHTML = '';
   root.appendChild(h('p', { class: 'checks-intro', text: 'Загружаю…' }));
-  document.getElementById('modal').classList.remove('hidden');
 
-  fetch('/api/settings').then(function (r) { return r.json(); }).then(function (cfg) {
+  return fetch('/api/settings', {signal: AbortSignal.timeout(15000)}).then(function (r) { if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); }).then(function (cfg) {
     if (cfg.error) throw new Error(cfg.error);
     root.innerHTML = '';
     var inputs = {};
@@ -440,7 +448,7 @@ function showSettings() {
                           text: 'по умолчанию ' + cfg.defaults[f.key] }),
               overridden ? h('button', {
                 class: 'btn btn-sm', text: '↺', title: 'вернуть значение по умолчанию',
-                onclick: function () { input.value = cfg.defaults[f.key]; }
+                onclick: function () { input.value = cfg.defaults[f.key]; root.onchange(); }
               }) : null
             ])
           ]);
@@ -596,9 +604,28 @@ function showSettings() {
       excludeList
     ])));
 
-    var status = h('span', { class: 'set-status' });
+    var status = h('span', { class: 'set-status', role:'status', text:'Изменения применяются после сохранения' });
+    var revision = 0, saving = false;
+    var discard = h('button', {class:'btn', text:'Отменить изменения', disabled:true, onclick:function () {
+      if (saving) return;
+      settingsDirty = false;
+      settingsLoaded = false;
+      renderSettings();
+    }});
+    root.oninput = root.onchange = function () {
+      revision++;
+      settingsDirty = true;
+      discard.disabled = saving;
+      status.textContent = 'Есть несохранённые изменения';
+    };
     root.appendChild(h('div', { class: 'set-actions' }, [
-      h('button', { class: 'btn btn-primary', text: 'Сохранить', disabled: state && state.actions_enabled === false ? true : null, onclick: function () {
+      h('button', { class: 'btn btn-primary', text: 'Сохранить', disabled: state && state.actions_enabled === false ? true : null, onclick: function (event) {
+        if (saving) return;
+        saving = true;
+        var savedRevision = revision;
+        var saveButton = event.currentTarget;
+        saveButton.disabled = true;
+        discard.disabled = true;
         var thresholds = {};
         Object.keys(inputs).forEach(function (key) {
           thresholds[key] = inputs[key].value === '' ? null : Number(inputs[key].value);
@@ -633,15 +660,20 @@ function showSettings() {
                            timezone: zone.value.trim() }
           })
         }).then(function (r) { return r.json(); }).then(function (res) {
-          if (res.error) { if (!actionFailed(res)) alert('Не вышло: ' + res.error); return; }
-          status.textContent = 'сохранено — пороги применены к текущему снимку';
+          if (res.error) { status.textContent = 'Изменения не сохранены'; if (!actionFailed(res)) alert('Не вышло: ' + res.error); return; }
+          settingsDirty = revision !== savedRevision;
+          status.textContent = settingsDirty ? 'Отправленные изменения сохранены; новые правки ещё не сохранены' : 'Сохранено — настройки применены';
           load();
-        }).catch(function (e) { alert('Ошибка запроса: ' + e); });
+        }).catch(function (e) { status.textContent = 'Изменения не сохранены'; alert('Ошибка запроса: ' + e); })
+          .finally(function () { saving = false; saveButton.disabled = state && state.actions_enabled === false; discard.disabled = !settingsDirty; });
       } }),
+      discard,
       status
     ]));
+    settingsLoaded = true;
   }).catch(function (e) {
     root.innerHTML = '';
-    root.appendChild(h('p', { class: 'checks-intro', text: 'не удалось загрузить настройки: ' + e }));
-  });
+    root.appendChild(h('p', { class: 'checks-intro', role:'status', text: 'Не удалось загрузить настройки: ' + e.message }));
+    root.appendChild(h('button', {class:'btn', text:'Повторить загрузку', onclick:renderSettings}));
+  }).finally(function () { settingsLoading = false; });
 }
