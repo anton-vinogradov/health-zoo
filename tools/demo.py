@@ -7,12 +7,24 @@ import sys
 import time
 from http.server import ThreadingHTTPServer
 from pathlib import Path
+from urllib.parse import parse_qs
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / 'collector'))
 import hub
 import issues
 import settings
+
+DEMO_STARTED = int(time.time()) - 7200
+
+
+def journal_entries():
+    host = snapshot()['hosts'][0]
+    return [dict(id=i + 1, ts=DEMO_STARTED + i * 90, kind='actions' if i % 3 == 0 else 'events',
+                 event='demo', severity=['ok', 'warn', 'info'][i % 3],
+                 host_id=host['id'], host_name=host['name'],
+                 title=['Обновление пакетов завершено', 'Мало свободного места', 'Сервис снова отвечает'][i % 3],
+                 detail='Пример записи в демонстрации.', job_id='') for i in range(65)]
 
 
 def snapshot():
@@ -43,6 +55,17 @@ class Demo(hub.Handler):
                 'auto_cleanup': settings.AUTO_CLEANUP_DEFAULT, 'hosts':snapshot()['hosts'], 'cameras': [], 'firmware': {}})
         elif path == '/api/job':
             self._json({'state': 'idle'})
+        elif path == '/api/journal':
+            q = parse_qs(self.path.partition('?')[2])
+            kind = q.get('kind', ['all'])[0]
+            host = q.get('host', [''])[0]
+            since = int(q.get('since', ['0'])[0])
+            before = int(q.get('before', ['99999'])[0])
+            entries = [e for e in reversed(journal_entries()) if e['id'] < before
+                       and e['ts'] >= since and (kind == 'all' or e['kind'] == kind)
+                       and (not host or e['host_id'] == host)]
+            self._json({'entries': entries[:50], 'started_at': DEMO_STARTED,
+                        'next_before': entries[49]['id'] if len(entries) > 50 else None})
         elif path.startswith('/api/history/'):
             self._json({'series': [], 'trend': None})
         elif path.startswith('/api/metrics/'):

@@ -24,6 +24,8 @@ import ssl
 import subprocess
 import threading
 import time
+import urllib.error
+import urllib.parse
 import urllib.request
 from pathlib import Path
 
@@ -1668,7 +1670,7 @@ def probe_host(host: dict, key: str | None) -> dict:
 
 # Page titles change far less often than the fleet is polled, so they are
 # cached; without this every cycle would re-fetch every panel on every host.
-_TITLE_CACHE: dict[tuple[str, int], tuple[str, str, float]] = {}
+_TITLE_CACHE: dict[str, tuple[str, str, float]] = {}
 _TITLE_TTL = 3600
 _TITLE_LOCK = threading.Lock()
 
@@ -1721,7 +1723,7 @@ def fetch_title(url: str, addr: str, port: int, label: str = "") -> tuple[str, s
     sub-paths of whatever holds the port are tried, so the link points at the
     console instead of at "It works".
     """
-    key = (addr, port)
+    key = url
     now = time.time()
     with _TITLE_LOCK:
         hit = _TITLE_CACHE.get(key)
@@ -1729,9 +1731,9 @@ def fetch_title(url: str, addr: str, port: int, label: str = "") -> tuple[str, s
             return hit[0], hit[1]
 
     title, path = _page_title(url), ""
-    if not title or PLACEHOLDER_TITLE.search(title):
+    if (not title or PLACEHOLDER_TITLE.search(title)) and urllib.parse.urlsplit(url).path in ("", "/"):
         for candidate in APP_PATHS.get(label.lower(), FALLBACK_PATHS):
-            found = _page_title(url + candidate)
+            found = _page_title(url.rstrip("/") + candidate)
             if found and not PLACEHOLDER_TITLE.search(found):
                 title, path = found, candidate
                 break
@@ -1741,7 +1743,87 @@ def fetch_title(url: str, addr: str, port: int, label: str = "") -> tuple[str, s
     return title, path
 
 
-_CERT_CACHE: dict[tuple[str, int], tuple[dict, float]] = {}
+_HTTP_CACHE: dict[str, tuple[dict, float]] = {}
+_HTTP_TTL = 180
+_HTTP_CACHE_MAX = 512
+_HTTP_LOCK = threading.Lock()
+
+
+def _web_url(host: dict, link: dict) -> str:
+    """The actual link users open, including its virtual host and console path."""
+    if link.get("local") or link.get("scheme") not in ("http", "https"):
+        return ""
+    address = link.get("host_name") or host.get("addr") or ""
+    if not isinstance(address, str) or not address or any(c.isspace() for c in address) \
+            or any(c in address for c in "/@?#"):
+        return ""
+    bare = address.strip("[]")
+    if bare.lower().rstrip(".") in ("localhost", "localhost.localdomain"):
+        return ""
+    try:
+        if ipaddress.ip_address(bare).is_loopback:
+            return ""
+    except ValueError:
+        pass
+    try:
+        port = int(link.get("port", 0))
+    except (TypeError, ValueError):
+        return ""
+    if not 1 <= port <= 65535:
+        return ""
+    authority = f"[{bare}]" if ":" in bare else bare
+    if (link["scheme"], port) not in (("http", 80), ("https", 443)):
+        authority += f":{port}"
+    path = link.get("path") or ""
+    if not isinstance(path, str):
+        return ""
+    if path and not path.startswith(("/", "?", "#")):
+        path = "/" + path
+    # Fragments never reach the HTTP server and must not split the cache.
+    return urllib.parse.urldefrag(f"{link['scheme']}://{authority}{path}")[0]
+
+
+def fetch_http_health(url: str) -> dict:
+    """Measure HTTP independently of titles; certificate trust is not assessed."""
+    now = time.monotonic()
+    with _HTTP_LOCK:
+        cached = _HTTP_CACHE.get(url)
+        if cached and now - cached[1] < _HTTP_TTL:
+            return dict(cached[0])
+    result = {"status": None, "checked_at": int(time.time())}
+    try:
+        context = ssl.create_default_context()
+        # LAN appliances commonly self-sign. Expiry is reported separately;
+        # HTTP availability is not a statement about certificate trust.
+        context.check_hostname = False
+        context.verify_mode = ssl.CERT_NONE
+        request = urllib.request.Request(url, headers={"User-Agent": "health-zoo"})
+        with urllib.request.urlopen(request, timeout=4, context=context) as response:
+            result["status"] = response.status
+            response.read(1024)
+    except urllib.error.HTTPError as exc:
+        # Authentication and server errors are real HTTP responses, not a
+        # network outage. Never echo URLs, credentials or response bodies.
+        result["status"] = exc.code
+        exc.close()
+    except (TimeoutError, socket.timeout):
+        result["status"] = None
+        result["error"] = "timeout"
+    except urllib.error.URLError as exc:
+        result["status"] = None
+        result["error"] = "timeout" if isinstance(exc.reason, TimeoutError) else "connection_failed"
+    except (OSError, ValueError):
+        result["status"] = None
+        result["error"] = "connection_failed"
+    with _HTTP_LOCK:
+        if len(_HTTP_CACHE) >= _HTTP_CACHE_MAX:
+            oldest = min(_HTTP_CACHE, key=lambda key: _HTTP_CACHE[key][1])
+            _HTTP_CACHE.pop(oldest)
+        _HTTP_CACHE[url] = (dict(result), time.monotonic())
+    return result
+
+
+_CERT_CACHE: dict[tuple[str, int, str], tuple[dict, float]] = {}
 _CERT_TTL = 6 * 3600
 
 
@@ -1753,7 +1835,7 @@ def fetch_cert(addr: str, port: int, servername: str = "") -> dict:
     ssl.getpeercert() returns an empty dict, and decoding DER by hand to read
     two dates is not worth it.
     """
-    key = (addr, port)
+    key = (addr, port, servername)
     now = time.time()
     hit = _CERT_CACHE.get(key)
     if hit and now - hit[1] < _CERT_TTL:
@@ -1792,16 +1874,15 @@ def fetch_cert(addr: str, port: int, servername: str = "") -> dict:
 
 
 def annotate_web(results: list[dict], workers: int = 12) -> None:
-    """Fill in a human-readable name for every discovered web UI."""
+    """Add measured HTTP availability, names and certificate expiry to web UIs."""
     jobs = []
     for host in results:
         for link in host.get("web", []):
-            port = link.get("port")
-            if not port or link.get("local"):
+            url = _web_url(host, link)
+            if not url:
+                link.pop("http", None)
                 continue  # not reachable from here; nothing to fetch a title from
-            std = (link["scheme"] == "http" and port == 80) or \
-                  (link["scheme"] == "https" and port == 443)
-            url = f"{link['scheme']}://{host['addr']}" + ("" if std else f":{port}")
+            port = link["port"]
             jobs.append((link, url, host["addr"], port, link.get("label") or ""))
 
     if not jobs:
@@ -1813,12 +1894,12 @@ def annotate_web(results: list[dict], workers: int = 12) -> None:
     # wrong host with the wrong link whenever two hosts publish the same port.
     tls_jobs = [(link, host) for host in results
                 for link in host.get("web", [])
-                if link.get("scheme") == "https" and not link.get("local")]
+                if link.get("scheme") == "https" and _web_url(host, link)]
     if tls_jobs:
         with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as pool:
             cert_futures = {
                 pool.submit(fetch_cert, host["addr"], link["port"],
-                            host.get("web_host") or ""): link
+                            link.get("host_name") or host.get("web_host") or ""): link
                 for link, host in tls_jobs}
             for future in concurrent.futures.as_completed(cert_futures):
                 try:
@@ -1845,6 +1926,25 @@ def annotate_web(results: list[dict], workers: int = 12) -> None:
                 # button; keep it in the full list, but off the card. By now
                 # the sub-paths have been tried, so this really is all there is.
                 link["stub"] = bool(PLACEHOLDER_TITLE.search(title))
+
+    # Discover console paths before measuring; / may be a placeholder while
+    # the actual UI at /admin/ is down. Each distinct URL gets its own result.
+    http_jobs: dict[str, list[dict]] = {}
+    for host in results:
+        for link in host.get("web", []):
+            url = _web_url(host, link)
+            if url:
+                http_jobs.setdefault(url, []).append(link)
+    with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as pool:
+        futures = {pool.submit(fetch_http_health, url): links
+                   for url, links in http_jobs.items()}
+        for future in concurrent.futures.as_completed(futures):
+            try:
+                outcome = future.result()
+            except Exception:
+                outcome = {"status": None, "checked_at": int(time.time()), "error": "probe_failed"}
+            for link in futures[future]:
+                link["http"] = dict(outcome)
 
 
 _PTR_CACHE: dict[str, tuple[str, float]] = {}

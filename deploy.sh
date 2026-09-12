@@ -22,7 +22,7 @@ fi
 shellcheck --shell=sh collector/agents/*.sh
 shellcheck --shell=bash install.sh sync-config.sh deploy.sh tools/deploy-remote.sh
 PYTHONDONTWRITEBYTECODE=1 "$PYTHON" -m pytest tests/ -q -p no:cacheprovider
-node --test tests/test_ui.js
+node --test tests/test_*.js
 for file in ui/*.js; do node --check "$file"; done
 commit=$(git rev-parse HEAD)
 stage=$(ssh -o BatchMode=yes "$HOST" 'mktemp -d /tmp/health-zoo.XXXXXXXX')

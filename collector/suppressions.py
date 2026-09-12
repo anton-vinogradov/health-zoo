@@ -16,6 +16,7 @@ and whether the underlying problem is even still occurring.
 
 from __future__ import annotations
 
+from copy import deepcopy
 import json
 import os
 import threading
@@ -24,6 +25,9 @@ import time
 
 
 class Suppressions(PersistentJSON):
+    MAX_DAYS = 3650
+    MAX_REASON_LENGTH = 2000
+
     def __init__(self, path: str):
         self.path = path
         self.lock = threading.RLock()
@@ -78,6 +82,31 @@ class Suppressions(PersistentJSON):
             if existed:
                 self._save()
         return existed
+
+    def update(self, suppression_id: str, reason: str,
+               days: int | None = None) -> dict:
+        """Edit an existing exception without resetting its observation history.
+
+        A supplied duration starts now, not when the exception was created.
+        Invalid input raises ValueError, a missing entry raises KeyError, and
+        persistence failures propagate without applying any part of the edit.
+        """
+        if not isinstance(suppression_id, str) or not suppression_id.strip():
+            raise ValueError("не указано исключение")
+        if not isinstance(reason, str):
+            raise ValueError("причина должна быть текстом")
+        reason = reason.strip()
+        if not 3 <= len(reason) <= self.MAX_REASON_LENGTH:
+            raise ValueError(f"причина должна содержать от 3 до {self.MAX_REASON_LENGTH} символов")
+        if days is not None and (type(days) is not int or not 0 <= days <= self.MAX_DAYS):
+            raise ValueError(f"срок: целое число от 1 до {self.MAX_DAYS} дней, 0 или null — бессрочно")
+
+        with self.transaction():
+            entry = dict(self.items[suppression_id])
+            entry["reason"] = reason
+            entry["expires"] = int(time.time()) + days * 86400 if days else 0
+            self.items[suppression_id] = entry
+        return deepcopy(entry)
 
     def active(self) -> dict[str, dict]:
         """Non-expired entries. Expiry is what keeps this list from rotting."""

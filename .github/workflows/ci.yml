@@ -29,7 +29,7 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
-      - run: node --test tests/test_ui.js
+      - run: node --test tests/test_*.js
       - run: for file in ui/*.js; do node --check "$file"; done
 
   shell:

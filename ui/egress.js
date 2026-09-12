@@ -131,7 +131,7 @@ function renderEgress() {
   if (!root || !state) return;
   root.innerHTML = '';
 
-  var hosts = state.hosts || [];
+  var hosts = networkHosts();
   var exits = [], outbound = [];
   hosts.forEach(function (host) {
     var where = host.name || host.id;

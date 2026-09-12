@@ -24,9 +24,10 @@ Everything else is subordinate to those three.
 
 **In.** Polling state, health rules, history and trends, alerting, actions on
 hosts (package updates, reboots, restarting and removing services), suppressing
-findings, editing thresholds.
+findings, editing thresholds, a journal of observed events and dashboard actions.
 
-**Out.** High-resolution metrics (that is Prometheus), logs (journald, Loki),
+**Out.** High-resolution metrics (that is Prometheus), collecting general system
+and application logs (journald, Loki),
 configuration management (Ansible), inventory as an end in itself. health-zoo
 looks, and acts where asked — it does not store per-second time series and does
 not describe a desired state of systems.
@@ -103,6 +104,8 @@ Marked: **✓** done, **▶** in progress, **○** deliberately not done.
 | ✓ | Device firmware: UniFi through the controller, Sonos through its own update service, mesh nodes against the latest meshtastic/firmware release |
 | ✓ | Camera firmware: read by the recorder, which already holds the credentials; judged by build age, since the vendor publishes no list to compare against |
 | ✓ | TLS certificate expiry |
+| ✓ | HTTP availability measured separately from host reachability and page metadata, with a 180-second cache and its own `checked_at` |
+| ✓ | HTTP status, HTTPS and certificate expiry are separate observations; no assertion of certificate trust or hostname validation |
 | ✓ | Reachability from outside (measured from an external host) |
 | ✓ | Port forwards that lead nowhere; IPsec policies that never came up |
 | ✓ | Packages nothing depends on any more (autoremove candidates) |
@@ -113,7 +116,8 @@ Marked: **✓** done, **▶** in progress, **○** deliberately not done.
 
 | | Requirement |
 |---|---|
-| ✓ | Update packages on one host and on the whole fleet |
+| ✓ | Update packages on one host or explicitly selected eligible hosts; no devices are preselected |
+| ✓ | Security filters select hosts, while execution uses the normal package-upgrade workflow; reboot remains a separate action or policy |
 | ✓ | The host running the dashboard updates last |
 | ✓ | Hosts update in parallel, a tab each, with a highlighted log |
 | ✓ | Updates go all the way (`--with-new-pkgs`); what is left is named |
@@ -131,8 +135,12 @@ Marked: **✓** done, **▶** in progress, **○** deliberately not done.
 | ✓ | "Problems only" filter and search |
 | ✓ | Explicit stale-snapshot status |
 | ✓ | Second tab in the detail view: every check, by category |
-| ✓ | Suppressions: mandatory reason, fleet-wide list for review |
-| ✓ | Settings: thresholds, per-camera thresholds, automatic reboots |
+| ✓ | Suppressions: searchable fleet-wide review with firing, expires-within-seven-days and quiet-for-fourteen-days filters |
+| ✓ | Edit suppression reason and term in place: 1–3650 whole days from today or no expiry; preserve original creation time and firing history |
+| ✓ | Settings: Checks and Automatic actions tabs share one draft, Save and Cancel; switching never remounts inputs or changes values |
+| ✓ | Network: Connections and Internet routes views share filters by source device and source subnet |
+| ✓ | Services: search, grouping by purpose or device, HTTP-error/HTTPS/local-only filters and links to host details |
+| ✓ | Updates: explicit checkbox selection, package details, security and reboot filters, per-device outcomes and links to saved action logs |
 | ✓ | Mobile layout |
 | ✓ | Dark and light themes |
 
@@ -145,6 +153,16 @@ Marked: **✓** done, **▶** in progress, **○** deliberately not done.
 | ✓ | Flapping is debounced, and the counters survive a service restart |
 | ✓ | Every message links to the dashboard |
 | ✓ | A host is muted for the duration of a planned reboot |
+
+### 4.6 Event and action journal
+
+| | Requirement |
+|---|---|
+| ✓ | One timeline with Events and Actions filters, device and date filters, and pagination |
+| ✓ | Persist observed state changes and dashboard actions, including per-device job logs, across hub restarts |
+| ✓ | Recording starts when this version is installed; first observations establish a baseline, with no reconstruction of older events from metric history |
+| ✓ | Show the recording start date; retain entries and completed job logs for 180 days |
+| ✓ | Recovered unfinished jobs report interrupted/result unknown, never inferred success; detached work may have continued on the target |
 
 ## 5. Decisions worth remembering
 
@@ -201,9 +219,10 @@ Marked: **✓** done, **▶** in progress, **○** deliberately not done.
 - RAID findings use the same `raids` report field throughout probing, rules and UI.
 - One-poll events (reboots and service transitions) have a durable delivery queue;
   sustained conditions retain debounce. Planned-reboot mute survives restart.
-- Job logs follow a specific job ID, end on both success and failure, and report
-  unavailable history after a hub restart. Failed apt steps remain failures;
-  the final explicit install pass uses `--no-remove`.
+- Events and action logs are durable for 180 days, starting with this version's
+  installation. Job logs follow a specific ID and survive a hub restart;
+  unfinished work is recovered as interrupted with an unknown result. Failed apt
+  steps remain failures; the final explicit install pass uses `--no-remove`.
 - Summary tiles filter the fleet; search includes services. All findings are
   accessible. Staleness advances even while requests fail, and first-poll state
   never implies a healthy fleet. Dialogs support keyboard focus and dismissal.
@@ -212,4 +231,14 @@ Marked: **✓** done, **▶** in progress, **○** deliberately not done.
 - Deployments use committed source, validate config before stopping the service,
   back up code/config/state, and roll back a failed startup. Process version is
   independent of the age of the restored observations.
-- Management sections are routable workspace tabs. Switching views preserves settings drafts; background polling never replaces edited fields. Save acknowledgements cannot mark newer edits as saved.
+- Overview, Network, Services, Journal, Updates, Suppressions and Settings are
+  routable workspace tabs. Switching views preserves settings drafts;
+  background polling never replaces edited fields. Save acknowledgements cannot
+  mark newer edits as saved.
+- HTTP health has its own 180-second cache and `checked_at` timestamp rather
+  than borrowing page-title freshness. Missing/old observations and 401/403
+  responses are explicit; loopback interfaces are not probed as hub-local URLs.
+- Network filters select the source of observations. Connections and outbound
+  routes remain distinct views with shared device/subnet selection.
+- Suppression edits preserve `created` and firing history. A new term sets
+  1–3650 days from the edit; an empty term removes expiry.

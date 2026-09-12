@@ -99,7 +99,7 @@ document.addEventListener('DOMContentLoaded', function () {
     searchText = e.target.value.trim();
     render();
   });
-  document.getElementById('btn-upgrade-all').addEventListener('click', function () { startUpdate([]); });
+  document.getElementById('btn-upgrade-all').addEventListener('click', function () { showView('updates'); });
 
   /* The chosen tab survives a reload: the page reloads itself every thirty
      seconds, and a view that jumped back to the fleet each time would be
@@ -111,7 +111,7 @@ document.addEventListener('DOMContentLoaded', function () {
   window.addEventListener('popstate', function () { showView(window.location.hash.slice(1) || 'fleet', true); });
   window.addEventListener('hashchange', function () { showView(window.location.hash.slice(1) || 'fleet', true); });
   window.addEventListener('beforeunload', function (event) {
-    if (settingsDirty) { event.preventDefault(); event.returnValue = ''; }
+    if (settingsDirty || (suppressionDraft && suppressionDraft.dirty)) { event.preventDefault(); event.returnValue = ''; }
   });
 
   document.querySelectorAll('[data-close]').forEach(function (el) {
@@ -142,7 +142,8 @@ document.addEventListener('DOMContentLoaded', function () {
 var currentView = 'fleet';
 var viewScroll = {};
 function showView(name, fromHistory) {
-  var titles = {fleet:'Обзор сети',egress:'Выход в интернет',topology:'Связи устройств',sites:'Веб-интерфейсы',suppressions:'Исключения',settings:'Настройки'};
+  var titles = {fleet:'Обзор сети',network:'Сеть',journal:'Журнал',updates:'Обновления',sites:'Сервисы',suppressions:'Исключения',settings:'Настройки'};
+  if (name === 'egress' || name === 'topology') { networkTab = name; name = 'network'; }
   if (!Object.prototype.hasOwnProperty.call(titles, name)) name = 'fleet';
   var changed = currentView !== name;
   if (changed) {
@@ -155,7 +156,7 @@ function showView(name, fromHistory) {
   Object.keys(titles).forEach(function (view) { document.getElementById(view).classList.toggle('hidden', view !== name); });
   document.getElementById('fleet-toolbar').classList.toggle('hidden',name !== 'fleet');
   document.getElementById('overview').classList.toggle('hidden',name !== 'fleet');
-  document.getElementById('fleet-alert').classList.toggle('hidden',['sites','suppressions','settings'].indexOf(name) >= 0);
+  document.getElementById('fleet-alert').classList.toggle('hidden',name !== 'fleet');
   document.getElementById('view-title').textContent = titles[name];
   document.getElementById('view-crumb').textContent = titles[name].toUpperCase();
   document.title = 'health-zoo · ' + titles[name];
@@ -167,8 +168,11 @@ function showView(name, fromHistory) {
   if (changed) window.scrollTo(0, viewScroll[name] || 0);
 }
 function refreshManagementView() {
-  if (currentView === 'sites') renderSites();
-  if (currentView === 'suppressions') renderSuppressions();
+  if (currentView === 'sites') renderServices();
+  if (currentView === 'network') renderNetwork();
+  if (currentView === 'journal') renderJournal();
+  if (currentView === 'updates') renderUpdates();
+  if (currentView === 'suppressions') renderSuppressionReview();
   // Keep the mounted form (and its unsaved values) through polling and tabs.
   if (currentView === 'settings') {
     if (settingsLoaded && !settingsDirty && !settingsObservedGeneration && state && state.generated) settingsLoaded = false;
@@ -176,6 +180,7 @@ function refreshManagementView() {
   }
 }
 function updateFreshness() {
+  refreshServiceFreshness();
   var age = snapshotAge();
   var current = String(connectionLost) + age.level;
   var label = document.getElementById('connection-label');

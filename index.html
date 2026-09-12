@@ -16,12 +16,13 @@
  <div class="nav-caption">МОЯ ИНФРАСТРУКТУРА</div>
  <nav class="view-tabs" aria-label="Основные разделы">
   <button class="tab active" data-view="fleet"><span class="nav-icon" aria-hidden="true">▦</span>Обзор сети<span class="nav-count" id="nav-count">—</span></button>
-  <button class="tab" data-view="topology"><span class="nav-icon" aria-hidden="true">⌘</span>Связи устройств</button>
-  <button class="tab" data-view="egress"><span class="nav-icon" aria-hidden="true">↗</span>Выход в интернет</button>
+  <button class="tab" data-view="network"><span class="nav-icon" aria-hidden="true">⌘</span>Сеть</button>
+  <button class="tab" data-view="journal"><span class="nav-icon" aria-hidden="true">≡</span>Журнал</button>
  </nav>
  <div class="nav-caption nav-tools">УПРАВЛЕНИЕ</div>
  <nav class="sidebar-tools" aria-label="Управление">
-  <button id="btn-sites" class="tab" data-view="sites"><span class="nav-icon" aria-hidden="true">◫</span>Веб-интерфейсы</button>
+  <button class="tab" data-view="updates"><span class="nav-icon" aria-hidden="true">↥</span>Обновления</button>
+  <button id="btn-sites" class="tab" data-view="sites"><span class="nav-icon" aria-hidden="true">◫</span>Сервисы</button>
   <button id="btn-suppressions" class="tab" data-view="suppressions"><span class="nav-icon" aria-hidden="true">◷</span>Исключения</button>
   <button id="btn-settings" class="tab" data-view="settings"><span class="nav-icon" aria-hidden="true">⚙</span>Настройки</button>
  </nav>
@@ -34,14 +35,17 @@
  <section id="overview" class="overview" aria-label="Сводка по устройствам"></section>
  <div id="fleet-alert"><section id="alert" class="alert hidden" aria-label="Требует внимания"></section></div>
  <div class="fleet-toolbar" id="fleet-toolbar"><div class="section-heading"><h2>Устройства</h2><span id="visible-count" class="count-label"></span></div><div class="fleet-controls"><label class="search-wrap"><span aria-hidden="true">⌕</span><input id="search" class="search" type="search" placeholder="Имя, адрес или сервис…" aria-label="Поиск устройств" autocomplete="off"><kbd>/</kbd></label><button id="btn-problems" class="btn" aria-pressed="false">Только проблемы</button><button id="btn-upgrade-all" class="btn btn-primary">Обновить пакеты</button></div></div>
- <main id="fleet" class="fleet" tabindex="-1"></main><main id="egress" class="fleet hidden" tabindex="-1"></main><main id="topology" class="fleet hidden" tabindex="-1"></main>
- <main id="sites" class="management-page hidden" tabindex="-1" aria-label="Веб-интерфейсы"></main>
+ <main id="fleet" class="fleet" tabindex="-1"></main>
+ <main id="network" class="hidden" tabindex="-1" aria-label="Сеть"><div id="network-controls" class="management-page compact-page"></div><section id="topology" class="fleet" aria-label="Связи устройств"></section><section id="egress" class="fleet hidden" aria-label="Выход в интернет"></section></main>
+ <main id="journal" class="management-page hidden" tabindex="-1" aria-label="Журнал"></main>
+ <main id="updates" class="management-page hidden" tabindex="-1" aria-label="Обновления"></main>
+ <main id="sites" class="management-page hidden" tabindex="-1" aria-label="Сервисы"></main>
  <main id="suppressions" class="management-page hidden" tabindex="-1" aria-label="Исключения"></main>
  <main id="settings" class="management-page settings-page hidden" tabindex="-1" aria-label="Настройки"></main>
  <footer class="foot"><span id="foot-note"></span><span class="foot-hint"><kbd>/</kbd> поиск · <kbd>Esc</kbd> закрыть</span></footer>
 </div>
 <div id="modal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="modal-title" tabindex="-1"><div class="modal-card"><header class="modal-head"><h2 id="modal-title"></h2><button class="btn btn-icon" data-close aria-label="Закрыть детали">✕</button></header><div id="modal-body" class="modal-body"></div></div></div>
 <div id="joblog" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="job-title" tabindex="-1"><div class="modal-card"><header class="modal-head"><h2 id="job-title">Выполнение задания</h2><button class="btn btn-icon" data-close aria-label="Закрыть журнал">✕</button></header><div class="job-tabs" id="job-tabs"></div><div class="job-status" id="job-status" aria-live="polite"></div><pre id="job-output" class="job-output" aria-label="Журнал выполнения"></pre></div></div>
-<script src="/ui/core.js"></script><script src="/ui/cards.js"></script><script src="/ui/details.js"></script><script src="/ui/egress.js"></script><script src="/ui/topology.js"></script><script src="/ui/actions.js"></script><script src="/ui/wiring.js"></script>
+<script src="/ui/core.js"></script><script src="/ui/cards.js"></script><script src="/ui/details.js"></script><script src="/ui/egress.js"></script><script src="/ui/topology.js"></script><script src="/ui/actions.js"></script><script src="/ui/workspace.js"></script><script src="/ui/wiring.js"></script>
 </body>
 </html>

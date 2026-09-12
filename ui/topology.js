@@ -169,7 +169,7 @@ function renderTopology() {
   /* Anything that other devices hang off: a router, a switch, an access point.
      Ordered by subnet so the drawing follows the house rather than the config
      file. */
-  var carriers = (state.hosts || []).filter(function (host) {
+  var carriers = networkHosts().filter(function (host) {
     return (host.behind || []).length || (host.wireless || []).length;
   }).sort(function (a, b) {
     return (a.subnet || '').localeCompare(b.subnet || '') ||

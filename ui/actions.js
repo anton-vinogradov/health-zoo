@@ -120,55 +120,7 @@ function unsuppress(id, onDone) {
 
 function showSuppressions() { showView('suppressions'); }
 
-function renderSuppressions() {
-  var list = (state && state.suppressions) || [];
-  var root = document.getElementById('suppressions');
-  root.innerHTML = '';
-
-  if (!state || !state.generated) {
-    root.appendChild(h('p', {class:'checks-intro', text:'Ожидаем данные об исключениях…'}));
-    return;
-  }
-  if (!list.length) {
-    root.appendChild(h('p', { class: 'checks-intro', text:
-      'Исключений нет — дашборд показывает всё, что находит.' }));
-    return;
-  }
-
-  /* Stale means "has had nothing to hide for a fortnight", not "is quiet right
-     now": a finding that fires for twenty minutes a day would otherwise be
-     offered for removal for the remaining twenty-three hours. */
-  var stale = list.filter(function (s) {
-    return !s.still_firing && (s.quiet_days === null || s.quiet_days >= 14);
-  }).length;
-  root.appendChild(h('p', { class: 'checks-intro', text:
-    'Проверки продолжают выполняться; исключение лишь снимает влияние на статус и алерты.' +
-    (stale ? ' У ' + stale + ' исключений проблема не воспроизводилась две недели — их можно снять.' : '') }));
-
-  root.appendChild(table(['хост', 'проверка', 'обоснование', 'возраст', 'состояние', ''],
-    list.map(function (s) {
-      return h('tr', null, [
-        h('td', { text: s.host_name }),
-        h('td', { class: 'mono', text: s.key }),
-        h('td', { text: s.reason }),
-        h('td', { class: 'mono right', text: Math.round(s.age_days) + ' сут' +
-                  (s.days_left !== null ? ' / ещё ' + Math.round(s.days_left) : '') }),
-        h('td', null, [
-          h('span', { class: 'dot ' + (s.still_firing ? 'warn' : 'ok') }),
-          h('span', { text: s.still_firing ? 'скрывает проблему'
-            : s.quiet_days === null ? 'пока не срабатывало'
-            : s.quiet_days < 14 ? 'срабатывало ' + (s.quiet_days < 1
-                ? Math.round(s.quiet_days * 24) + ' ч назад'
-                : Math.round(s.quiet_days) + ' сут назад')
-            : 'проблемы больше нет' })
-        ]),
-        h('td', { class: 'right' }, [h('button', {
-          class: 'btn btn-sm', text: 'снять',
-          onclick: function () { unsuppress(s.id, renderSuppressions); }
-        })])
-      ]);
-    })));
-}
+function renderSuppressions() { renderSuppressionReview(); }
 
 /* ---------- service actions ---------- */
 
@@ -313,7 +265,9 @@ function renderLog(container, lines) {
 }
 
 function pollJob() {
-  fetch(currentJobId ? '/api/job/' + encodeURIComponent(currentJobId) : '/api/job').then(function (r) { return r.json(); }).then(function (job) {
+  var requestedJob = currentJobId;
+  return fetch(currentJobId ? '/api/job/' + encodeURIComponent(currentJobId) : '/api/job').then(function (r) { return r.json(); }).then(function (job) {
+    if (requestedJob !== currentJobId) return;
     if (job && job.error) {
       document.getElementById('job-status').textContent = 'Журнал задания недоступен после перезапуска. Проверьте состояние устройства.';
       if (jobTimer) clearInterval(jobTimer);
@@ -339,9 +293,9 @@ function pollJob() {
     ids.forEach(function (id) {
       var entry = hosts[id] || { name: id, state: 'pending', log: [] };
       if (entry.state === 'ok' || entry.state === 'failed' ||
-          entry.state === 'partial') finished++;
+          entry.state === 'partial' || entry.state === 'interrupted') finished++;
       if (!jobTab || !hosts[jobTab]) jobTab = id;
-      var mark = { ok: '✓', partial: '!', failed: '✕',
+      var mark = { ok: '✓', partial: '!', failed: '✕', interrupted: '?',
                    running: '…', pending: '·' }[entry.state] || '·';
       var tab = h('button', {
         class: 'job-tab ' + entry.state + (id === jobTab ? ' active' : ''),
@@ -356,10 +310,11 @@ function pollJob() {
        look successful while the card kept its update count. */
     var failed = ids.filter(function (id) {
       var st = (hosts[id] || {}).state;
-      return st === 'failed' || st === 'partial';
+      return st === 'failed' || st === 'partial' || st === 'interrupted';
     });
-    var status = (done ? 'готово' : 'идёт параллельно: ' + (ids.length - finished) + ' из ' + ids.length) +
+    var status = (done ? (job.outcome === 'interrupted' ? 'Результат неизвестен после перезапуска' : 'Выполнение завершено') : 'идёт параллельно: ' + (ids.length - finished) + ' из ' + ids.length) +
       ' · завершено ' + finished + '/' + ids.length +
+      (job.log_truncated ? ' · показан хвост лога' : '') +
       (job.current ? ' · последним: ' + ((hosts[job.current] || {}).name || job.current) : '');
     var statusEl = document.getElementById('job-status');
     statusEl.innerHTML = '';
@@ -367,8 +322,8 @@ function pollJob() {
     failed.forEach(function (id) {
       var entry = hosts[id];
       statusEl.appendChild(h('div', {
-        class: entry.state === 'partial' ? 'job-partial' : 'job-fail',
-        text: (entry.state === 'partial' ? '! ' : '✕ ') + entry.name + ': ' +
+        class: entry.state === 'failed' ? 'job-fail' : 'job-partial',
+        text: (entry.state === 'interrupted' ? '? ' : entry.state === 'partial' ? '! ' : '✕ ') + entry.name + ': ' +
               (entry.reason || 'подробности в логе') }));
     });
 
@@ -399,6 +354,7 @@ var settingsLoaded = false;
 var settingsLoading = false;
 var settingsDirty = false;
 var settingsObservedGeneration = 0;
+var settingsSection = 'checks';
 function showSettings() { showView('settings'); }
 
 function renderSettings() {
@@ -414,10 +370,46 @@ function renderSettings() {
     root.innerHTML = '';
     var inputs = {};
 
-    root.appendChild(h('p', { class: 'checks-intro', text:
-      'Пороги применяются ко всем хостам. У некоторых ролей значения свои: NAS с ' +
-      'видеоархивом заполнен под завязку по назначению, а не от беды. Такие ' +
-      'исключения перечислены ниже.' }));
+    /* Both panels stay mounted: switching sections must never rebuild the
+       form, discard a draft, or change the payload of an in-flight save. */
+    var checksPanel = h('section', {
+      id: 'settings-checks-panel', class: 'tab-panel', 'aria-label': 'Проверки'
+    });
+    var automaticPanel = h('section', {
+      id: 'settings-automatic-panel', class: 'tab-panel', 'aria-label': 'Автоматические действия'
+    });
+    var checksButton = h('button', {
+      type: 'button', class: 'subtab', text: 'Проверки',
+      'aria-controls': 'settings-checks-panel',
+      onclick: function () { selectSection('checks'); }
+    });
+    var automaticButton = h('button', {
+      type: 'button', class: 'subtab', text: 'Автоматические действия',
+      'aria-controls': 'settings-automatic-panel',
+      onclick: function () { selectSection('automatic'); }
+    });
+    function selectSection(name) {
+      settingsSection = name;
+      var checks = name === 'checks';
+      checksPanel.classList.toggle('hidden', !checks);
+      automaticPanel.classList.toggle('hidden', checks);
+      checksButton.classList.toggle('active', checks);
+      automaticButton.classList.toggle('active', !checks);
+      checksButton.setAttribute('aria-pressed', String(checks));
+      automaticButton.setAttribute('aria-pressed', String(!checks));
+    }
+    root.appendChild(h('div', {
+      class: 'subnav', role: 'group', 'aria-label': 'Разделы настроек'
+    }, [checksButton, automaticButton]));
+    root.appendChild(checksPanel);
+    root.appendChild(automaticPanel);
+    selectSection(settingsSection);
+    checksPanel.appendChild(h('p', { class: 'page-intro', text:
+      'Пороги определяют, когда проверка требует внимания. Здесь же — свои ' +
+      'значения для ролей, камер и известных прошивок.' }));
+    automaticPanel.appendChild(h('p', { class: 'page-intro', text:
+      'Выберите, какие действия дашборд выполняет сам и в какое время. ' +
+      'Изменения в обоих разделах применяются общей кнопкой «Сохранить».' }));
 
     var groups = [];
     cfg.fields.forEach(function (f) {
@@ -453,12 +445,12 @@ function renderSettings() {
             ])
           ]);
         });
-      root.appendChild(section(group, h('div', { class: 'settings-grid' }, rows)));
+      checksPanel.appendChild(section(group, h('div', { class: 'settings-grid' }, rows)));
     });
 
     var roles = Object.keys(cfg.by_role || {});
     if (roles.length) {
-      root.appendChild(section('Свои пороги по ролям',
+      checksPanel.appendChild(section('Свои пороги по ролям',
         table(['роль', 'что переопределено'], roles.map(function (role) {
           var over = cfg.by_role[role];
           return h('tr', null, [
@@ -474,16 +466,19 @@ function renderSettings() {
        here — and the dashboard says "есть новее" only when this says so. */
     var fwInputs = {};
     if ((cfg.models || []).length) {
-      root.appendChild(section('Свежие прошивки камер',
+      checksPanel.appendChild(section('Свежие прошивки камер',
         table(['модель', 'версия', 'сборка (ггммдд)', 'ссылка'],
           cfg.models.map(function (model) {
             var known = (cfg.firmware || {})[model] || {};
             var version = h('input', { class: 'set-input set-wide', type: 'text',
-                                       value: known.version || '', placeholder: 'V5.7.210' });
+              'aria-label': 'Версия прошивки: ' + model,
+              value: known.version || '', placeholder: 'V5.7.210' });
             var built = h('input', { class: 'set-input', type: 'text',
-                                     value: known.built || '', placeholder: '260402' });
+              'aria-label': 'Дата сборки прошивки: ' + model,
+              value: known.built || '', placeholder: '260402' });
             var url = h('input', { class: 'set-input set-wide', type: 'text',
-                                   value: known.url || '', placeholder: 'откуда скачать' });
+              'aria-label': 'Ссылка на прошивку: ' + model,
+              value: known.url || '', placeholder: 'откуда скачать' });
             fwInputs[model] = { version: version, built: built, url: url };
             return h('tr', null, [
               h('td', { class: 'mono', text: model }),
@@ -492,7 +487,7 @@ function renderSettings() {
               h('td', null, [url])
             ]);
           }))));
-      root.appendChild(h('p', { class: 'set-hint', text:
+      checksPanel.appendChild(h('p', { class: 'set-hint', text:
         'Пусто — значит новее неизвестна, и дашборд промолчит. Возраст сборки ' +
         'сам по себе не повод ругаться: у камеры, которую производитель больше ' +
         'не обновляет, четырёхлетняя прошивка и есть последняя.' }));
@@ -503,13 +498,15 @@ function renderSettings() {
        entered. Empty means "follow the fleet-wide value above". */
     var camInputs = {};
     if ((cfg.cameras || []).length) {
-      root.appendChild(section('Тишина детекции по камерам',
+      checksPanel.appendChild(section('Тишина детекции по камерам',
         table(['камера', 'сейчас без событий', 'предупреждение, ч', 'проблема, ч'],
           cfg.cameras.map(function (cam) {
             var warnInput = h('input', { class: 'set-input', type: 'number', min: 1, max: 336,
+              'aria-label': 'Предупреждение о тишине, часы: ' + cam.name + ' — ' + cam.host,
               value: cam.limits && cam.limits.warn !== undefined ? cam.limits.warn : '',
               placeholder: String(cfg.values.camera_quiet_warn_hours) });
             var badInput = h('input', { class: 'set-input', type: 'number', min: 1, max: 336,
+              'aria-label': 'Критический порог тишины, часы: ' + cam.name + ' — ' + cam.host,
               value: cam.limits && cam.limits.bad !== undefined ? cam.limits.bad : '',
               placeholder: String(cfg.values.camera_quiet_bad_hours) });
             camInputs[cam.key] = { warn: warnInput, bad: badInput };
@@ -528,21 +525,23 @@ function renderSettings() {
     /* Rebooting on its own is the one setting here that acts rather than
        measures, so it says exactly what it will do and when. */
     var auto = cfg.auto_reboot || {};
-    var enabled = h('input', { type: 'checkbox' });
+    var enabled = h('input', { type: 'checkbox', 'aria-label': 'Автоматическая перезагрузка' });
     enabled.checked = !!auto.enabled;
     var fromHour = h('input', { class: 'set-input', type: 'number', min: 0, max: 23,
-                                value: auto.from_hour });
+      'aria-label': 'Начало окна автоматической перезагрузки, час', value: auto.from_hour });
     var toHour = h('input', { class: 'set-input', type: 'number', min: 0, max: 23,
-                              value: auto.to_hour });
+      'aria-label': 'Конец окна автоматической перезагрузки, час', value: auto.to_hour });
     /* Offered rather than demanded: the browser knows where its owner is, and
        typing "Europe/Moscow" from memory is how zones get mistyped. */
     var zone = h('input', { class: 'set-input set-zone', type: 'text',
+                            'aria-label': 'Часовой пояс автоматической перезагрузки',
                             placeholder: Intl.DateTimeFormat().resolvedOptions().timeZone || 'Europe/Moscow',
                             value: auto.timezone || '' });
     var excludeBoxes = {};
     var excludeList = h('div', { class: 'set-exclude' },
       (cfg.hosts || []).map(function (host) {
-        var box = h('input', { type: 'checkbox' });
+        var box = h('input', { type: 'checkbox',
+          'aria-label': 'Не перезагружать автоматически: ' + host.name });
         box.checked = (auto.exclude || []).indexOf(host.id) >= 0;
         excludeBoxes[host.id] = box;
         return h('label', { class: 'set-check' }, [box, h('span', { text: host.name })]);
@@ -551,12 +550,12 @@ function renderSettings() {
     /* The one action that does not wait for a window. Everything else here is
        scheduled because doing it at the wrong moment costs something; a
        published fix costs from the moment it is published. */
-    var security = h('input', { type: 'checkbox' });
+    var security = h('input', { type: 'checkbox', 'aria-label': 'Автоматические обновления безопасности' });
     security.checked = !!(cfg.auto_security && cfg.auto_security.enabled);
 
-    var cleanup = h('input', { type: 'checkbox' });
+    var cleanup = h('input', { type: 'checkbox', 'aria-label': 'Автоматическая чистка ненужных пакетов' });
     cleanup.checked = !(cfg.auto_cleanup && cfg.auto_cleanup.enabled === false);
-    root.appendChild(section('Обновления безопасности', h('div', { class: 'set-block' }, [
+    automaticPanel.appendChild(section('Обновления безопасности', h('div', { class: 'set-block' }, [
       h('label', { class: 'set-check' }, [security,
         h('span', { text: 'ставить сразу, как только появятся' })]),
       h('p', { class: 'set-hint', text:
@@ -568,7 +567,7 @@ function renderSettings() {
         'неудачное обновление повторялось бы каждые три минуты. Перезагрузка, ' +
         'если она понадобится, остаётся отдельным решением ниже.' })
     ])));
-    root.appendChild(section('Чистка ненужных пакетов', h('div', { class: 'set-block' }, [
+    automaticPanel.appendChild(section('Чистка ненужных пакетов', h('div', { class: 'set-block' }, [
       h('label', { class: 'set-check' }, [cleanup,
         h('span', { text: 'убирать пакеты, которые больше никому не нужны (apt autoremove)' })]),
       h('p', { class: 'set-hint', text:
@@ -578,7 +577,7 @@ function renderSettings() {
         'включено по умолчанию.' })
     ])));
 
-    root.appendChild(section('Автоматическая перезагрузка', h('div', { class: 'set-block' }, [
+    automaticPanel.appendChild(section('Автоматическая перезагрузка', h('div', { class: 'set-block' }, [
       h('label', { class: 'set-check' }, [enabled,
         h('span', { text: 'перезагружать хост, когда он сам просит перезагрузку' })]),
       h('p', { class: 'set-hint', text:
@@ -604,7 +603,7 @@ function renderSettings() {
       excludeList
     ])));
 
-    var status = h('span', { class: 'set-status', role:'status', text:'Изменения применяются после сохранения' });
+    var status = h('span', { class: 'set-status', role:'status', text:'Изменения в обоих разделах применяются после сохранения' });
     var revision = 0, saving = false;
     var discard = h('button', {class:'btn', text:'Отменить изменения', disabled:true, onclick:function () {
       if (saving) return;
@@ -654,7 +653,7 @@ function renderSettings() {
               return acc;
             }, {}),
             auto_cleanup: { enabled: cleanup.checked },
-      auto_security: { enabled: security.checked },
+            auto_security: { enabled: security.checked },
             auto_reboot: { enabled: enabled.checked, from_hour: Number(fromHour.value),
                            to_hour: Number(toHour.value), exclude: exclude,
                            timezone: zone.value.trim() }

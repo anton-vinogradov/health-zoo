@@ -24,12 +24,58 @@ A failed connection, an old snapshot, and the first unfinished poll have distinc
 states. Light/dark themes and mobile navigation keep the same controls available.
 
 
-Management sections (Web interfaces, Suppressions and Settings) open as full
-workspace tabs. Links `#sites`, `#suppressions` and `#settings` open them directly;
-browser Back/Forward restores the selected section. Unsaved settings stay in
-place when changing tabs or when the fleet refreshes. Save applies them; Cancel
-changes reloads the saved values. Closing/reloading the page warns about unsaved
-edits.
+The workspace has seven sections, each available by a direct link:
+
+| Section | Purpose | Link |
+|---|---|---|
+| Overview | Current findings and the device fleet | `#fleet` |
+| Network | Device connections and service routes to the internet | `#network` |
+| Services | Discovered web interfaces, HTTP observations and certificate expiry | `#sites` |
+| Journal | State changes, actions and saved job logs | `#journal` |
+| Updates | Select devices for package updates and handle pending reboots | `#updates` |
+| Suppressions | Review accepted findings and edit their reason or expiry | `#suppressions` |
+| Settings | Check thresholds and automatic-action policies | `#settings` |
+
+Browser Back/Forward restores the selected section. Unsaved settings stay in
+place when changing workspace or settings tabs and when the fleet refreshes.
+The shared Save button applies both settings tabs; Cancel changes reloads the
+saved values. Closing/reloading the page warns about unsaved settings edits.
+
+## Network and services
+
+**Network** contains two views: device connections (switch ports and Wi-Fi
+clients) and service routes to the internet (proxies and tunnels). Both share
+device and subnet filters. A filter selects the device that supplied the
+observations, not every destination visible somewhere in its network tree.
+Existing `#topology` and `#egress` links open the corresponding Network view.
+
+**Services** lists discovered web interfaces, searchable by service, address or
+device and grouped by purpose or device. HTTP errors, HTTPS and local-only
+interfaces have separate filters. HTTP reachability comes from an actual request,
+not from the host's ping or SSH status. The HTTP probe has its own 180-second
+cache and records `checked_at`, independently of cached titles and other page
+metadata. Missing and old observations remain explicit; HTTP 401/403 mean the
+service answered and requires access. Local-only interfaces are labelled rather
+than probed as the hub's own localhost.
+
+HTTPS and certificate expiry are reported separately from HTTP status. The probe
+does not validate the certificate's trust chain or hostname: a response or a
+future expiry date is not a claim that the certificate is trusted.
+
+## Journal
+
+**Journal** combines Events and Actions with device and date filters. Events
+record observed state changes; Actions record dashboard operations and link to
+their saved per-device job logs. The journal starts when the version introducing
+it is installed. The first observation establishes a baseline; older events are
+not reconstructed from existing metric history. The page shows when recording
+started.
+
+Entries and completed job logs are retained for 180 days in SQLite, normally
+`/var/lib/health-zoo/journal.db`, and survive a hub restart. An unfinished job
+recovered after a restart is marked **interrupted — result unknown**, never
+successful by assumption. A detached command may still have run on the device;
+check its current state before deciding what to do next.
 
 ## What it shows
 
@@ -55,8 +101,17 @@ about ZoneMinder.
 
 ## Updating packages
 
-Hosts marked `updatable` get an update button, plus a global **Update everything**
-that walks them in order and streams the log into the page.
+The **Updates** section lists pending packages, security updates, required
+reboots and devices updated manually. No device is selected automatically.
+Choose eligible, reachable hosts with checkboxes, or explicitly select the
+eligible devices in the filtered list, then use **Update selected**. Confirmation
+names the targets; per-host logs show progress and remain accessible in Journal.
+The existing update button on a device still operates on that device alone.
+
+The security filter selects hosts with security packages; it does not change the
+update command into a security-only operation. The normal `apt-get upgrade`
+workflow installs their pending updates and dependencies. Rebooting is a separate
+action, or follows the separately configured automatic-reboot policy.
 
 The machine hosting the dashboard is always updated **last** — otherwise it
 restarts its own service mid-run — and its upgrade is detached with `setsid` so
@@ -87,16 +142,25 @@ sits next to it. A reason is mandatory — a suppression with no explanation is
 indistinguishable from a check nobody understood — and an optional expiry
 makes it come back for review.
 
-The **Исключения** view lists them fleet-wide, with age, remaining time, and
-whether the underlying finding still occurs at all. That last column is the
-useful one: a suppression hiding nothing can simply be dropped.
+The **Suppressions** view lists them fleet-wide, with age, remaining time, and
+whether the underlying finding still occurs. Search and filters show those
+hiding a problem, expiring within seven days, or quiet for at least fourteen
+days. Edit the reason and expiry in place, or remove the suppression. A reason
+needs at least three characters; the new term is 1–3650 whole days from today,
+or blank for no expiry. Editing preserves the original creation date and firing
+history. Acknowledging an event as read remains different from suppressing a
+check with a recorded reason.
 
 ## Settings
 
-Thresholds are decisions, and decisions get revised while looking at the
-dashboard rather than while editing a file over ssh. The **Настройки** view
-edits them: disk, memory, temperature, Wi-Fi airtime and satisfaction, backup
-freshness, camera silence, certificate expiry. Each field shows what it would
+**Settings** has two internal tabs. **Checks** contains thresholds, role
+overrides, camera silence and known camera firmware. **Automatic actions**
+contains security updates, package cleanup and the reboot window and exclusions.
+Switching tabs keeps the same mounted fields and draft; both tabs share Save and
+Cancel changes.
+
+Thresholds cover disk, memory, temperature, Wi-Fi airtime and satisfaction, backup
+freshness, camera silence and certificate expiry. Each field shows what it would
 fall back to, and only values that actually differ are stored — a later change
 to a default still reaches everything nobody pinned.
 
@@ -325,6 +389,7 @@ The config file holds every address; the repository holds none.
 ```
 hub.py      HTTP server + poll loop + update/removal jobs
 probe.py    per-host probing, report parsing, camera↔recorder linking
+journal.py  durable event timeline and per-device action logs (180 days)
 agents/*.sh streamed to the host over `ssh host sh -s`, emit a TSV report
 ```
 
@@ -344,7 +409,7 @@ MIT.
 
 ```bash
 python3 -m pytest tests/ -q
-node --test tests/test_ui.js
+node --test tests/test_*.js
 shellcheck --shell=sh collector/agents/*.sh
 shellcheck --shell=bash install.sh sync-config.sh deploy.sh tools/deploy-remote.sh
 HEALTH_ZOO_CONFIG=collector/config.example.json python3 collector/hub.py --check-config

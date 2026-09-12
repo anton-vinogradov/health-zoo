@@ -928,39 +928,7 @@ function loadHistory(host, container) {
 
 function showSites() { showView('sites'); }
 
-function renderSites() {
-  var hosts = (state && state.hosts) || [];
-  var body = document.getElementById('sites');
-  body.innerHTML = '';
-
-  if (!state || !state.generated) {
-    body.appendChild(h('p', {class:'checks-intro', text:'Ожидаем данные об устройствах…'}));
-    return;
-  }
-  var rows = [];
-  hosts.forEach(function (host) {
-    (host.web || []).forEach(function (link) {
-      var url = webUrl(host, link);
-      rows.push(h('tr', null, [
-        h('td', null, [
-          h('span', { class: 'dot ' + (host.reachable ? 'ok' : 'bad') }),
-          h('span', { text: host.name })
-        ]),
-        h('td', null, [link.local
-          ? h('span', { class: 'sitelink local', text: 'localhost:' + link.port })
-          : h('a', { class: 'sitelink', href: url, target: '_blank', rel: 'noopener', text: url })]),
-        h('td', { text: (link.title || link.label || '') + (link.local ? ' · только локально' : '') })
-      ]));
-    });
-  });
-
-  if (!rows.length) {
-    body.appendChild(h('div', { class: 'role-head', text: 'веб-интерфейсов не найдено' }));
-  } else {
-    body.appendChild(section('Найдено ' + rows.length,
-      table(['хост', 'адрес', 'что это'], rows)));
-  }
-}
+function renderSites() { renderServices(); }
 
 /* ---------- reboot ---------- */
 

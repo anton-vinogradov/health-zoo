@@ -687,9 +687,9 @@ function render() {
 
   var updatable = hosts.filter(function (x) { return x.updatable && x.update_count > 0; });
   var btn = document.getElementById('btn-upgrade-all');
-  btn.disabled = updatable.length === 0 || state.actions_enabled === false;
-  btn.title = state.demo ? 'Демонстрация: управление отключено' : state.actions_enabled === false ? 'На сервере не настроен ключ доступа' : 'Установить пакеты на выбранных устройствах';
-  btn.textContent = updatable.length ? 'Обновить пакеты (' + updatable.length + ')' : 'Всё обновлено';
+  btn.disabled = false;
+  btn.title = 'Посмотреть обновления и выбрать устройства';
+  btn.textContent = updatable.length ? 'Обновления (' + updatable.length + ')' : 'Обновления';
 
   /* The dashboard watches every service in the house except itself. Saying
      which commit is running — and whether the repository has moved on since —

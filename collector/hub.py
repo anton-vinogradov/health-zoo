@@ -21,6 +21,8 @@ import sys
 import urllib.request
 import threading
 import time
+import uuid
+from urllib.parse import parse_qs
 from storage import StateSaveError
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -32,6 +34,7 @@ from configuration import validate as validate_config  # noqa: E402
 import acks as acks_mod  # noqa: E402
 import alerts  # noqa: E402
 import history  # noqa: E402
+import journal as journal_mod  # noqa: E402
 import issues  # noqa: E402
 import probe  # noqa: E402
 import settings as settings_mod  # noqa: E402
@@ -55,6 +58,7 @@ STATIC_FILES = {
     "/ui/egress.js": ("ui/egress.js", "application/javascript; charset=utf-8"),
     "/ui/topology.js": ("ui/topology.js", "application/javascript; charset=utf-8"),
     "/ui/wiring.js": ("ui/wiring.js", "application/javascript; charset=utf-8"),
+    "/ui/workspace.js": ("ui/workspace.js", "application/javascript; charset=utf-8"),
     "/ui/theme.css": ("ui/theme.css", "text/css; charset=utf-8"),
     "/style.css": ("style.css", "text/css; charset=utf-8"),
 }
@@ -120,6 +124,12 @@ class Fleet:
         self.history = history.History(
             cfg.get("history_db", "/var/lib/health-zoo/history.db"),
             cfg.get("history_retention_days", 180))
+        self.journal = journal_mod.Journal(
+            Path(cfg.get("history_db", "/var/lib/health-zoo/history.db")).with_name("journal.db"),
+            secrets=[secrets_mod.load(cfg, "action_token"),
+                     secrets_mod.load(cfg.get("telegram") or {}, "token"),
+                     secrets_mod.load(cfg.get("unifi_controller") or {}, "password"),
+                     os.environ.get("HEALTH_ZOO_TG_TOKEN", "")])
         # Serve the last known state immediately after a restart instead of an
         # empty page while the first poll runs.
         restored = self.history.last_snapshot()
@@ -249,6 +259,8 @@ class Fleet:
             }
             with self.lock:
                 self.snapshot = snap
+            if getattr(self, "journal", None):
+                self.journal.observe(hosts)
             try:
                 self.history.record(hosts, snap)
             except Exception as exc:
@@ -502,10 +514,10 @@ class Fleet:
                 # Going down unannounced is how a planned reboot becomes an
                 # unexplained outage. It can wait for the next window.
                 return
-            self.jobs_ref.start_reboot(source, self)
+            self.jobs_ref.start_reboot(source, self, automatic=True)
             return
 
-        job_id, err = self.jobs_ref.start_reboot(source, self)
+        job_id, err = self.jobs_ref.start_reboot(source, self, automatic=True)
         if not job_id:
             # Another job holds the slot; try again next poll rather than
             # queueing reboots up behind an update run.
@@ -565,6 +577,8 @@ class Fleet:
             # recomputed here too: adding one and not seeing it take effect
             # until the next full cycle looks like the button did nothing.
             self.snapshot["suppressions"] = self.suppressions.listing(hosts)
+        if getattr(self, "journal", None):
+            self.journal.observe(fresh)
         return len(fresh)
 
     def reannotate(self, host_ids: list[str]) -> None:
@@ -596,8 +610,9 @@ class Fleet:
 class Jobs:
     """Background update runs, with a live log the browser can tail."""
 
-    def __init__(self, cfg: dict):
+    def __init__(self, cfg: dict, journal=None):
         self.cfg = cfg
+        self.journal = journal
         self.lock = threading.Lock()
         self.jobs: dict[str, dict] = {}
         self.counter = 0
@@ -605,7 +620,26 @@ class Jobs:
 
     def _new_id(self) -> str:
         self.counter += 1
-        return f"job{self.counter}"
+        return "job-" + uuid.uuid4().hex
+
+    def _registered(self, job_id, targets, fleet):
+        """Record the admitted job before any worker can execute a command."""
+        self.journal = self.journal or getattr(fleet, "journal", None)
+        job = self.jobs[job_id]
+        job.setdefault("automatic", False)
+        job.setdefault("hosts", {h["id"]: {"name": h.get("name", h["id"]),
+            "state": "pending", "log": [], "started": 0, "finished": 0}
+            for h in targets})
+        self._persist_job(job_id)
+        # Older jobs remain accessible through SQLite without growing RAM.
+        completed = [key for key, value in self.jobs.items() if value["state"] != "running"]
+        if self.journal and not self.journal.error:
+            for key in completed[:-20]:
+                self.jobs.pop(key, None)
+
+    def _persist_job(self, job_id):
+        if self.journal:
+            self.journal.save_job(self.jobs[job_id])
 
     def start(self, targets: list[dict], fleet: Fleet, automatic: bool = False) -> tuple[str | None, str]:
         with self.lock:
@@ -618,6 +652,7 @@ class Jobs:
             self.jobs[job_id] = {
                 "id": job_id,
                 "kind": "update",
+                "automatic": bool(automatic),
                 "state": "running",
                 "started": int(time.time()),
                 "targets": [t["id"] for t in targets],
@@ -632,6 +667,7 @@ class Jobs:
                 "results": {},
             }
             self.active = job_id
+            self._registered(job_id, targets, fleet)
         thread = threading.Thread(target=self._worker, args=(self._run, job_id, targets, fleet), daemon=True)
         thread.start()
         return job_id, ""
@@ -644,6 +680,10 @@ class Jobs:
                 job["hosts"] = {h["id"]: {"name": h.get("name", h["id"]),
                     "state": "running", "log": [], "started": int(time.time()),
                     "finished": 0} for h in hosts}
+            if job.get("kind") != "update":
+                for entry in job["hosts"].values():
+                    entry.update(state="running", started=int(time.time()))
+            self._persist_job(job_id)
         error = ""
         try:
             operation(job_id, *args)
@@ -664,9 +704,12 @@ class Jobs:
                 job["state"] = "done"
                 job["finished"] = int(time.time())
                 job["current"] = ""
+                self._persist_job(job_id)
 
     def _log(self, job_id: str, line: str, host_id: str = "") -> None:
         with self.lock:
+            if self.journal:
+                line = self.journal.text(line)
             job = self.jobs[job_id]
             if host_id not in job.get("hosts", {}) and len(job.get("hosts", {})) == 1:
                 host_id = next(iter(job["hosts"]))
@@ -676,6 +719,8 @@ class Jobs:
             # A full dist-upgrade log is long; keep the tail bounded.
             if len(stream) > 4000:
                 del stream[:1000]
+            if self.journal:
+                self.journal.append_log(job_id, line, host_id if host_id in job.get("hosts", {}) else "")
 
     def _run(self, job_id: str, targets: list[dict], fleet: Fleet) -> None:
         """Update everything at once, except the box we are running on.
@@ -724,6 +769,7 @@ class Jobs:
                     entry["reason"] = errors[-1] if errors else f"код возврата {code}"
                 self.jobs[job_id]["results"][host["id"]] = (
                     "ok" if code == 0 else f"failed ({code})")
+                self._persist_job(job_id)
 
         if parallel:
             with concurrent.futures.ThreadPoolExecutor(
@@ -838,7 +884,7 @@ class Jobs:
         base = re.sub(r"\.(service|timer|socket)$", "", unit)
         return base in cls.PROTECTED or base.startswith("systemd-")
 
-    def start_reboot(self, host: dict, fleet: Fleet) -> tuple[str | None, str]:
+    def start_reboot(self, host: dict, fleet: Fleet, automatic: bool = False) -> tuple[str | None, str]:
         with self.lock:
             if self.active and self.jobs[self.active]["state"] == "running":
                 return None, "another job is already running"
@@ -846,10 +892,12 @@ class Jobs:
             job_id = self._new_id()
             self.jobs[job_id] = {
                 "id": job_id, "kind": "reboot", "state": "running",
+                "automatic": bool(automatic),
                 "started": int(time.time()), "targets": [host["id"]],
                 "current": host["id"], "log": [], "results": {},
             }
             self.active = job_id
+            self._registered(job_id, [host], fleet)
         # Every reboot that starts here is one somebody asked for, by button or
         # by schedule. Recorded before the machine goes, or it comes back and
         # is reported as having restarted on its own.
@@ -1028,10 +1076,12 @@ class Jobs:
             job_id = self._new_id()
             self.jobs[job_id] = {
                 "id": job_id, "kind": action, "state": "running",
+                "unit": unit,
                 "started": int(time.time()), "targets": [host["id"]],
                 "current": host["id"], "log": [], "results": {},
             }
             self.active = job_id
+            self._registered(job_id, [host], fleet)
         thread = threading.Thread(target=self._worker,
                                   args=(self._run_service_action, job_id, host, unit, action, fleet), daemon=True)
         thread.start()
@@ -1073,6 +1123,7 @@ class Jobs:
             self.jobs[job_id] = {
                 "id": job_id,
                 "kind": "remove",
+                "unit": unit,
                 "state": "running",
                 "started": int(time.time()),
                 "targets": [host["id"]],
@@ -1081,6 +1132,7 @@ class Jobs:
                 "results": {},
             }
             self.active = job_id
+            self._registered(job_id, [host], fleet)
         thread = threading.Thread(target=self._worker,
                                   args=(self._run_removal, job_id, host, unit, fleet), daemon=True)
         thread.start()
@@ -1134,12 +1186,12 @@ class Jobs:
     def get(self, job_id: str) -> dict | None:
         with self.lock:
             job = self.jobs.get(job_id)
-            return json.loads(json.dumps(job)) if job else None
+            return json.loads(json.dumps(job)) if job else self.journal.get_job(job_id) if self.journal else None
 
     def latest(self) -> dict | None:
         with self.lock:
             if not self.active:
-                return None
+                return self.journal.latest_job() if self.journal else None
             return json.loads(json.dumps(self.jobs[self.active]))
 
 
@@ -1256,8 +1308,27 @@ class Handler(BaseHTTPRequestHandler):
         self._send(code, json.dumps(payload, ensure_ascii=False).encode("utf-8"),
                    "application/json; charset=utf-8")
 
+    def _audit(self, event, title, host_id="", detail=""):
+        journal = getattr(self.fleet, "journal", None)
+        if journal:
+            host = next((h for h in self.fleet.get().get("hosts", []) if h.get("id") == host_id), {})
+            journal.action(event, title, host_id=host_id,
+                           host_name=host.get("name", host_id), detail=detail)
+
     def do_GET(self):  # noqa: N802
         path = self.path.split("?", 1)[0]
+
+        if path == "/api/journal":
+            query = parse_qs(self.path.partition("?")[2])
+            args = {key: query[key][0] for key in ("kind", "host", "since", "before", "limit") if key in query}
+            journal = getattr(self.fleet, "journal", None)
+            try:
+                self._json(journal.listing(**args) if journal else {
+                    "entries": [], "next_before": None, "started_at": 0,
+                    "error": "Журнал недоступен"})
+            except (TypeError, ValueError):
+                self._json({"error": "Некорректные фильтры журнала"}, 400)
+            return
 
         if path == "/api/progress":
             # Deliberately tiny and separate from /api/state: the page asks for
@@ -1285,6 +1356,9 @@ class Handler(BaseHTTPRequestHandler):
             snap["actions_enabled"] = bool(secrets_mod.load(self.fleet.cfg, "action_token"))
             snap["needs_token"] = snap["actions_enabled"]
             snap["storage_errors"] = [store.storage_error for store in (self.fleet.settings, self.fleet.suppressions, self.fleet.acks, self.fleet.alerts) if store.storage_error]
+            journal = getattr(self.fleet, "journal", None)
+            if journal and journal.error:
+                snap["storage_errors"].append(journal.error)
             self._json(snap)
             return
 
@@ -1431,6 +1505,12 @@ class Handler(BaseHTTPRequestHandler):
                 if isinstance(req.get("auto_security"), dict):
                     self.fleet.settings.set_auto_security(req["auto_security"])
             self.fleet.alerts.timezone = self.fleet.settings.timezone()
+            self._audit("settings.saved", "Настройки сохранены", detail=", ".join(
+                title for key, title in (("thresholds", "пороги проверок"),
+                    ("auto_reboot", "автоматическая перезагрузка"),
+                    ("firmware", "прошивки камер"), ("cameras", "пороги камер"),
+                    ("auto_cleanup", "очистка пакетов"), ("auto_security", "обновления безопасности"))
+                if isinstance(req.get(key), dict)))
             # Applied to the live config and the current snapshot at once: a
             # threshold changed in the browser has to recolour the fleet now,
             # not at the next poll — otherwise it reads as having been ignored.
@@ -1518,6 +1598,7 @@ class Handler(BaseHTTPRequestHandler):
                         host["name"] = next(
                             (h.get("name") for h in self.fleet.hosts()
                              if str(h.get("id")) == host_id), host.get("name"))
+            self._audit("host.renamed", "Изменено имя устройства", host_id, name)
             self._json({"ok": True, "name": name})
             return
 
@@ -1549,6 +1630,7 @@ class Handler(BaseHTTPRequestHandler):
                     if str(host.get("id")) == host_id:
                         host["paid_until"] = effective
             self.fleet.reannotate([host_id])
+            self._audit("host.paid", "Изменён срок оплаты", host_id, effective)
             self._json({"ok": True, "paid_until": effective})
             return
 
@@ -1565,6 +1647,7 @@ class Handler(BaseHTTPRequestHandler):
                 removed = self.fleet.acks.remove(req.get("id", ""))
                 if removed:
                     self.fleet.reannotate([req.get("id", "").split("/", 1)[0]])
+                    self._audit("ack.removed", "Подтверждение отменено", req.get("id", "").split("/", 1)[0], req.get("id", ""))
                 self._json({"ok": removed} if removed else {"error": "не найдено"},
                            200 if removed else 404)
                 return
@@ -1592,8 +1675,27 @@ class Handler(BaseHTTPRequestHandler):
                 return
             said = finding["text"]
             self.fleet.acks.add(host_id, key, said)
+            self._audit("ack.added", "Находка подтверждена", host_id, key)
             self.fleet.reannotate([host_id])
             self._json({"ok": True})
+            return
+
+        if path == "/api/suppress/update":
+            req = self._request()
+            if req is None:
+                self._json({"error": "bad json"}, 400)
+                return
+            try:
+                entry = self.fleet.suppressions.update(req.get("id"), req.get("reason"), req.get("days"))
+            except KeyError:
+                self._json({"error": "не найдено"}, 404)
+                return
+            except ValueError as exc:
+                self._json({"error": str(exc)}, 400)
+                return
+            self._audit("suppression.updated", "Исключение изменено", entry["host"], entry["key"])
+            self.fleet.reannotate([entry["host"]])
+            self._json({"ok": True, "suppression": entry})
             return
 
         if path in ("/api/suppress", "/api/suppress/remove"):
@@ -1606,6 +1708,7 @@ class Handler(BaseHTTPRequestHandler):
                 suppression_id = req.get("id", "")
                 removed = self.fleet.suppressions.remove(suppression_id)
                 if removed:
+                    self._audit("suppression.removed", "Исключение удалено", suppression_id.split("/", 1)[0], suppression_id)
                     # Re-poll that host straight away: waiting a full cycle to
                     # see the finding come back reads as the button failing.
                     self.fleet.reannotate([suppression_id.split("/", 1)[0]])
@@ -1634,6 +1737,7 @@ class Handler(BaseHTTPRequestHandler):
                         raise ValueError(error)
             # Reflect it immediately: the point of suppressing is that the
             # dashboard stops shouting right now, not on the next cycle.
+            self._audit("suppression.added", "Исключение сохранено", host_id, ", ".join(dict.fromkeys(keys)))
             self.fleet.reannotate([host_id])
             self._json({"ok": True})
             return
@@ -1733,7 +1837,7 @@ def main() -> None:
         print("health-zoo: configuration valid")
         return
     fleet = Fleet(cfg)
-    jobs = Jobs(cfg)
+    jobs = Jobs(cfg, fleet.journal)
     Handler.fleet = fleet
     Handler.jobs = jobs
     fleet.jobs_ref = jobs
