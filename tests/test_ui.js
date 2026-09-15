@@ -224,3 +224,20 @@ test('interrupted jobs explicitly show unknown outcome and stop polling',async()
   await ctx.pollJob();assert.equal(ctx.jobTimer,null);assert.match(ctx.elements.get('job-status').text,/Результат неизвестен/);assert.match(ctx.elements.get('job-status').text,/1\/1/);
   assert.match(ctx.elements.get('job-tabs').text,/\? Box/);
 });
+
+test('trusted LAN actions send the request header without prompting or sending a key',()=>{
+  const ctx=context();ctx.state={actions_enabled:true,needs_token:false};
+  ctx.prompt=()=>{throw new Error('A LAN user must not be asked for a key');};
+  ctx.sessionStorage.getItem=()=>{throw new Error('LAN actions must not read a saved key');};
+  const headers=ctx.actionHeaders();
+  assert.equal(headers['Content-Type'],'application/json');
+  assert.equal(headers['X-Health-Zoo-Request'],'dashboard');
+  assert.equal(headers['X-Health-Zoo-Token'],undefined);
+});
+
+test('connections requiring authentication retain their existing session key',()=>{
+  const ctx=context();ctx.state={actions_enabled:true,needs_token:true};
+  ctx.sessionStorage.getItem=()=> 'session-key';
+  ctx.prompt=()=>{throw new Error('The existing session key should be reused');};
+  assert.equal(ctx.actionHeaders()['X-Health-Zoo-Token'],'session-key');
+});

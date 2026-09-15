@@ -212,8 +212,20 @@ Marked: **✓** done, **▶** in progress, **○** deliberately not done.
 
 ## Reliability and interaction contract
 
-- Every management POST requires a resolved action key and passes Origin validation.
-  Missing credentials disable actions; new installations bind to loopback.
+- Management POST requests require a resolved action key by default; new
+  installations bind to loopback. Server config `trusted_management_networks`
+  is an array of CIDRs, empty (`[]`) by default. Opting in, for example with
+  `["192.168.1.0/24"]`, allows keyless management from the listed networks.
+- LAN trust uses the actual TCP client peer and a literal IP `Host` matching
+  the server's local IP and port. Forwarded headers such as `X-Forwarded-For`
+  and hostnames do not grant trust. Clients outside the networks and domain-based
+  reverse proxy access continue to require a key.
+- Origin validation applies to both modes. Keyless LAN POST requests require
+  JSON and
+  `X-Health-Zoo-Request: dashboard`; the dashboard supplies these without a key
+  prompt. Existing scripts with a valid key do not need the new header, even
+  on the LAN. Enabling LAN trust is a server-config change that neither reads
+  nor changes the stored key; it has no UI setting.
 - Settings and suppressions commit atomically. Failed writes return 503 and roll
   back the requested change; automatic-action cooldowns persist before admission.
 - RAID findings use the same `raids` report field throughout probing, rules and UI.

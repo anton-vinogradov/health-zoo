@@ -171,15 +171,15 @@ function removeService(host, svc) {
 
 /* ---------- updates ---------- */
 
-/* When the hub is configured with an action_token, mutating calls carry it in
-   a header. Kept in localStorage so it is typed once per browser. */
+/* The server decides whether this connection belongs to a trusted LAN.
+   Only connections outside that LAN need a management token. */
 function actionHeaders() {
   localStorage.removeItem('hz-token');
-  var headers = { 'Content-Type': 'application/json' };
+  var headers = { 'Content-Type': 'application/json', 'X-Health-Zoo-Request': 'dashboard' };
   if (state && state.needs_token) {
     var token = sessionStorage.getItem('hz-token');
     if (!token) {
-      token = prompt('Введите ключ управления дашбордом. Он сохранится только до закрытия этой вкладки:') || '';
+      token = prompt('Для управления из этой сети нужен ключ доступа. В доверенной локальной сети он не требуется:') || '';
       if (token) sessionStorage.setItem('hz-token', token);
     }
     headers['X-Health-Zoo-Token'] = token;

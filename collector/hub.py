@@ -12,6 +12,7 @@ from __future__ import annotations
 import concurrent.futures
 import datetime
 import hmac
+import ipaddress
 import json
 import os
 import re
@@ -22,7 +23,7 @@ import urllib.request
 import threading
 import time
 import uuid
-from urllib.parse import parse_qs
+from urllib.parse import parse_qs, urlsplit
 from storage import StateSaveError
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -1263,37 +1264,74 @@ class Handler(BaseHTTPRequestHandler):
         if self.command != "HEAD":
             self.wfile.write(body)
 
+    def _trusted_management_client(self) -> bool:
+        """Explicit LAN access, bound to the actual peer and local socket.
+
+        Host must name the local IP and port: trusting a LAN peer alone would
+        also trust a hostile hostname after DNS rebinding. Forwarded headers
+        never establish trust, and a reverse proxy using a hostname still
+        requires a token. No secret is sent to the browser.
+        """
+        networks = self.fleet.cfg.get("trusted_management_networks", [])
+        if not networks:
+            return False
+        try:
+            peer = ipaddress.ip_address(self.client_address[0])
+            local_addr, local_port = self.connection.getsockname()[:2]
+            local = ipaddress.ip_address(local_addr)
+            peer = getattr(peer, "ipv4_mapped", None) or peer
+            local = getattr(local, "ipv4_mapped", None) or local
+            if not any(peer in ipaddress.ip_network(cidr, strict=False) for cidr in networks):
+                return False
+            host = urlsplit("http://" + (self.headers.get("Host") or ""))
+            if host.username or host.password or host.path or host.query or host.fragment:
+                return False
+            if (host.port or 80) != local_port:
+                return False
+            if host.hostname == "localhost":
+                return local.is_loopback
+            address = ipaddress.ip_address(host.hostname)
+            address = getattr(address, "ipv4_mapped", None) or address
+            return address == local
+        except (ValueError, TypeError, AttributeError, IndexError, OSError):
+            return False
+
     def _authorized(self) -> str:
-        """Guard for anything that changes state. Returns "" when allowed.
+        """LAN clients opt in through config; other clients need a token.
 
-        Two independent checks:
-
-        * Origin/Referer must match our own Host. Browsers attach Origin to
-          cross-site POSTs, including form submissions, so this blocks a page
-          on another site from quietly firing `apt upgrade` or a service
-          removal at a dashboard that sits on the user's LAN. Requests with no
-          Origin at all (curl, scripts) are allowed — they are not the attack.
-        * An optional shared token from the config, for when the dashboard is
-          reachable by people who should only look at it.
+        Origin checks apply to both modes. Token-free writes also require JSON
+        and a custom header, so an HTML form cannot issue a management action.
         """
         host = (self.headers.get("Host") or "").strip()
         origin = self.headers.get("Origin") or ""
         if not origin:
             referer = self.headers.get("Referer") or ""
             if referer:
-                origin = "//".join(referer.split("//")[:2]) if "//" in referer else referer
+                origin = referer
         if origin:
-            netloc = origin.split("//", 1)[-1].split("/", 1)[0]
-            if netloc != host:
+            try:
+                parsed = urlsplit(origin)
+                netloc = parsed.netloc
+            except ValueError:
+                return "cross-origin request refused"
+            if parsed.scheme not in ("http", "https") or netloc != host:
                 return f"cross-origin request refused (Origin {netloc} != Host {host})"
+
+        trusted_client = self._trusted_management_client()
+        if trusted_client:
+            if self.headers.get("Sec-Fetch-Site") in ("cross-site", "same-site"):
+                return "cross-origin request refused"
+            content_type = (self.headers.get("Content-Type") or "").split(";", 1)[0].strip().lower()
+            if content_type == "application/json" and self.headers.get("X-Health-Zoo-Request") == "dashboard":
+                return ""
 
         token = secrets_mod.load(self.fleet.cfg, "action_token")
         if not token:
-            return "actions_disabled"
+            return "dashboard_header_required" if trusted_client else "actions_disabled"
         if token:
             given = self.headers.get("X-Health-Zoo-Token") or ""
             if not hmac.compare_digest(given, token):
-                return "token_required"
+                return "dashboard_header_required" if trusted_client else "token_required"
         return ""
 
     def _request(self):
@@ -1353,8 +1391,10 @@ class Handler(BaseHTTPRequestHandler):
             # A restored observation belongs to an earlier poll; the running
             # software version is available before the next poll completes.
             snap["version"] = self.fleet.version
-            snap["actions_enabled"] = bool(secrets_mod.load(self.fleet.cfg, "action_token"))
-            snap["needs_token"] = snap["actions_enabled"]
+            trusted_client = self._trusted_management_client()
+            token_enabled = bool(secrets_mod.load(self.fleet.cfg, "action_token"))
+            snap["actions_enabled"] = trusted_client or token_enabled
+            snap["needs_token"] = token_enabled and not trusted_client
             snap["storage_errors"] = [store.storage_error for store in (self.fleet.settings, self.fleet.suppressions, self.fleet.acks, self.fleet.alerts) if store.storage_error]
             journal = getattr(self.fleet, "journal", None)
             if journal and journal.error:

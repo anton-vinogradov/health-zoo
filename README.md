@@ -327,12 +327,38 @@ for your trusted network. Existing bind addresses are preserved. The read API
 is visible to anyone who can reach the dashboard; use a VPN or an HTTPS reverse
 proxy with access control when exposing it beyond a trusted LAN.
 
-Every management POST requires a key. The installer generates
+By default, management POST requests require a key
+(`trusted_management_networks` is empty). The installer generates
 `/var/lib/health-zoo/action-token` with mode 0600 and puts only its path in the
-config. Retrieve it on the server with `sudo cat /var/lib/health-zoo/action-token`
-and enter it when the dashboard first asks. It is retained for the browser tab's
-session. `action_token_credential`, `action_token_file`, and legacy inline
-`action_token` are supported. Without a key, management is disabled.
+config. For key-based access, retrieve it on the server with
+`sudo cat /var/lib/health-zoo/action-token` and enter it when the dashboard asks.
+It is retained for the browser tab's session. `action_token_credential`,
+`action_token_file`, and legacy inline `action_token` are supported.
+
+To allow management without entering a key from a trusted LAN, add its CIDR to
+the `trusted_management_networks` array in `/etc/health-zoo.json` and restart
+`health-zoo`. For example, merge this field into your existing config:
+
+```json
+{
+  "trusted_management_networks": ["192.168.1.0/24"]
+}
+```
+
+This option is configured only on the server. It leaves the server's key intact
+and does not require reading it. The actual TCP client address must belong to a
+listed network, and the request's literal IP `Host` must match the server's
+local IP and port. Forwarded headers such as `X-Forwarded-For` and hostnames do
+not establish LAN trust.
+Clients outside the listed networks and access through a reverse proxy with a
+domain name continue to require a key. An empty array `[]` restores key-only
+management.
+
+Keyless LAN POST requests pass same-origin checks and require JSON with
+`X-Health-Zoo-Request: dashboard`. The dashboard supplies these automatically
+and does not prompt for a key on a trusted LAN connection. Existing scripts
+with a valid key continue to work, including from the LAN, without the new
+header. Without either a valid key or trusted LAN access, management is disabled.
 
 For an existing installation, deploy a committed checkout:
 

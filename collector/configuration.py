@@ -6,6 +6,13 @@ import re
 def validate(cfg):
     if not isinstance(cfg, dict):
         raise ValueError('config must be a JSON object')
+    trusted = cfg.get('trusted_management_networks', [])
+    if not isinstance(trusted, list):
+        raise ValueError('trusted_management_networks must be an array of CIDRs')
+    for network in trusted:
+        if not isinstance(network, str):
+            raise ValueError('trusted_management_networks must contain CIDR strings')
+        ipaddress.ip_network(network, strict=False)
     for key, default, low, high in (('port',8816,1,65535), ('poll_interval',180,1,86400)):
         value = cfg.get(key, default)
         if type(value) is not int or not low <= value <= high:
