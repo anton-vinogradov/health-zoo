@@ -1264,25 +1264,12 @@ class Handler(BaseHTTPRequestHandler):
         if self.command != "HEAD":
             self.wfile.write(body)
 
-    def _trusted_management_client(self) -> bool:
-        """Explicit LAN access, bound to the actual peer and local socket.
-
-        Host must name the local IP and port: trusting a LAN peer alone would
-        also trust a hostile hostname after DNS rebinding. Forwarded headers
-        never establish trust, and a reverse proxy using a hostname still
-        requires a token. No secret is sent to the browser.
-        """
-        networks = self.fleet.cfg.get("trusted_management_networks", [])
-        if not networks:
-            return False
+    def _local_management_host(self) -> bool:
+        """Bind keyless requests to our address, preventing DNS rebinding."""
         try:
-            peer = ipaddress.ip_address(self.client_address[0])
             local_addr, local_port = self.connection.getsockname()[:2]
             local = ipaddress.ip_address(local_addr)
-            peer = getattr(peer, "ipv4_mapped", None) or peer
             local = getattr(local, "ipv4_mapped", None) or local
-            if not any(peer in ipaddress.ip_network(cidr, strict=False) for cidr in networks):
-                return False
             host = urlsplit("http://" + (self.headers.get("Host") or ""))
             if host.username or host.password or host.path or host.query or host.fragment:
                 return False
@@ -1296,8 +1283,28 @@ class Handler(BaseHTTPRequestHandler):
         except (ValueError, TypeError, AttributeError, IndexError, OSError):
             return False
 
+    def _trusted_management_client(self) -> bool:
+        """Explicit LAN exception uses the actual peer, never forwarded headers."""
+        networks = self.fleet.cfg.get("trusted_management_networks", [])
+        if not networks:
+            return False
+        try:
+            peer = ipaddress.ip_address(self.client_address[0])
+            peer = getattr(peer, "ipv4_mapped", None) or peer
+            return any(peer in ipaddress.ip_network(cidr, strict=False) for cidr in networks) and self._local_management_host()
+        except (ValueError, TypeError, AttributeError, IndexError):
+            return False
+
+    def _keyless_request_error(self) -> str:
+        if self.headers.get("Sec-Fetch-Site") in ("cross-site", "same-site"):
+            return "cross-origin request refused"
+        content_type = (self.headers.get("Content-Type") or "").split(";", 1)[0].strip().lower()
+        if content_type != "application/json" or self.headers.get("X-Health-Zoo-Request") != "dashboard":
+            return "dashboard_header_required"
+        return ""
+
     def _authorized(self) -> str:
-        """LAN clients opt in through config; other clients need a token.
+        """The server may disable token authentication for all clients.
 
         Origin checks apply to both modes. Token-free writes also require JSON
         and a custom header, so an HTML form cannot issue a management action.
@@ -1317,12 +1324,17 @@ class Handler(BaseHTTPRequestHandler):
             if parsed.scheme not in ("http", "https") or netloc != host:
                 return f"cross-origin request refused (Origin {netloc} != Host {host})"
 
+        if self.fleet.cfg.get("require_action_token", True) is False:
+            if not self._local_management_host():
+                return "management_host_required"
+            return self._keyless_request_error()
+
         trusted_client = self._trusted_management_client()
         if trusted_client:
-            if self.headers.get("Sec-Fetch-Site") in ("cross-site", "same-site"):
-                return "cross-origin request refused"
-            content_type = (self.headers.get("Content-Type") or "").split(";", 1)[0].strip().lower()
-            if content_type == "application/json" and self.headers.get("X-Health-Zoo-Request") == "dashboard":
+            error = self._keyless_request_error()
+            if error.startswith("cross-origin"):
+                return error
+            if not error:
                 return ""
 
         token = secrets_mod.load(self.fleet.cfg, "action_token")
@@ -1391,10 +1403,14 @@ class Handler(BaseHTTPRequestHandler):
             # A restored observation belongs to an earlier poll; the running
             # software version is available before the next poll completes.
             snap["version"] = self.fleet.version
-            trusted_client = self._trusted_management_client()
-            token_enabled = bool(secrets_mod.load(self.fleet.cfg, "action_token"))
-            snap["actions_enabled"] = trusted_client or token_enabled
-            snap["needs_token"] = token_enabled and not trusted_client
+            if self.fleet.cfg.get("require_action_token", True) is False:
+                snap["actions_enabled"] = True
+                snap["needs_token"] = False
+            else:
+                trusted_client = self._trusted_management_client()
+                token_enabled = bool(secrets_mod.load(self.fleet.cfg, "action_token"))
+                snap["actions_enabled"] = trusted_client or token_enabled
+                snap["needs_token"] = token_enabled and not trusted_client
             snap["storage_errors"] = [store.storage_error for store in (self.fleet.settings, self.fleet.suppressions, self.fleet.acks, self.fleet.alerts) if store.storage_error]
             journal = getattr(self.fleet, "journal", None)
             if journal and journal.error:

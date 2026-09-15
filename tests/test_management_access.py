@@ -208,3 +208,140 @@ def test_invalid_trust_configuration_is_rejected(networks):
 def test_existing_configuration_needs_no_new_trust_setting():
     configuration.validate({})
     configuration.validate({"trusted_management_networks": ["192.0.2.0/24", "2001:db8::/64"]})
+
+
+def open_handler(**kwargs):
+    request = handler(**dict({"peer": "198.51.100.42", "networks": []}, **kwargs))
+    request.fleet.cfg["require_action_token"] = False
+    return request
+
+
+@pytest.mark.parametrize("peer", ["192.0.2.60", "198.51.100.42", "2001:db8:2::42"])
+def test_global_opt_out_accepts_any_peer_without_configured_key(peer):
+    request = open_handler(peer=peer, configured_token="")
+    assert not request._trusted_management_client()
+    assert request._authorized() == ""
+
+
+def test_global_opt_out_never_loads_key_for_write_or_state(monkeypatch):
+    request = open_handler()
+    request.headers["X-Health-Zoo-Token"] = "incorrect-unused-token"
+    monkeypatch.setattr(hub.secrets_mod, "load", lambda *args: pytest.fail("key lookup in open mode"))
+    assert request._authorized() == ""
+    request.do_GET()
+    assert request.response[1]["actions_enabled"] is True
+    assert request.response[1]["needs_token"] is False
+
+
+@pytest.mark.parametrize("host", ["192.0.2.8:8816", "dashboard.example:8816"])
+def test_global_opt_out_state_never_prompts_for_a_key(host):
+    request = open_handler(host=host, configured_token="")
+    request.headers = {"Host": host}
+    request.do_GET()
+    assert request.response[0] == 200
+    assert request.response[1]["actions_enabled"] is True
+    assert request.response[1]["needs_token"] is False
+
+
+@pytest.mark.parametrize("key,value", [
+    ("Content-Type", None), ("Content-Type", "text/plain"),
+    ("X-Health-Zoo-Request", None), ("X-Health-Zoo-Request", "other"),
+])
+def test_global_opt_out_still_requires_dashboard_headers_even_with_valid_key(key, value):
+    request = open_handler()
+    request.headers["X-Health-Zoo-Token"] = "secret"
+    if value is None:
+        request.headers.pop(key)
+    else:
+        request.headers[key] = value
+    assert request._authorized() == "dashboard_header_required"
+
+
+@pytest.mark.parametrize("header,value", [
+    ("Origin", "https://evil.example"), ("Origin", "null"),
+    ("Referer", "https://evil.example/dashboard"),
+])
+def test_global_opt_out_keeps_origin_and_referer_guard(header, value):
+    request = open_handler()
+    request.headers.pop("Origin")
+    request.headers[header] = value
+    assert request._authorized().startswith("cross-origin")
+
+
+@pytest.mark.parametrize("fetch_site", ["same-site", "cross-site"])
+def test_global_opt_out_keeps_browser_cross_origin_guard(fetch_site):
+    request = open_handler()
+    request.headers["Sec-Fetch-Site"] = fetch_site
+    assert request._authorized().startswith("cross-origin")
+
+
+@pytest.mark.parametrize("host", ["evil.example:8816", "192.0.2.9:8816", "192.0.2.8:80"])
+def test_global_opt_out_rejects_rebinding_without_token_fallback(host):
+    request = open_handler(host=host)
+    request.headers["X-Health-Zoo-Token"] = "secret"
+    assert request._authorized() == "management_host_required"
+
+
+@pytest.mark.parametrize("peer,local,host", [
+    ("2001:db8:2::60", "2001:db8:1::8", "[2001:db8:1::8]:8816"),
+    ("::ffff:198.51.100.42", "::ffff:192.0.2.8", "192.0.2.8:8816"),
+    ("127.0.0.1", "127.0.0.1", "localhost:8816"),
+])
+def test_global_opt_out_retains_ipv6_and_loopback_host_support(peer, local, host):
+    request = open_handler(peer=peer, local=local, host=host)
+    assert request._authorized() == ""
+
+
+def test_global_opt_out_dispatches_refresh_from_external_peer_without_key():
+    request = open_handler(configured_token="")
+    request.path = "/api/refresh"
+    wake_calls = []
+    request.fleet.wake = SimpleNamespace(set=lambda: wake_calls.append(True))
+    request.do_POST()
+    assert request.response == (200, {"ok": True})
+    assert wake_calls == [True]
+
+
+def test_explicit_token_requirement_keeps_existing_external_client_policy():
+    request = handler(peer="198.51.100.42", networks=[])
+    request.fleet.cfg["require_action_token"] = True
+    assert request._authorized() == "token_required"
+    request.headers["X-Health-Zoo-Token"] = "secret"
+    assert request._authorized() == ""
+
+
+@pytest.mark.parametrize("value", [True, False])
+def test_global_token_policy_accepts_boolean_values(value):
+    configuration.validate({"require_action_token": value})
+
+
+@pytest.mark.parametrize("value", [None, "false", "true", 0, 1, [], {}])
+def test_global_token_policy_rejects_ambiguous_values(value):
+    with pytest.raises(ValueError):
+        configuration.validate({"require_action_token": value})
+
+
+@pytest.mark.parametrize("existing_key", [False, True])
+def test_migration_in_open_mode_never_provisions_a_key(tmp_path, monkeypatch, existing_key):
+    import migrate
+
+    monkeypatch.setattr(migrate.pwd, "getpwnam", lambda name: SimpleNamespace(pw_uid=1234, pw_gid=5678))
+    monkeypatch.setattr(migrate.os, "chown", lambda *args: None)
+    config = tmp_path / "config.json"
+    config.write_text(json.dumps({"require_action_token": False}))
+    original_config = config.read_bytes()
+    state = tmp_path / "state"
+    state.mkdir()
+    key = state / "action-token"
+    if existing_key:
+        key.write_text("unused-existing-test-key\n")
+    for _ in range(2):
+        result = migrate.prepare(config, "service-account", state_dir=state)
+        assert result["require_action_token"] is False
+        assert not any(name.startswith("action_token") for name in result)
+        assert config.read_bytes() == original_config
+        if existing_key:
+            assert key.read_text() == "unused-existing-test-key\n"
+        else:
+            assert not key.exists()
+    assert json.loads((state / "settings.json").read_text())["auto_security"]["enabled"] is False

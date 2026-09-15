@@ -212,20 +212,27 @@ Marked: **✓** done, **▶** in progress, **○** deliberately not done.
 
 ## Reliability and interaction contract
 
-- Management POST requests require a resolved action key by default; new
-  installations bind to loopback. Server config `trusted_management_networks`
-  is an array of CIDRs, empty (`[]`) by default. Opting in, for example with
-  `["192.168.1.0/24"]`, allows keyless management from the listed networks.
-- LAN trust uses the actual TCP client peer and a literal IP `Host` matching
-  the server's local IP and port. Forwarded headers such as `X-Forwarded-For`
-  and hostnames do not grant trust. Clients outside the networks and domain-based
-  reverse proxy access continue to require a key.
-- Origin validation applies to both modes. Keyless LAN POST requests require
-  JSON and
-  `X-Health-Zoo-Request: dashboard`; the dashboard supplies these without a key
-  prompt. Existing scripts with a valid key do not need the new header, even
-  on the LAN. Enabling LAN trust is a server-config change that neither reads
-  nor changes the stored key; it has no UI setting.
+- Server config `require_action_token` is a boolean, `true` by default. Set
+  `"require_action_token": false` for management without a key for all reachable
+  clients, independently of `trusted_management_networks`. GET reports
+  `needs_token: false` and `actions_enabled: true` regardless of any stored key.
+  Migration skips key provisioning, and existing keys remain unused and intact.
+- Keyless management requires a literal IP `Host` matching the local server
+  socket's IP and port; `localhost` is permitted only for loopback. Forwarded
+  headers do not replace this check. Custom hostnames and reverse proxies
+  forwarding a domain name return an address error in no-key mode and never
+  trigger a key prompt.
+- Keyless POST requests require JSON and `X-Health-Zoo-Request: dashboard`,
+  with `Origin`, `Referer` and `Sec-Fetch-Site` checks. The dashboard and browser
+  supply these automatically. A supplied key cannot bypass the requirements
+  when `require_action_token` is `false`.
+- Restoring `require_action_token: true` restores the previous mode: management
+  requires a resolved key unless the actual TCP client peer matches an entry
+  in `trusted_management_networks` and passes the local-address check. This
+  CIDR array defaults to `[]` (example: `["192.0.2.0/24"]`); forwarded headers
+  and domain names never establish LAN trust. Valid-key scripts retain
+  compatibility without the new header. Origin validation applies to both
+  modes. Both options are server-only; new installations bind to loopback.
 - Settings and suppressions commit atomically. Failed writes return 503 and roll
   back the requested change; automatic-action cooldowns persist before admission.
 - RAID findings use the same `raids` report field throughout probing, rules and UI.

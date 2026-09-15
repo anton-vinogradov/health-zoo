@@ -6,6 +6,8 @@ import re
 def validate(cfg):
     if not isinstance(cfg, dict):
         raise ValueError('config must be a JSON object')
+    if type(cfg.get('require_action_token', True)) is not bool:
+        raise ValueError('require_action_token must be a boolean')
     trusted = cfg.get('trusted_management_networks', [])
     if not isinstance(trusted, list):
         raise ValueError('trusted_management_networks must be an array of CIDRs')

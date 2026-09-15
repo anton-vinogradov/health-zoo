@@ -171,8 +171,7 @@ function removeService(host, svc) {
 
 /* ---------- updates ---------- */
 
-/* The server decides whether this connection belongs to a trusted LAN.
-   Only connections outside that LAN need a management token. */
+/* The server decides whether this installation and connection need a token. */
 function actionHeaders() {
   localStorage.removeItem('hz-token');
   var headers = { 'Content-Type': 'application/json', 'X-Health-Zoo-Request': 'dashboard' };
@@ -188,6 +187,7 @@ function actionHeaders() {
 }
 
 function actionFailed(res) {
+  if (res && res.code === 'management_host_required') { alert('Для управления откройте дашборд по IP-адресу сервера и его порту.'); return true; }
   if (res && res.code === 'actions_disabled') { alert('Управление отключено: на сервере не настроен ключ доступа.'); return true; }
   if (res && res.error && /token/i.test(res.error)) {
     sessionStorage.removeItem('hz-token');

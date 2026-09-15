@@ -31,7 +31,7 @@ def prepare(config_path, user, legacy=False, state_dir='/var/lib/health-zoo'):
         write_json(settings_path, settings)
         os.chown(settings_path, account.pw_uid, account.pw_gid)
 
-    if not any(cfg.get('action_token' + suffix) for suffix in ('', '_file', '_credential')):
+    if cfg.get('require_action_token', True) and not any(cfg.get('action_token' + suffix) for suffix in ('', '_file', '_credential')):
         key_path = state / 'action-token'
         if not key_path.exists():
             fd = os.open(key_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
